@@ -1,6 +1,5 @@
 import express from 'express';
 import {MarketListener} from "./service/MarketListener";
-import {TradingManager} from "./service/TradingManager";
 
 const app = express();
 const cors = require('cors');
@@ -16,7 +15,7 @@ app.use(express.json())                   //Express
             ));
         };
         next();
-    });;
+    });
 
 app.get('/', (req, res) => {
     res.send('Welcome to Vault 3 API');

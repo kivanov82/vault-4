@@ -16,7 +16,7 @@
   "license": "ISC",
   "dependencies": {
     "@nktkas/hyperliquid": "^0.17.4",
-    "axios": "^0.21.1",
+    "axios": "1.8.2",
     "cors": "^2.8.5",
     "dotenv": "^16.5.0",
     "express": "^5.1.0",
