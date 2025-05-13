@@ -49,7 +49,11 @@ export class MarketAdaptor {
             };
             this.assertActionRequired(aoTrend, rsiMetrics);
         }).catch(error => {
-            console.error(error)
+            console.error('Error when getting indicators, trying again in 20 seconds');
+            setTimeout(() => {
+                this.scanMarkets(interval);
+            }, 20000);
+
         });
     }
 
