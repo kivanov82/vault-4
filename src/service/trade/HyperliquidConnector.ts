@@ -4,27 +4,49 @@ import dotenv from "dotenv";
 
 dotenv.config(); // Load environment variables
 
-const wallet = process.env.WALLET as `0x${string}`;
-const pKey = process.env.WALLET_PK as `0x${string}`;
+const TRADING_WALLET = process.env.WALLET as `0x${string}`;
+const TRADING_PKEY = process.env.WALLET_PK as `0x${string}`;
 
 const SL_PERCENT = 50;  // %
 const ORDER_SIZE = 0.3;
 
-export const TICKER = {
+export const TICKERS = {
     BTC: {
         syn: 'BTC',
         id: 0,
         leverage: 40,
+    },
+    ETH: {
+        syn: 'ETH',
+        id: 1,
+        leverage: 25,
+    },
+    kPEPE: {
+        syn: 'kPEPE',
+        id: 15,
+        leverage: 10,
+    },
+    XRP: {
+        syn: 'XRP',
+        id: 25,
+        leverage: 20,
+    },
+    FARTCOIN: {
+        syn: 'FARTCOIN',
+        id: 165,
+        leverage: 5,
+    },
+    TRUMP: {
+        syn: 'TRUMP',
+        id: 174,
+        leverage: 10,
     }
 }
 
-export class TradingManager {
-
-    static test(){
-    }
+export class HyperliquidConnector {
 
     static makePositionRiskNeutral(ticker, long: boolean) {
-        this.getOpenPosition(ticker.syn).then(position => {
+        this.getOpenPosition(TRADING_WALLET, ticker.syn).then(position => {
             if (position) {
                 this.getMarket(ticker.syn).then(market => {
                     const orderInstantPrice = long ? (market * 99 / 100) : (market * 101 / 100);
@@ -57,12 +79,12 @@ export class TradingManager {
     }
 
     static marketCloseOrder(ticker, long: boolean) {
-        this.getOpenPosition(ticker).then(position => {
+        return this.getOpenPosition(TRADING_WALLET, ticker.syn).then(position => {
             if (position) {
-                this.getMarket(ticker.syn).then(market => {
+                return this.getMarket(ticker.syn).then(market => {
                     //for instant fill
                     const orderInstantPrice = long ? (market * 99 / 100) : (market * 101 / 100);
-                    this.getClients().wallet.order({
+                    return this.getClients().wallet.order({
                         orders: [
                             {
                                 a: ticker.id,
@@ -89,7 +111,7 @@ export class TradingManager {
     }
 
     static openOrder(ticker, long: boolean) {
-        return this.getOpenPosition(ticker).then((position) => {
+        return this.getOpenPosition(TRADING_WALLET, ticker.syn).then((position) => {
             if (position && this.positionSide(position) === 'long' && long) {
                 console.log('LONG Position already exists');
                 return;
@@ -97,22 +119,36 @@ export class TradingManager {
                 console.log('SHORT Position already exists');
                 return;
             }
-            return this.getPortfolio().then(balance => {
+            return this.getPortfolio(TRADING_WALLET).then(balance => {
                 return this.getMarket(ticker.syn).then(market => {
                     //for instant fill
                     const orderInstantPrice = long ? (market * 101 / 100) : (market * 99 / 100);
                     const slPrice = long ? (market * (100 - (SL_PERCENT / ticker.leverage)) / 100) : (market * (100 + (SL_PERCENT / ticker.leverage)) / 100);
                     const slInstantPrice = long ? (slPrice * 100.01 / 100) : (slPrice * 99.99 / 100);
                     const sizeInAsset = balance * ORDER_SIZE;
-                    const orderSize = ((sizeInAsset * ticker.leverage)/ market).toFixed(5);
-                    this.getClients().wallet.order({
+                    const orderSize = (sizeInAsset * ticker.leverage)/ market;
+
+                    const orderInstantPriceString = orderInstantPrice < 1 ?
+                        orderInstantPrice.toFixed(5).toString() :
+                        orderInstantPrice.toFixed(0).toString();
+                    const slPriceString = slPrice < 1 ?
+                        slPrice.toFixed(5).toString() :
+                        slPrice.toFixed(0).toString();
+                    const slInstantPriceString = slInstantPrice < 1 ?
+                        slInstantPrice.toFixed(5).toString() :
+                        slInstantPrice.toFixed(0).toString();
+                    const orderSizeString = orderSize < 1 ?
+                        orderSize.toFixed(5).toString() :
+                        orderSize.toFixed(0).toString();
+
+                    return this.getClients().wallet.order({
                         orders: [
                             //Main order
                             {
                                 a: ticker.id,
                                 b: long,
-                                p: orderInstantPrice.toFixed(0).toString(),
-                                s: orderSize.toString(),
+                                p: orderInstantPriceString,
+                                s: orderSizeString,
                                 r: false,   // Not reduce-only
                                 t: {
                                     limit: {
@@ -124,13 +160,13 @@ export class TradingManager {
                             {
                                 a: ticker.id,
                                 b: !long,
-                                p: slInstantPrice.toFixed(0).toString(),
-                                s: orderSize.toString(),
+                                p: slInstantPriceString,
+                                s: orderSizeString,
                                 r: true,   // reduce-only
                                 t: {
                                     trigger: {
                                         isMarket: true,
-                                        triggerPx: slPrice.toFixed(0).toString(),
+                                        triggerPx: slPriceString,
                                         tpsl: "sl"
                                     },
                                 },
@@ -147,9 +183,13 @@ export class TradingManager {
         });
     }
 
-    static getOpenPosition(ticker) {
-        return this.getClients().public.clearinghouseState({user: wallet}).then(details => {
-            return details.assetPositions.find(position => position.position.coin === ticker.syn)?.position;
+    static getOpenPositions(trader: `0x${string}`) {
+        return this.getClients().public.clearinghouseState({user: trader});
+    }
+
+    static getOpenPosition(trader: `0x${string}`, tickerSyn: string) {
+        return this.getClients().public.clearinghouseState({user: trader}).then(details => {
+            return details.assetPositions.find(position => position.position.coin === tickerSyn)?.position;
         })
     }
 
@@ -160,17 +200,23 @@ export class TradingManager {
     }
 
     static getOrders() {
-        return this.getClients().public.userFills({user: wallet, aggregateByTime: true}).then(orders => {
+        return this.getClients().public.userFills({user: TRADING_WALLET, aggregateByTime: true}).then(orders => {
             console.log(orders);
             return orders;
         })
     }
 
-    static getPortfolio() {
-        return this.getClients().public.portfolio({user: wallet}).then(portfolio => {
-            //forth element in the 'daily' overview
-            const currentBalanceUSDC = portfolio[0][1].accountValueHistory[3][1];
-            return Number(currentBalanceUSDC);
+    static getPortfolio(trader: `0x${string}`) {
+        return this.getClients().public.portfolio({user: trader}).then(portfolio => {
+            //fourth element in the 'daily' overview
+            const lastInHistory = portfolio[0][1].accountValueHistory.length - 1;
+            const currentBalanceUSDC = portfolio[0][1].accountValueHistory[lastInHistory][1];
+            return this.getOpenPositions(trader).then((positions) => {
+                const balanceInPositions = positions.assetPositions.reduce((acc, position) => {
+                    return Number(position.position.positionValue) / position.position.leverage.value + acc;
+                }, 0);
+                return Number(currentBalanceUSDC) - balanceInPositions;
+            });
         })
     }
 
@@ -183,7 +229,7 @@ export class TradingManager {
             timeout: 30_000,
             server: "api-ui"
         });
-        const viemAccount = privateKeyToAccount(pKey);
+        const viemAccount = privateKeyToAccount(TRADING_PKEY);
         const viemClient = new hl.WalletClient({wallet: viemAccount, transport});
         const client = new hl.PublicClient({transport});
         return {

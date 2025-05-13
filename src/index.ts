@@ -1,5 +1,5 @@
 import express from 'express';
-import {MarketListener} from "./service/MarketListener";
+import {Vault3} from "./service/Vault3";
 
 const app = express();
 const cors = require('cors');
@@ -23,9 +23,7 @@ app.get('/', (req, res) => {
 
 
 app.listen(port, () => {
-    console.log(`Server is running on port ${port}`);
-    MarketListener.init();
-    //TradingManager.test();
+    Vault3.init();
 });
 
 export default app;
