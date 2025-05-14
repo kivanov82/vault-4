@@ -6,7 +6,8 @@ export class Vault3 {
 
     static async init(): Promise<any> {
         schedule.scheduleJob("1 * * * *", () => {
-            MarketAdaptor.scanMarkets('1h');
+            MarketAdaptor.scanMarkets('1h', 'BTC');
+            MarketAdaptor.scanMarkets('1h', 'ETH');
             CopyTradingManager.scanTraders();
         })
     }
