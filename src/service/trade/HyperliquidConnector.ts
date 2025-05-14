@@ -233,7 +233,12 @@ export class HyperliquidConnector {
     static getClients() {
         const transport = new hl.HttpTransport({
             timeout: 40_000,
-            server: "api2"
+            //server: "api2"
+            server: {
+                mainnet: {
+                    rpc: 'https://rpc.hypurrscan.io',
+                }
+            }
         });
         const viemAccount = privateKeyToAccount(TRADING_PKEY);
         const viemClient = new hl.WalletClient({wallet: viemAccount, transport});

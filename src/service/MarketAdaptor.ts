@@ -12,6 +12,7 @@ export interface AOTrend {
     trendChange: boolean,
     reversalZero: boolean,
     values: number[],
+    closeToZero: boolean,
 }
 
 export interface RSIMetrics {
@@ -38,9 +39,10 @@ export class MarketAdaptor {
                     bullTrend: ao[2] > ao[1],
                     bullSide: ao[2] > 0,
                     threshold: Math.abs(ao[2] - ((ao[1] + ao[0]) / 2)),
-                    trendChange: (Math.abs(ao[1]) > Math.abs(ao[0]) && Math.abs(ao[2]) < Math.abs(ao[1])) ||
-                        (Math.abs(ao[1]) < Math.abs(ao[0]) && Math.abs(ao[2]) > Math.abs(ao[1])),
+                    trendChange: (ao[1] > ao[0] && ao[2] < ao[1]) ||
+                        (ao[1] < ao[0] && ao[2] > ao[1]),
                     reversalZero: ao[2] > 0 && ao[1] < 0 || ao[2] < 0 && ao[1] > 0,
+                    closeToZero: Math.abs(ao[2]) < 10,
                     values: ao,
                 };
                 const rsiMetrics: RSIMetrics = {
@@ -61,13 +63,13 @@ export class MarketAdaptor {
         console.log(`${ticker}: RSI Metrics:`, Object.entries(rsiMetrics).map(([key, value]) => `${key}=${value}`).join(', '));
         if (aoTrend.reversalZero &&                                                     // AO crosses zero
             aoTrend.threshold > aoThresholdTrendy) {                                    // AO significant threshold
-            if (rsiMetrics.bullSide == aoTrend.bullSide) {                              // RSI side same as AO side
-                console.log(`${ticker}: Action required: AO crosses zero with significant threshold AND AO side same as RSI side: ` + aoTrend.bullSide ? 'LONG' : 'SHORT');
+            if (rsiMetrics.bullSide === aoTrend.bullSide) {                              // RSI side same as AO side
+                console.log(`${ticker}: Action required: AO crosses zero with significant threshold AND AO side same as RSI side`);
                 HyperliquidConnector.openOrder(TICKERS[ticker], aoTrend.bullSide);
             } else {                                                                    // AO side not same as RSI side
-                console.log(`${ticker}: Action MAYBE required: AO crosses zero with significant threshold BUT AO side not same as RSI side: ` + aoTrend.bullSide ? 'LONG' : 'SHORT');
+                console.log(`${ticker}: Action MAYBE required: AO crosses zero with significant threshold BUT AO side not same as RSI side`);
             }
-        } else if (aoTrend.trendChange) {                                               // AO changes trend
+        } else if (aoTrend.trendChange && !aoTrend.closeToZero) {                        // AO changes trend
             if (aoTrend.bullSide && aoTrend.bullTrend &&
                 rsiMetrics.bullSide && !rsiMetrics.over) {                              //on a BULL side, change to BULL trend
                 console.log(`${ticker}: RETRACE: OPEN LONG`);
