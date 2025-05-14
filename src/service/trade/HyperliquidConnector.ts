@@ -78,19 +78,23 @@ export class HyperliquidConnector {
         })
     }
 
-    static marketCloseOrder(ticker, long: boolean) {
+    static marketCloseOrder(ticker, long: boolean, percent: number = 1) {
         return this.getOpenPosition(TRADING_WALLET, ticker.syn).then(position => {
             if (position) {
                 return this.getMarket(ticker.syn).then(market => {
                     //for instant fill
                     const orderInstantPrice = long ? (market * 99 / 100) : (market * 101 / 100);
+                    const orderSize = Number(position.szi) * percent;
+                    const orderSizeString = orderSize < 1 ?
+                        orderSize.toFixed(5).toString() :
+                        orderSize.toFixed(0).toString();
                     return this.getClients().wallet.order({
                         orders: [
                             {
                                 a: ticker.id,
                                 b: !long,
                                 p: orderInstantPrice.toFixed(0).toString(),
-                                s: position.szi,
+                                s: orderSizeString,
                                 r: true,   // reduce-only
                                 t: {
                                     limit: {
@@ -119,13 +123,13 @@ export class HyperliquidConnector {
                 console.log('SHORT Position already exists');
                 return;
             }
-            return this.getPortfolio(TRADING_WALLET).then(balance => {
+            return this.getPortfolio(TRADING_WALLET).then(portfolio => {
                 return this.getMarket(ticker.syn).then(market => {
                     //for instant fill
                     const orderInstantPrice = long ? (market * 101 / 100) : (market * 99 / 100);
                     const slPrice = long ? (market * (100 - (SL_PERCENT / ticker.leverage)) / 100) : (market * (100 + (SL_PERCENT / ticker.leverage)) / 100);
                     const slInstantPrice = long ? (slPrice * 100.01 / 100) : (slPrice * 99.99 / 100);
-                    const sizeInAsset = balance * ORDER_SIZE;
+                    const sizeInAsset = portfolio.available * ORDER_SIZE;
                     const orderSize = (sizeInAsset * ticker.leverage)/ market;
 
                     const orderInstantPriceString = orderInstantPrice < 1 ?
@@ -208,14 +212,16 @@ export class HyperliquidConnector {
 
     static getPortfolio(trader: `0x${string}`) {
         return this.getClients().public.portfolio({user: trader}).then(portfolio => {
-            //fourth element in the 'daily' overview
             const lastInHistory = portfolio[0][1].accountValueHistory.length - 1;
             const currentBalanceUSDC = portfolio[0][1].accountValueHistory[lastInHistory][1];
             return this.getOpenPositions(trader).then((positions) => {
                 const balanceInPositions = positions.assetPositions.reduce((acc, position) => {
                     return Number(position.position.positionValue) / position.position.leverage.value + acc;
                 }, 0);
-                return Number(currentBalanceUSDC) - balanceInPositions;
+                return {
+                    portfolio: Number(currentBalanceUSDC),
+                    available: Number(currentBalanceUSDC) - balanceInPositions
+                } ;
             });
         })
     }
@@ -226,8 +232,8 @@ export class HyperliquidConnector {
 
     static getClients() {
         const transport = new hl.HttpTransport({
-            timeout: 30_000,
-            server: "api-ui"
+            timeout: 40_000,
+            server: "api2"
         });
         const viemAccount = privateKeyToAccount(TRADING_PKEY);
         const viemClient = new hl.WalletClient({wallet: viemAccount, transport});

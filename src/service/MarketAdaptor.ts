@@ -26,7 +26,7 @@ const aoThresholdTrendy = 150;
 
 export class MarketAdaptor {
 
-    static scanMarkets(interval: string, ticker: string) {
+    static scanMarkets(interval: string, ticker: string, delay: number) {
         setTimeout(() => {
             taapi.resetBulkConstructs();
             taapi.addCalculation("rsi", `${ticker}/USDT`, interval, `rsi_${interval}`, {"results": 3});
@@ -51,9 +51,9 @@ export class MarketAdaptor {
                 this.assertActionRequired(aoTrend, rsiMetrics, ticker);
             }).catch(error => {
                 console.error('Error when getting indicators, trying again in 20 seconds');
-                this.scanMarkets(interval, ticker);
+                this.scanMarkets(interval, ticker, delay);
             });
-        }, 20000);
+        }, delay);
     }
 
     static assertActionRequired(aoTrend: AOTrend, rsiMetrics: RSIMetrics, ticker: string): void {
