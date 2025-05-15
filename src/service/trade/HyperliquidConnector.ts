@@ -15,31 +15,43 @@ export const TICKERS = {
         syn: 'BTC',
         id: 0,
         leverage: 40,
+        szDecimals: 5,
     },
     ETH: {
         syn: 'ETH',
         id: 1,
         leverage: 25,
+        szDecimals: 4,
+    },
+    SOL: {
+        syn: 'SOL',
+        id: 5,
+        leverage: 20,
+        szDecimals: 2,
     },
     kPEPE: {
         syn: 'kPEPE',
         id: 15,
         leverage: 10,
+        szDecimals: 0,
     },
     XRP: {
         syn: 'XRP',
         id: 25,
         leverage: 20,
+        szDecimals: 0,
     },
     FARTCOIN: {
         syn: 'FARTCOIN',
         id: 165,
         leverage: 5,
+        szDecimals: 1,
     },
     TRUMP: {
         syn: 'TRUMP',
         id: 174,
         leverage: 10,
+        szDecimals: 1,
     }
 }
 
@@ -84,10 +96,8 @@ export class HyperliquidConnector {
                 return this.getMarket(ticker.syn).then(market => {
                     //for instant fill
                     const orderInstantPrice = long ? (market * 99 / 100) : (market * 101 / 100);
-                    const orderSize = Number(position.szi) * percent;
-                    const orderSizeString = orderSize < 1 ?
-                        orderSize.toFixed(5).toString() :
-                        orderSize.toFixed(0).toString();
+                    const orderSize = Math.abs(Number(position.szi) * percent);
+                    const orderSizeString = orderSize.toFixed(ticker.szDecimals).toString();
                     return this.getClients().wallet.order({
                         orders: [
                             {
@@ -141,9 +151,7 @@ export class HyperliquidConnector {
                     const slInstantPriceString = slInstantPrice < 1 ?
                         slInstantPrice.toFixed(5).toString() :
                         slInstantPrice.toFixed(0).toString();
-                    const orderSizeString = orderSize < 1 ?
-                        orderSize.toFixed(5).toString() :
-                        orderSize.toFixed(0).toString();
+                    const orderSizeString = orderSize.toFixed(ticker.szDecimals).toString();
 
                     return this.getClients().wallet.order({
                         orders: [
@@ -195,6 +203,12 @@ export class HyperliquidConnector {
         return this.getClients().public.clearinghouseState({user: trader}).then(details => {
             return details.assetPositions.find(position => position.position.coin === tickerSyn)?.position;
         })
+    }
+
+    static getPerps() {
+        return this.getClients().public.meta().then(perps => {
+            return perps.universe;
+        });
     }
 
     static getMarket(ticker) {

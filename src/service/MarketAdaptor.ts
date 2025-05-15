@@ -42,7 +42,7 @@ export class MarketAdaptor {
                     trendChange: (ao[1] > ao[0] && ao[2] < ao[1]) ||
                         (ao[1] < ao[0] && ao[2] > ao[1]),
                     reversalZero: ao[2] > 0 && ao[1] < 0 || ao[2] < 0 && ao[1] > 0,
-                    closeToZero: Math.abs(ao[2]) < 10,
+                    closeToZero: Math.abs(ao[2]) < 20,
                     values: ao,
                 };
                 const rsiMetrics: RSIMetrics = {

@@ -16,7 +16,7 @@ export class CopyTradingManager {
             if (traderPosition && tradingPosition &&
                 HyperliquidConnector.positionSide(traderPosition) === HyperliquidConnector.positionSide(tradingPosition)) {
                 //both exist, on the same side
-                console.log(`COPY TRADING: both ${ticker} positions exist, on the same side`);
+                //console.log(`COPY TRADING: both ${ticker} positions exist, on the same side`);
                 this.considerTakingProfit(tradingPosition);
             } else if (traderPosition && tradingPosition &&
                 HyperliquidConnector.positionSide(traderPosition) !== HyperliquidConnector.positionSide(tradingPosition)) {
