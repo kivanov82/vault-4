@@ -42,7 +42,8 @@ export class CopyTradingManager {
                         HyperliquidConnector.positionSide(tradingPosition) === 'long');
                 }
             } catch (e) {
-                console.error(`COPY TRADING: error while scanning ${ticker} positions`, e);
+                console.error(`COPY TRADING: error while scanning ${ticker} positions, retrying...`, e.message);
+                this.scanTraders();
             }
         });
 

@@ -7,8 +7,9 @@ dotenv.config(); // Load environment variables
 const TRADING_WALLET = process.env.WALLET as `0x${string}`;
 const TRADING_PKEY = process.env.WALLET_PK as `0x${string}`;
 
-const SL_PERCENT = 50;  // %
+const SL_PERCENT = 60;  // %
 const ORDER_SIZE = 0.3;
+const PERPS_MAX_DECIMALS = 6
 
 export const TICKERS = {
     BTC: {
@@ -94,7 +95,7 @@ export class HyperliquidConnector {
         return this.getOpenPosition(TRADING_WALLET, ticker.syn).then(position => {
             if (position) {
                 return this.getMarket(ticker.syn).then(market => {
-                    const priceDecimals = market.toString().split('.')[1].length || 0;
+                    const priceDecimals = PERPS_MAX_DECIMALS - ticker.szDecimals - 1;
                     //for instant fill
                     const orderInstantPrice = long ? (market * 99 / 100) : (market * 101 / 100);
                     const orderInstantPriceString = orderInstantPrice.toFixed(priceDecimals).toString();
@@ -137,7 +138,7 @@ export class HyperliquidConnector {
             }
             return this.getPortfolio(TRADING_WALLET).then(portfolio => {
                 return this.getMarket(ticker.syn).then(market => {
-                    const priceDecimals = market.toString().split('.')[1].length || 0;
+                    const priceDecimals = PERPS_MAX_DECIMALS - ticker.szDecimals - 1;
                     //for instant fill
                     const orderInstantPrice = long ? (market * 101 / 100) : (market * 99 / 100);
                     const slPrice = long ? (market * (100 - (SL_PERCENT / ticker.leverage)) / 100) : (market * (100 + (SL_PERCENT / ticker.leverage)) / 100);
