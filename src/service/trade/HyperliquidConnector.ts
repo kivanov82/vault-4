@@ -96,6 +96,9 @@ export class HyperliquidConnector {
                 return this.getMarket(ticker.syn).then(market => {
                     //for instant fill
                     const orderInstantPrice = long ? (market * 99 / 100) : (market * 101 / 100);
+                    const orderInstantPriceString = orderInstantPrice < 1 ?
+                        orderInstantPrice.toString() :
+                        orderInstantPrice.toFixed(0).toString();
                     const orderSize = Math.abs(Number(position.szi) * percent);
                     const orderSizeString = orderSize.toFixed(ticker.szDecimals).toString();
                     return this.getClients().wallet.order({
@@ -103,7 +106,7 @@ export class HyperliquidConnector {
                             {
                                 a: ticker.id,
                                 b: !long,
-                                p: orderInstantPrice.toFixed(0).toString(),
+                                p: orderInstantPriceString,
                                 s: orderSizeString,
                                 r: true,   // reduce-only
                                 t: {
@@ -143,13 +146,13 @@ export class HyperliquidConnector {
                     const orderSize = (sizeInAsset * ticker.leverage)/ market;
 
                     const orderInstantPriceString = orderInstantPrice < 1 ?
-                        orderInstantPrice.toFixed(5).toString() :
+                        orderInstantPrice.toString() :
                         orderInstantPrice.toFixed(0).toString();
                     const slPriceString = slPrice < 1 ?
-                        slPrice.toFixed(5).toString() :
+                        slPrice.toString() :
                         slPrice.toFixed(0).toString();
                     const slInstantPriceString = slInstantPrice < 1 ?
-                        slInstantPrice.toFixed(5).toString() :
+                        slInstantPrice.toString() :
                         slInstantPrice.toFixed(0).toString();
                     const orderSizeString = orderSize.toFixed(ticker.szDecimals).toString();
 
@@ -209,6 +212,10 @@ export class HyperliquidConnector {
         return this.getClients().public.meta().then(perps => {
             return perps.universe;
         });
+    }
+
+    static getMarkets() {
+        return this.getClients().public.allMids();
     }
 
     static getMarket(ticker) {
