@@ -22,7 +22,7 @@ export interface RSIMetrics {
 }
 
 const taapi = new Taapi(process.env.TAAPI_SECRET);
-const aoThresholdTrendy = 150;
+const aoThresholdTrendy = 100;
 
 
 export class MarketAdaptor {
@@ -39,8 +39,7 @@ export class MarketAdaptor {
                     bullTrend: ao[2] > ao[1],
                     bullSide: ao[2] > 0,
                     threshold: Math.abs(ao[2] - ((ao[1] + ao[0]) / 2)),
-                    trendChange: (ao[1] > ao[0] && ao[2] < ao[1]) ||
-                        (ao[1] < ao[0] && ao[2] > ao[1]),
+                    trendChange: this.trendChanged(ao),
                     reversalZero: ao[2] > 0 && ao[1] < 0 || ao[2] < 0 && ao[1] > 0,
                     closeToZero: Math.abs(ao[2]) < 27,
                     values: ao,
@@ -56,6 +55,14 @@ export class MarketAdaptor {
                 this.scanMarkets(interval, ticker, delay);
             });
         }, delay);
+    }
+
+    static trendChanged(ao: any[]){
+        const lastDeviation = Math.abs(ao[1] - ao[0]);
+        const currentDeviation = Math.abs(ao[2] - ao[1]);
+        return currentDeviation > lastDeviation &&                      //the threshold is higher than before
+            (ao[1] > ao[0] && ao[2] < ao[1]) ||                         //abs values have changed
+            (ao[1] < ao[0] && ao[2] > ao[1])
     }
 
     static assertActionRequired(aoTrend: AOTrend, rsiMetrics: RSIMetrics, ticker: string): void {

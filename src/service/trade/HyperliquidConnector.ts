@@ -1,6 +1,7 @@
 import * as hl from "@nktkas/hyperliquid";
 import {privateKeyToAccount} from "viem/accounts";
 import dotenv from "dotenv";
+import {http} from "viem";
 
 dotenv.config(); // Load environment variables
 
@@ -40,6 +41,12 @@ export const TICKERS = {
         syn: 'XRP',
         id: 25,
         leverage: 20,
+        szDecimals: 0,
+    },
+    GOAT: {
+        syn: 'GOAT',
+        id: 149,
+        leverage: 5,
         szDecimals: 0,
     },
     FARTCOIN: {
@@ -95,7 +102,8 @@ export class HyperliquidConnector {
         return this.getOpenPosition(TRADING_WALLET, ticker.syn).then(position => {
             if (position) {
                 return this.getMarket(ticker.syn).then(market => {
-                    const priceDecimals = PERPS_MAX_DECIMALS - ticker.szDecimals - 1;
+                    //const priceDecimals = PERPS_MAX_DECIMALS - ticker.szDecimals - 1;
+                    const priceDecimals = market < 1 ? 5 : (market < 10 ? 2 : 0);
                     //for instant fill
                     const orderInstantPrice = long ? (market * 99 / 100) : (market * 101 / 100);
                     const orderInstantPriceString = orderInstantPrice.toFixed(priceDecimals).toString();
@@ -138,7 +146,8 @@ export class HyperliquidConnector {
             }
             return this.getPortfolio(TRADING_WALLET).then(portfolio => {
                 return this.getMarket(ticker.syn).then(market => {
-                    const priceDecimals = PERPS_MAX_DECIMALS - ticker.szDecimals - 1;
+                    //const priceDecimals = PERPS_MAX_DECIMALS - ticker.szDecimals - 1;
+                    const priceDecimals = market < 1 ? 5 : (market < 10 ? 2 : 0);
                     //for instant fill
                     const orderInstantPrice = long ? (market * 101 / 100) : (market * 99 / 100);
                     const slPrice = long ? (market * (100 - (SL_PERCENT / ticker.leverage)) / 100) : (market * (100 + (SL_PERCENT / ticker.leverage)) / 100);
@@ -248,11 +257,12 @@ export class HyperliquidConnector {
 
     static getClients() {
         const transport = new hl.HttpTransport({
-            timeout: 40_000,
+            timeout: null,
             //server: "api2"
             server: {
                 mainnet: {
-                    rpc: 'https://rpc.hypurrscan.io',
+                    //rpc: 'https://rpc.hypurrscan.io',
+                    rpc: 'https://rpc.hyperlend.finance',
                 }
             }
         });
