@@ -10,7 +10,7 @@ export class Vault3 {
             MarketAdaptor.scanMarkets('1h', 'BTC', 15000);
             MarketAdaptor.scanMarkets('1h', 'ETH', 40000);
         });
-        schedule.scheduleJob("*!/15 * * * *", () => {
+        schedule.scheduleJob("*/15 * * * *", () => {
             CopyTradingManager.scanTraders();
         });
     }

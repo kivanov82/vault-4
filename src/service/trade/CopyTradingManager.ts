@@ -17,7 +17,7 @@ export class CopyTradingManager {
                 if (traderPosition && tradingPosition &&
                     HyperliquidConnector.positionSide(traderPosition) === HyperliquidConnector.positionSide(tradingPosition)) {
                     //both exist, on the same side
-                    console.log(`COPY TRADING: both ${ticker} positions exist, on the same side`);
+                    //console.log(`COPY TRADING: both ${ticker} positions exist, on the same side`);
                     this.considerTakingProfit(tradingPosition);
                 } else if (traderPosition && tradingPosition &&
                     HyperliquidConnector.positionSide(traderPosition) !== HyperliquidConnector.positionSide(tradingPosition)) {
@@ -70,7 +70,7 @@ export class CopyTradingManager {
             Number(currentValue) / Number(totalPortfolio) > 0.15 /*15% of portfolio*/) {
             console.log(`COPY TRADING: taking profit on ${tradingPosition.coin} position`);
             await HyperliquidConnector.marketCloseOrder(TICKERS[tradingPosition.coin],
-                HyperliquidConnector.positionSide(tradingPosition) === 'long', 0.5);
+                HyperliquidConnector.positionSide(tradingPosition) === 'long', 0.25);
         }
     }
 }

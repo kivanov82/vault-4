@@ -8,11 +8,14 @@ dotenv.config(); // Load environment variables
 export interface AOTrend {
     bullTrend: boolean,
     bullSide: boolean,
-    threshold: number,
     trendChange: boolean,
-    reversalZero: boolean,
+    aroundCrossingZero: boolean,
     values: number[],
     closeToZero: boolean,
+    trend: {
+        constantTrend: boolean,
+        bull: boolean
+    }
 }
 
 export interface RSIMetrics {
@@ -22,7 +25,7 @@ export interface RSIMetrics {
 }
 
 const taapi = new Taapi(process.env.TAAPI_SECRET);
-const aoThresholdTrendy = 100;
+const aoTrendy = 5;
 
 
 export class MarketAdaptor {
@@ -38,11 +41,11 @@ export class MarketAdaptor {
                 const aoTrend: AOTrend = {
                     bullTrend: ao[2] > ao[1],
                     bullSide: ao[2] > 0,
-                    threshold: Math.abs(ao[2] - ((ao[1] + ao[0]) / 2)),
+                    trend: this.constantTrend(ao),
                     trendChange: this.trendChanged(ao),
-                    reversalZero: ao[2] > 0 && ao[1] < 0 || ao[2] < 0 && ao[1] > 0,
+                    aroundCrossingZero: Math.abs(ao[2]) < 10 ,
                     closeToZero: Math.abs(ao[2]) < 27,
-                    values: ao,
+                    values: ao
                 };
                 const rsiMetrics: RSIMetrics = {
                     bullSide: Number(rsi[2]) > 50,
@@ -57,24 +60,15 @@ export class MarketAdaptor {
         }, delay);
     }
 
-    static trendChanged(ao: any[]){
-        const lastDeviation = Math.abs(ao[1] - ao[0]);
-        const currentDeviation = Math.abs(ao[2] - ao[1]);
-        return currentDeviation > lastDeviation &&                      //the threshold is higher than before
-            (ao[1] > ao[0] && ao[2] < ao[1]) ||                         //abs values have changed
-            (ao[1] < ao[0] && ao[2] > ao[1])
-    }
-
     static assertActionRequired(aoTrend: AOTrend, rsiMetrics: RSIMetrics, ticker: string): void {
         console.log(`${ticker}: AO Trend:`, Object.entries(aoTrend).map(([key, value]) => `${key}=${value}`).join(', '));
         console.log(`${ticker}: RSI Metrics:`, Object.entries(rsiMetrics).map(([key, value]) => `${key}=${value}`).join(', '));
-        if (aoTrend.reversalZero &&                                                     // AO crosses zero
-            aoTrend.threshold > aoThresholdTrendy) {                                    // AO significant threshold
-            if (rsiMetrics.bullSide === aoTrend.bullSide) {                              // RSI side same as AO side
-                console.log(`${ticker}: Action required: AO crosses zero with significant threshold AND AO side same as RSI side`);
+        if (aoTrend.aroundCrossingZero &&  aoTrend.trend.constantTrend) {                           // AO is (about) crossing zero
+            if (rsiMetrics.bullSide === aoTrend.trend.bull) {                               // RSI side same as AO side
+                console.log(`${ticker}: Action required: AO is about (or crossing) zero AND AO side same as RSI side`);
                 HyperliquidConnector.openOrder(TICKERS[ticker], aoTrend.bullSide);
-            } else {                                                                    // AO side not same as RSI side
-                console.log(`${ticker}: Action MAYBE required: AO crosses zero with significant threshold BUT AO side not same as RSI side`);
+            } else {                                                                        // AO side not same as RSI side
+                console.log(`${ticker}: Action MAYBE required: AO is about (or crossing) zero BUT AO side NOT same as RSI side`);
             }
         } else if (aoTrend.trendChange && !aoTrend.closeToZero) {                        // AO changes trend
             if (aoTrend.bullSide && aoTrend.bullTrend &&
@@ -94,5 +88,36 @@ export class MarketAdaptor {
             }
         }
     }
+
+    static trendChanged(ao: any[]) {
+        const lastDeviation = Math.abs(ao[1] - ao[0]);
+        const currentDeviation = Math.abs(ao[2] - ao[1]);
+        const revertedNow = currentDeviation > lastDeviation &&                      //the threshold is higher than before ...
+            ((ao[1] > ao[0] && ao[2] < ao[1]) ||                                             //... and the opposite side
+                (ao[1] < ao[0] && ao[2] > ao[1]));
+        if (revertedNow) {
+            //is enough to be considered a trend change
+            return true;
+        } else {
+            //maybe moved slowly but enough to say it changed
+            const latestPeak = Math.max(Math.abs(ao[0]), Math.abs(ao[1]));
+            return latestPeak > (Math.abs(ao[2]) + 100);
+        }
+    }
+
+    static constantTrend(ao: any[]) {
+        const bullDirection = ao[2] > ao[1];      //detect latest direction
+        let constantTrend : boolean;                       //last ticks follow same trend, strong
+        if (bullDirection) {
+            constantTrend = ao[2] > (ao[1] + aoTrendy)  && ao[1] > (ao[0] + aoTrendy);
+        } else {
+            constantTrend = ao[2] < (ao[1] - aoTrendy) && ao[1] < (ao[0] - aoTrendy);
+        }
+        return {
+            constantTrend : constantTrend,
+            bull: bullDirection
+        }
+    }
+
 
 }
