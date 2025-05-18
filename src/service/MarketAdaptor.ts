@@ -9,13 +9,10 @@ export interface AOTrend {
     bullTrend: boolean,
     bullSide: boolean,
     trendChange: boolean,
-    aroundCrossingZero: boolean,
     values: number[],
     closeToZero: boolean,
-    trend: {
-        constantTrend: boolean,
-        bull: boolean
-    }
+    trendStrong: boolean,
+    crossingZeroAround: boolean,
 }
 
 export interface RSIMetrics {
@@ -41,10 +38,11 @@ export class MarketAdaptor {
                 const aoTrend: AOTrend = {
                     bullTrend: ao[2] > ao[1],
                     bullSide: ao[2] > 0,
-                    trend: this.constantTrend(ao),
-                    trendChange: this.trendChanged(ao),
-                    aroundCrossingZero: Math.abs(ao[2]) < 10 ,
-                    closeToZero: Math.abs(ao[2]) < 27,
+                    trendChange: this.trendChanged(ao),                                             //for trend changed
+                    closeToZero: Math.abs(ao[2]) < 27,                                              //for trend changed
+
+                    trendStrong: this.constantTrend(ao).strong,                                     //for crossing zero
+                    crossingZeroAround: this.constantTrend(ao).constantTrendAroundCrossingZero,     //for crossing zero
                     values: ao
                 };
                 const rsiMetrics: RSIMetrics = {
@@ -63,11 +61,11 @@ export class MarketAdaptor {
     static assertActionRequired(aoTrend: AOTrend, rsiMetrics: RSIMetrics, ticker: string): void {
         console.log(`${ticker}: AO Trend:`, Object.entries(aoTrend).map(([key, value]) => `${key}=${value}`).join(', '));
         console.log(`${ticker}: RSI Metrics:`, Object.entries(rsiMetrics).map(([key, value]) => `${key}=${value}`).join(', '));
-        if (aoTrend.aroundCrossingZero &&  aoTrend.trend.constantTrend) {                           // AO is (about) crossing zero
-            if (rsiMetrics.bullSide === aoTrend.trend.bull) {                               // RSI side same as AO side
+        if (aoTrend.trendStrong &&  aoTrend.crossingZeroAround) {                             // AO is (about) crossing zero
+            if (rsiMetrics.bullSide === aoTrend.bullTrend) {                                         // RSI side same as AO trend
                 console.log(`${ticker}: Action required: AO is about (or crossing) zero AND AO side same as RSI side`);
-                HyperliquidConnector.openOrder(TICKERS[ticker], aoTrend.bullSide);
-            } else {                                                                        // AO side not same as RSI side
+                HyperliquidConnector.openOrder(TICKERS[ticker], aoTrend.bullTrend);
+            } else {                                                                                        // AO side not same as RSI side
                 console.log(`${ticker}: Action MAYBE required: AO is about (or crossing) zero BUT AO side NOT same as RSI side`);
             }
         } else if (aoTrend.trendChange && !aoTrend.closeToZero) {                        // AO changes trend
@@ -107,15 +105,15 @@ export class MarketAdaptor {
 
     static constantTrend(ao: any[]) {
         const bullDirection = ao[2] > ao[1];      //detect latest direction
-        let constantTrend : boolean;                       //last ticks follow same trend, strong
+        let constantAndStrong : boolean;                       //last ticks follow same trend, strong
         if (bullDirection) {
-            constantTrend = ao[2] > (ao[1] + aoTrendy)  && ao[1] > (ao[0] + aoTrendy);
+            constantAndStrong = ao[2] > (ao[1] + aoTrendy)  && ao[1] > (ao[0] + aoTrendy);
         } else {
-            constantTrend = ao[2] < (ao[1] - aoTrendy) && ao[1] < (ao[0] - aoTrendy);
+            constantAndStrong = ao[2] < (ao[1] - aoTrendy) && ao[1] < (ao[0] - aoTrendy);
         }
         return {
-            constantTrend : constantTrend,
-            bull: bullDirection
+            strong : constantAndStrong,
+            constantTrendAroundCrossingZero: Math.abs(ao[2]) < 10
         }
     }
 
