@@ -93,14 +93,7 @@ export class MarketAdaptor {
         const revertedNow = currentDeviation > lastDeviation &&                      //the threshold is higher than before ...
             ((ao[1] > ao[0] && ao[2] < ao[1]) ||                                             //... and the opposite side
                 (ao[1] < ao[0] && ao[2] > ao[1]));
-        if (revertedNow) {
-            //is enough to be considered a trend change
-            return true;
-        } else {
-            //maybe moved slowly but enough to say it changed
-            const latestPeak = Math.max(Math.abs(ao[0]), Math.abs(ao[1]));
-            return latestPeak > (Math.abs(ao[2]) + 100);
-        }
+        return revertedNow;
     }
 
     static constantTrend(ao: any[]) {

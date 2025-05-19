@@ -6,13 +6,20 @@ import {HyperliquidConnector} from "./trade/HyperliquidConnector";
 export class Vault3 {
 
     static async init(): Promise<any> {
-        schedule.scheduleJob("1 * * * *", () => {
+        const marketScanJob = schedule.scheduleJob("1 * * * *", () => {
             MarketAdaptor.scanMarkets('1h', 'BTC', 15000);
             MarketAdaptor.scanMarkets('1h', 'ETH', 40000);
             MarketAdaptor.scanMarkets('1h', 'XRP', 60000);
         });
-        schedule.scheduleJob("*/15 * * * *", () => {
+        const copyTradingJob = schedule.scheduleJob("*/15 * * * *", () => {
             CopyTradingManager.scanTraders();
         });
+        /*schedule.scheduleJob("*!/10 * * * *", () => {
+            //scan for high volatility
+            if (true) {
+                marketScanJob.cancel();
+                copyTradingJob.cancel();
+            }
+        });*/
     }
 }
