@@ -22,7 +22,6 @@ export interface RSIMetrics {
 }
 
 const taapi = new Taapi(process.env.TAAPI_SECRET);
-const aoTrendy = 5;
 
 
 export class MarketAdaptor {
@@ -32,29 +31,31 @@ export class MarketAdaptor {
             taapi.resetBulkConstructs();
             taapi.addCalculation("rsi", `${ticker}/USDT`, interval, `rsi_${interval}`, {"results": 3});
             taapi.addCalculation("ao", `${ticker}/USDT`, interval, `ao_${interval}`, {"results": 3});
-            taapi.executeBulk().then(indicators => {
-                const ao = indicators.ao_1h.value;
-                const rsi = indicators.rsi_1h.value;
-                const aoTrend: AOTrend = {
-                    bullTrend: ao[2] > ao[1],
-                    bullSide: ao[2] > 0,
-                    trendChange: this.trendChanged(ao),                                             //for trend changed
-                    closeToZero: Math.abs(ao[2]) < 27,                                              //for trend changed
+            HyperliquidConnector.getMarket(ticker).then(market => {
+                taapi.executeBulk().then(indicators => {
+                    const ao = indicators.ao_1h.value;
+                    const rsi = indicators.rsi_1h.value;
+                    const aoTrend: AOTrend = {
+                        bullTrend: ao[2] > ao[1],
+                        bullSide: ao[2] > 0,
+                        trendChange: this.trendChanged(ao),                                             //for trend changed
+                        closeToZero: Math.abs(ao[2]) < market / 1000,                                    //for trend changed
 
-                    trendStrong: this.constantTrend(ao).strong,                                     //for crossing zero
-                    crossingZeroAround: this.constantTrend(ao).constantTrendAroundCrossingZero,     //for crossing zero
-                    values: ao
-                };
-                const rsiMetrics: RSIMetrics = {
-                    bullSide: Number(rsi[2]) > 50,
-                    over: Number(rsi[2]) > 70 || Number(rsi[2]) < 30,
-                    values: rsi,
-                };
-                this.assertActionRequired(aoTrend, rsiMetrics, ticker);
-            }).catch(error => {
-                console.error('Error when getting indicators, trying again in 20 seconds');
-                this.scanMarkets(interval, ticker, delay);
-            });
+                        trendStrong: this.constantTrend(ao, market).strong,                                     //for crossing zero
+                        crossingZeroAround: this.constantTrend(ao, market).constantTrendAroundCrossingZero,     //for crossing zero
+                        values: ao
+                    };
+                    const rsiMetrics: RSIMetrics = {
+                        bullSide: Number(rsi[2]) > 50,
+                        over: Number(rsi[2]) > 70 || Number(rsi[2]) < 30,
+                        values: rsi,
+                    };
+                    this.assertActionRequired(aoTrend, rsiMetrics, ticker);
+                }).catch(error => {
+                    console.error('Error when getting indicators, trying again in 20 seconds');
+                    this.scanMarkets(interval, ticker, delay);
+                });
+            })
         }, delay);
     }
 
@@ -96,8 +97,9 @@ export class MarketAdaptor {
         return revertedNow;
     }
 
-    static constantTrend(ao: any[]) {
-        const bullDirection = ao[2] > ao[1];      //detect latest direction
+    static constantTrend(ao: any[], market: number) {
+        const bullDirection = ao[2] > ao[1];            //detect latest direction
+        const aoTrendy = market / 5000;                 //threshold for 'trendy'
         let constantAndStrong : boolean;                       //last ticks follow same trend, strong
         if (bullDirection) {
             constantAndStrong = ao[2] > (ao[1] + aoTrendy)  && ao[1] > (ao[0] + aoTrendy);
@@ -106,7 +108,7 @@ export class MarketAdaptor {
         }
         return {
             strong : constantAndStrong,
-            constantTrendAroundCrossingZero: Math.abs(ao[2]) < 10
+            constantTrendAroundCrossingZero: Math.abs(ao[2]) < (market / 1000)
         }
     }
 
