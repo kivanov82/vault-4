@@ -11,8 +11,7 @@ export interface AOTrend {
     trendChange: boolean,
     values: number[],
     closeToZero: boolean,
-    trendStrong: boolean,
-    crossingZeroAround: boolean,
+    crossingZero: boolean
 }
 
 export interface RSIMetrics {
@@ -30,19 +29,18 @@ export class MarketAdaptor {
         setTimeout(() => {
             taapi.resetBulkConstructs();
             taapi.addCalculation("rsi", `${ticker}/USDT`, interval, `rsi_${interval}`, {"results": 3});
-            taapi.addCalculation("ao", `${ticker}/USDT`, interval, `ao_${interval}`, {"results": 3});
+            taapi.addCalculation("ao", `${ticker}/USDT`, interval, `ao_${interval}`, {"results": 4});
             HyperliquidConnector.getMarket(ticker).then(market => {
                 taapi.executeBulk().then(indicators => {
                     const ao = indicators.ao_1h.value;
                     const rsi = indicators.rsi_1h.value;
                     const aoTrend: AOTrend = {
-                        bullTrend: ao[2] > ao[1],
-                        bullSide: ao[2] > 0,
+                        bullTrend: ao[3] > ao[2],
+                        bullSide: ao[3] > 0,
                         trendChange: this.trendChanged(ao),                                             //for trend changed
-                        closeToZero: Math.abs(ao[2]) < market / 1000,                                    //for trend changed
+                        closeToZero: Math.abs(ao[3]) < market / 1000,                                    //for trend changed
 
-                        trendStrong: this.constantTrend(ao, market).strong,                                     //for crossing zero
-                        crossingZeroAround: this.constantTrend(ao, market).constantTrendAroundCrossingZero,     //for crossing zero
+                        crossingZero: this.crossingZeroDecision(ao, market),                                     //for crossing zero
                         values: ao
                     };
                     const rsiMetrics: RSIMetrics = {
@@ -62,7 +60,7 @@ export class MarketAdaptor {
     static assertActionRequired(aoTrend: AOTrend, rsiMetrics: RSIMetrics, ticker: string): void {
         console.log(`${ticker}: AO Trend:`, Object.entries(aoTrend).map(([key, value]) => `${key}=${value}`).join(', '));
         console.log(`${ticker}: RSI Metrics:`, Object.entries(rsiMetrics).map(([key, value]) => `${key}=${value}`).join(', '));
-        if (aoTrend.trendStrong &&  aoTrend.crossingZeroAround) {                             // AO is (about) crossing zero
+        if (aoTrend.crossingZero) {                             // AO is (about) crossing zero
             if (rsiMetrics.bullSide === aoTrend.bullTrend) {                                         // RSI side same as AO trend
                 console.log(`${ticker}: Action required: AO is about (or crossing) zero AND AO side same as RSI side`);
                 HyperliquidConnector.openOrder(TICKERS[ticker], aoTrend.bullTrend);
@@ -89,27 +87,37 @@ export class MarketAdaptor {
     }
 
     static trendChanged(ao: any[]) {
-        const lastDeviation = Math.abs(ao[1] - ao[0]);
-        const currentDeviation = Math.abs(ao[2] - ao[1]);
+        const lastDeviation = Math.abs(ao[2] - ao[1]);
+        const currentDeviation = Math.abs(ao[3] - ao[2]);
         const revertedNow = currentDeviation > lastDeviation &&                      //the threshold is higher than before ...
-            ((ao[1] > ao[0] && ao[2] < ao[1]) ||                                             //... and the opposite side
-                (ao[1] < ao[0] && ao[2] > ao[1]));
+            ((ao[2] > ao[1] && ao[3] < ao[2]) ||                                             //... and the opposite side
+                (ao[2] < ao[1] && ao[3] > ao[2]));
         return revertedNow;
     }
 
-    static constantTrend(ao: any[], market: number) {
-        const bullDirection = ao[2] > ao[1];            //detect latest direction
-        const aoTrendy = market / 5000;                 //threshold for 'trendy'
-        let constantAndStrong : boolean;                       //last ticks follow same trend, strong
+    static crossingZeroDecision(ao: any[], market: number) {
+        const bullDirection = ao[3] > ao[2];            //detect latest direction
+        let result;
         if (bullDirection) {
-            constantAndStrong = ao[2] > (ao[1] + aoTrendy)  && ao[1] > (ao[0] + aoTrendy);
+            //crossed already?
+            if (ao[3] > 0 && ao[2] < 0) {
+                result = true;
+            } else {
+                //would cross zero next?
+                const lastMove = Math.abs(ao[3] - ao[2]);
+                result = ao[3] + lastMove > 0;
+            }
         } else {
-            constantAndStrong = ao[2] < (ao[1] - aoTrendy) && ao[1] < (ao[0] - aoTrendy);
+            //crossed already?
+            if (ao[3] < 0 && ao[2] > 0) {
+                result = true;
+            } else {
+                //would cross zero next?
+                const lastMove = Math.abs(ao[3] - ao[2]);
+                result = ao[3] - lastMove > 0;
+            }
         }
-        return {
-            strong : constantAndStrong,
-            constantTrendAroundCrossingZero: Math.abs(ao[2]) < (market / 1000)
-        }
+        return result;
     }
 
 
