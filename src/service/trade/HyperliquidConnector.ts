@@ -100,7 +100,7 @@ export class HyperliquidConnector {
 
     static marketCloseOrder(ticker, long: boolean, percent: number = 1) {
         return this.getOpenPosition(TRADING_WALLET, ticker.syn).then(position => {
-            if (position) {
+            if (position && (long ? this.positionSide(position) === 'long' : false) ) {
                 return this.getMarket(ticker.syn).then(market => {
                     //const priceDecimals = PERPS_MAX_DECIMALS - ticker.szDecimals - 1;
                     const priceDecimals = market < 1 ? 5 : (market < 10 ? 2 : 0);
@@ -249,6 +249,31 @@ export class HyperliquidConnector {
                 } ;
             });
         })
+    }
+
+    static async considerTakingProfit(tradingPosition: {
+        coin: any;
+        szi?: string;
+        leverage?: { type: "isolated"; value: number; rawUsd: string; } | { type: "cross"; value: number; };
+        entryPx?: string;
+        positionValue?: string;
+        unrealizedPnl: any;
+        returnOnEquity?: string;
+        liquidationPx?: string;
+        marginUsed: any;
+        maxLeverage?: number;
+        cumFunding?: { allTime: string; sinceOpen: string; sinceChange: string; };
+    }) {
+        const unrealizedPnl = tradingPosition.unrealizedPnl;
+        const currentValue = tradingPosition.marginUsed;
+        const totalPortfolio = (await this.getPortfolio(TRADING_WALLET)).portfolio;
+        if (Number(unrealizedPnl) > 0 &&
+            Number(unrealizedPnl) / Number(currentValue) > 0.5 /*50% gain*/ &&
+            Number(currentValue) / Number(totalPortfolio) > 0.15 /*15% of portfolio*/) {
+            console.log(`TRADING: taking profit on ${tradingPosition.coin} position`);
+            await this.marketCloseOrder(TICKERS[tradingPosition.coin],
+                this.positionSide(tradingPosition) === 'long', 0.25);
+        }
     }
 
     static positionSide(position) {

@@ -18,7 +18,7 @@ export class CopyTradingManager {
                     HyperliquidConnector.positionSide(traderPosition) === HyperliquidConnector.positionSide(tradingPosition)) {
                     //both exist, on the same side
                     //console.log(`COPY TRADING: both ${ticker} positions exist, on the same side`);
-                    this.considerTakingProfit(tradingPosition);
+                    HyperliquidConnector.considerTakingProfit(tradingPosition);
                 } else if (traderPosition && tradingPosition &&
                     HyperliquidConnector.positionSide(traderPosition) !== HyperliquidConnector.positionSide(tradingPosition)) {
                     //both exist, BUT on the wrong side
@@ -47,31 +47,6 @@ export class CopyTradingManager {
             }
         });
 
-    }
-
-    private static async considerTakingProfit(tradingPosition: {
-        coin: any;
-        szi?: string;
-        leverage?: { type: "isolated"; value: number; rawUsd: string; } | { type: "cross"; value: number; };
-        entryPx?: string;
-        positionValue?: string;
-        unrealizedPnl: any;
-        returnOnEquity?: string;
-        liquidationPx?: string;
-        marginUsed: any;
-        maxLeverage?: number;
-        cumFunding?: { allTime: string; sinceOpen: string; sinceChange: string; };
-    }) {
-        const unrealizedPnl = tradingPosition.unrealizedPnl;
-        const currentValue = tradingPosition.marginUsed;
-        const totalPortfolio = (await HyperliquidConnector.getPortfolio(WALLET)).portfolio;
-        if (Number(unrealizedPnl) > 0 &&
-            Number(unrealizedPnl) / Number(currentValue) > 0.5 /*50% gain*/ &&
-            Number(currentValue) / Number(totalPortfolio) > 0.15 /*15% of portfolio*/) {
-            console.log(`COPY TRADING: taking profit on ${tradingPosition.coin} position`);
-            await HyperliquidConnector.marketCloseOrder(TICKERS[tradingPosition.coin],
-                HyperliquidConnector.positionSide(tradingPosition) === 'long', 0.25);
-        }
     }
 }
 

@@ -4,11 +4,14 @@ import dotenv from "dotenv";
 
 dotenv.config(); // Load environment variables
 
+const WALLET = process.env.WALLET as `0x${string}`;
+
 
 export interface AOTrend {
     bullTrend: boolean,
     bullSide: boolean,
     trendChange: boolean,
+    trendChangeTwoSticks: boolean,
     values: number[],
     closeToZero: boolean,
     crossingZero: boolean
@@ -38,6 +41,7 @@ export class MarketAdaptor {
                         bullTrend: ao[3] > ao[2],
                         bullSide: ao[3] > 0,
                         trendChange: this.trendChanged(ao),                                             //for trend changed
+                        trendChangeTwoSticks: this.trendChangedTwoTicks(ao),                                             //for trend changed
                         closeToZero: Math.abs(ao[3]) < market / 1000,                                    //for trend changed
 
                         crossingZero: this.crossingZeroDecision(ao, market),                                     //for crossing zero
@@ -67,7 +71,7 @@ export class MarketAdaptor {
             } else {                                                                                        // AO side not same as RSI side
                 console.log(`${ticker}: Action MAYBE required: AO is about (or crossing) zero BUT AO side NOT same as RSI side`);
             }
-        } else if (aoTrend.trendChange && !aoTrend.closeToZero) {                        // AO changes trend
+        } else if ((aoTrend.trendChange || aoTrend.trendChangeTwoSticks) && !aoTrend.closeToZero) {                        // AO changes trend
             if (aoTrend.bullSide && aoTrend.bullTrend &&
                 rsiMetrics.bullSide && !rsiMetrics.over) {                              //on a BULL side, change to BULL trend
                 console.log(`${ticker}: RETRACE: OPEN LONG`);
@@ -83,6 +87,12 @@ export class MarketAdaptor {
                 console.log(`${ticker}: Action required: CLOSE SHORT`);
                 HyperliquidConnector.marketCloseOrder(TICKERS[ticker], false)
             }
+        } else {
+            HyperliquidConnector.getOpenPosition(WALLET, ticker).then(position => {
+                if (position) {
+                    HyperliquidConnector.considerTakingProfit(position)
+                }
+            });
         }
     }
 
@@ -93,6 +103,11 @@ export class MarketAdaptor {
             ((ao[2] > ao[1] && ao[3] < ao[2]) ||                                             //... and the opposite side
                 (ao[2] < ao[1] && ao[3] > ao[2]));
         return revertedNow;
+    }
+
+    static trendChangedTwoTicks(ao: any[]) {
+        return (ao[3] < ao[2] && ao[2] < ao[1] && ao[1] > ao[0]) ||                                             //... and the opposite side
+            (ao[3] > ao[2] && ao[2] > ao[1] && ao[1] < ao[0]);
     }
 
     static crossingZeroDecision(ao: any[], market: number) {
