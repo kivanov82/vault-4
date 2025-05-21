@@ -10,8 +10,7 @@ const WALLET = process.env.WALLET as `0x${string}`;
 export interface AOTrend {
     bullTrend: boolean,
     bullSide: boolean,
-    trendChange: boolean,
-    trendChangeTwoSticks: boolean,
+    trendChange: 'no' | 'suddenSwift' | 'twoStick',
     values: number[],
     closeToZero: boolean,
     crossingZero: boolean
@@ -41,7 +40,6 @@ export class MarketAdaptor {
                         bullTrend: ao[3] > ao[2],
                         bullSide: ao[3] > 0,
                         trendChange: this.trendChanged(ao),                                             //for trend changed
-                        trendChangeTwoSticks: this.trendChangedTwoTicks(ao),                                             //for trend changed
                         closeToZero: Math.abs(ao[3]) < market / 1000,                                    //for trend changed
 
                         crossingZero: this.crossingZeroDecision(ao, market),                                     //for crossing zero
@@ -71,7 +69,7 @@ export class MarketAdaptor {
             } else {                                                                                        // AO side not same as RSI side
                 console.log(`${ticker}: Action MAYBE required: AO is about (or crossing) zero BUT AO side NOT same as RSI side`);
             }
-        } else if ((aoTrend.trendChange || aoTrend.trendChangeTwoSticks) && !aoTrend.closeToZero) {                        // AO changes trend
+        } else if (aoTrend.trendChange != 'no'  && !aoTrend.closeToZero) {                        // AO changes trend
             if (aoTrend.bullSide && aoTrend.bullTrend &&
                 rsiMetrics.bullSide && !rsiMetrics.over) {                              //on a BULL side, change to BULL trend
                 console.log(`${ticker}: RETRACE: OPEN LONG`);
@@ -99,15 +97,16 @@ export class MarketAdaptor {
     static trendChanged(ao: any[]) {
         const lastDeviation = Math.abs(ao[2] - ao[1]);
         const currentDeviation = Math.abs(ao[3] - ao[2]);
-        const revertedNow = currentDeviation > lastDeviation &&                      //the threshold is higher than before ...
+        if (currentDeviation > lastDeviation &&                      //the threshold is higher than before ...
             ((ao[2] > ao[1] && ao[3] < ao[2]) ||                                             //... and the opposite side
-                (ao[2] < ao[1] && ao[3] > ao[2]));
-        return revertedNow;
-    }
-
-    static trendChangedTwoTicks(ao: any[]) {
-        return (ao[3] < ao[2] && ao[2] < ao[1] && ao[1] > ao[0]) ||                                             //... and the opposite side
-            (ao[3] > ao[2] && ao[2] > ao[1] && ao[1] < ao[0]);
+                (ao[2] < ao[1] && ao[3] > ao[2]))) {
+            return 'suddenSwift';
+        } else if ((ao[3] < ao[2] && ao[2] < ao[1] && ao[1] > ao[0]) ||                                             //... and the opposite side
+            (ao[3] > ao[2] && ao[2] > ao[1] && ao[1] < ao[0])) {
+            return 'twoStick';
+        } else {
+            return 'no';
+        }
     }
 
     static crossingZeroDecision(ao: any[], market: number) {
@@ -117,7 +116,7 @@ export class MarketAdaptor {
             //crossed already?
             if (ao[3] > 0 && ao[2] < 0) {
                 result = true;
-            } else {
+            } else if (ao[3] < 0){
                 //would cross zero next?
                 const lastMove = Math.abs(ao[3] - ao[2]);
                 result = ao[3] + lastMove > 0;
@@ -126,7 +125,7 @@ export class MarketAdaptor {
             //crossed already?
             if (ao[3] < 0 && ao[2] > 0) {
                 result = true;
-            } else {
+            } else if (ao[3] > 0){
                 //would cross zero next?
                 const lastMove = Math.abs(ao[3] - ao[2]);
                 result = ao[3] - lastMove > 0;
