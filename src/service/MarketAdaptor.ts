@@ -42,7 +42,7 @@ export class MarketAdaptor {
                         trendChange: this.trendChanged(ao),                                             //for trend changed
                         closeToZero: Math.abs(ao[3]) < market / 1000,                                    //for trend changed
 
-                        crossingZero: this.crossingZeroDecision(ao, market),                                     //for crossing zero
+                        crossingZero: this.crossingZeroDecision(ao),                                     //for crossing zero
                         values: ao
                     };
                     const rsiMetrics: RSIMetrics = {
@@ -109,29 +109,31 @@ export class MarketAdaptor {
         }
     }
 
-    static crossingZeroDecision(ao: any[], market: number) {
+    static crossingZeroDecision(ao: any[]) {
         const bullDirection = ao[3] > ao[2];            //detect latest direction
-        let result;
         if (bullDirection) {
             //crossed already?
             if (ao[3] > 0 && ao[2] < 0) {
-                result = true;
+                return true;
             } else if (ao[3] < 0){
                 //would cross zero next?
                 const lastMove = Math.abs(ao[3] - ao[2]);
-                result = ao[3] + lastMove > 0;
+                return ao[3] + lastMove > 0;
+            } else {
+                return false;
             }
         } else {
             //crossed already?
             if (ao[3] < 0 && ao[2] > 0) {
-                result = true;
+                return true;
             } else if (ao[3] > 0){
                 //would cross zero next?
                 const lastMove = Math.abs(ao[3] - ao[2]);
-                result = ao[3] - lastMove > 0;
+                return ao[3] - lastMove < 0;
+            } else {
+                return false;
             }
         }
-        return result;
     }
 
 
