@@ -59,7 +59,7 @@ export class CopyTradingManager {
                     if (data && 'fills' in data) {
                         const fills = data.fills;
                         const { coin, side } = fills[0];
-                        if (TICKERS[coin]) {
+                        if (COPY_TICKERS[coin]) {
                             const tradingPosition = await HyperliquidConnector.getOpenPosition(WALLET, coin);
                             if (tradingPosition &&
                                 ((side === 'B' && HyperliquidConnector.positionSide(tradingPosition) === 'long') ||
@@ -70,14 +70,14 @@ export class CopyTradingManager {
                                     side === 'B' && HyperliquidConnector.positionSide(tradingPosition) === 'short')) {
                                 console.log(`COPY TRADING REACTION: both ${coin} positions exist, BUT on opposite sides`);
                                 //close
-                                await HyperliquidConnector.marketCloseOrder(coin,
+                                await HyperliquidConnector.marketCloseOrder(TICKERS[coin],
                                     HyperliquidConnector.positionSide(tradingPosition) === 'long');
                                 //open new
-                                await HyperliquidConnector.openOrder(coin, side === 'B');
+                                await HyperliquidConnector.openOrder(TICKERS[coin], side === 'B');
                             } else if (!tradingPosition) {
                                 //open OUR position
                                 console.log(`COPY TRADING REACTION: open ${coin} position`);
-                                await HyperliquidConnector.openOrder(coin, side === 'B');
+                                await HyperliquidConnector.openOrder(TICKERS[coin], side === 'B');
                             }
                         }
                     }
