@@ -95,13 +95,14 @@ export class MarketAdaptor {
     }
 
     static trendChanged(ao: any[]) {
+        const lastBeforeLastDeviation = Math.abs(ao[1] - ao[0]);
         const lastDeviation = Math.abs(ao[2] - ao[1]);
         const currentDeviation = Math.abs(ao[3] - ao[2]);
-        if (currentDeviation > lastDeviation &&                      //the threshold is higher than before ...
-            ((ao[2] > ao[1] && ao[3] < ao[2]) ||                                             //... and the opposite side
+        if (currentDeviation > lastDeviation &&                                             //the threshold is higher than before ...
+            ((ao[2] > ao[1] && ao[3] < ao[2]) ||                                            //... and the opposite side
                 (ao[2] < ao[1] && ao[3] > ao[2]))) {
             return 'suddenSwift';
-        } else if ((ao[3] < ao[2] && ao[2] < ao[1] && ao[1] > ao[0]) ||                                             //... and the opposite side
+        } else if ((ao[3] < ao[2] && ao[2] < ao[1] && ao[1] > ao[0]) ||
             (ao[3] > ao[2] && ao[2] > ao[1] && ao[1] < ao[0])) {
             return 'twoStick';
         } else {

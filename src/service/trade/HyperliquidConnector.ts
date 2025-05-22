@@ -10,7 +10,6 @@ const TRADING_PKEY = process.env.WALLET_PK as `0x${string}`;
 
 const SL_PERCENT = 60;  // %
 const ORDER_SIZE = 0.3;
-const PERPS_MAX_DECIMALS = 6
 
 export const TICKERS = {
     BTC: {
@@ -30,6 +29,12 @@ export const TICKERS = {
         id: 5,
         leverage: 20,
         szDecimals: 2,
+    },
+    SUI: {
+        syn: 'SUI',
+        id: 14,
+        leverage: 10,
+        szDecimals: 1,
     },
     kPEPE: {
         syn: 'kPEPE',

@@ -1,4 +1,5 @@
 import dotenv from "dotenv";
+import * as hl from "@nktkas/hyperliquid";
 import {HyperliquidConnector, TICKERS} from "./HyperliquidConnector";
 
 dotenv.config(); // Load environment variables
@@ -46,6 +47,44 @@ export class CopyTradingManager {
                 //this.scanTraders();
             }
         });
+
+    }
+
+    static watchTraders() {
+        const transport = new hl.WebSocketTransport();
+        const client = new hl.EventClient({ transport });
+        client.userEvents({user: COPY_TRADER},
+            async (data) => {
+                try {
+                    if (data && 'fills' in data) {
+                        const fills = data.fills;
+                        const { coin, side } = fills[0];
+                        if (TICKERS[coin]) {
+                            const tradingPosition = await HyperliquidConnector.getOpenPosition(WALLET, coin);
+                            if (tradingPosition &&
+                                ((side === 'B' && HyperliquidConnector.positionSide(tradingPosition) === 'long') ||
+                                side === 'A' && HyperliquidConnector.positionSide(tradingPosition) === 'short')) {
+                                //console.log(`COPY TRADING REACTION: both ${coin} positions exist, on the same side`);
+                            } else if (tradingPosition &&
+                                ((side === 'A' && HyperliquidConnector.positionSide(tradingPosition) === 'long') ||
+                                    side === 'B' && HyperliquidConnector.positionSide(tradingPosition) === 'short')) {
+                                console.log(`COPY TRADING REACTION: both ${coin} positions exist, BUT on opposite sides`);
+                                //close
+                                await HyperliquidConnector.marketCloseOrder(coin,
+                                    HyperliquidConnector.positionSide(tradingPosition) === 'long');
+                                //open new
+                                await HyperliquidConnector.openOrder(coin, side === 'B');
+                            } else if (!tradingPosition) {
+                                //open OUR position
+                                console.log(`COPY TRADING REACTION: open ${coin} position`);
+                                await HyperliquidConnector.openOrder(coin, side === 'B');
+                            }
+                        }
+                    }
+                } catch (error) {
+                    console.error('Error in userEvents subscription:', error);
+                }
+            });
 
     }
 }
