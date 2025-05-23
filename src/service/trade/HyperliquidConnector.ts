@@ -9,6 +9,8 @@ const TRADING_WALLET = process.env.WALLET as `0x${string}`;
 const TRADING_PKEY = process.env.WALLET_PK as `0x${string}`;
 
 const SL_PERCENT = 60;  // %
+const TP_PERCENT = 50;  // %
+const TP_SIZE = 30;  // %
 const ORDER_SIZE = 0.3;
 
 export const TICKERS = {
@@ -105,7 +107,7 @@ export class HyperliquidConnector {
 
     static marketCloseOrder(ticker, long: boolean, percent: number = 1) {
         return this.getOpenPosition(TRADING_WALLET, ticker.syn).then(position => {
-            if (position && (long ? this.positionSide(position) === 'long' : false) ) {
+            if (position && ((this.positionSide(position) === 'long' && long) || (this.positionSide(position) === 'short' && !long))) {
                 return this.getMarket(ticker.syn).then(market => {
                     //const priceDecimals = PERPS_MAX_DECIMALS - ticker.szDecimals - 1;
                     const priceDecimals = market < 1 ? 5 : (market < 10 ? 2 : 0);
@@ -157,13 +159,20 @@ export class HyperliquidConnector {
                     const orderInstantPrice = long ? (market * 101 / 100) : (market * 99 / 100);
                     const slPrice = long ? (market * (100 - (SL_PERCENT / ticker.leverage)) / 100) : (market * (100 + (SL_PERCENT / ticker.leverage)) / 100);
                     const slInstantPrice = long ? (slPrice * 100.01 / 100) : (slPrice * 99.99 / 100);
+                    const tpPrice = long ? (market * (100 + (TP_PERCENT / ticker.leverage)) / 100) : (market * (100 - (TP_PERCENT / ticker.leverage)) / 100);
+                    const tpInstantPrice = long ? (tpPrice * 100.01 / 100) : (tpPrice * 99.99 / 100);
                     const sizeInAsset = portfolio.available * ORDER_SIZE;
                     const orderSize = (sizeInAsset * ticker.leverage)/ market;
+                    const tpOrderSize = (sizeInAsset * ticker.leverage * (TP_SIZE / 100))/ market;
 
                     const orderInstantPriceString = orderInstantPrice.toFixed(priceDecimals).toString();
                     const slPriceString = slPrice.toFixed(priceDecimals).toString();
                     const slInstantPriceString = slInstantPrice.toFixed(priceDecimals).toString();
+                    const tpPriceString = tpPrice.toFixed(priceDecimals).toString();
+                    const tpInstantPriceString = tpInstantPrice.toFixed(priceDecimals).toString();
+
                     const orderSizeString = orderSize.toFixed(ticker.szDecimals).toString();
+                    const tpOrderSizeString = tpOrderSize.toFixed(ticker.szDecimals).toString();
 
                     return this.getClients().wallet.order({
                         orders: [
@@ -192,6 +201,21 @@ export class HyperliquidConnector {
                                         isMarket: true,
                                         triggerPx: slPriceString,
                                         tpsl: "sl"
+                                    },
+                                },
+                            },
+                            //TP
+                            {
+                                a: ticker.id,
+                                b: !long,
+                                p: tpInstantPriceString,
+                                s: tpOrderSizeString,
+                                r: true,   // reduce-only
+                                t: {
+                                    trigger: {
+                                        isMarket: true,
+                                        triggerPx: tpPriceString,
+                                        tpsl: "tp"
                                     },
                                 },
                             }
@@ -273,11 +297,11 @@ export class HyperliquidConnector {
         const currentValue = tradingPosition.marginUsed;
         const totalPortfolio = (await this.getPortfolio(TRADING_WALLET)).portfolio;
         if (Number(unrealizedPnl) > 0 &&
-            Number(unrealizedPnl) / Number(currentValue) > 0.5 /*50% gain*/ &&
+            Number(unrealizedPnl) / Number(currentValue) > 0.75 /*50% gain*/ &&
             Number(currentValue) / Number(totalPortfolio) > 0.15 /*15% of portfolio*/) {
             console.log(`TRADING: taking profit on ${tradingPosition.coin} position`);
             await this.marketCloseOrder(TICKERS[tradingPosition.coin],
-                this.positionSide(tradingPosition) === 'long', 0.25);
+                this.positionSide(tradingPosition) === 'long', 0.3);
         }
     }
 
