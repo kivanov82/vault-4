@@ -53,6 +53,9 @@ export class CopyTradingManager {
     static watchTraders() {
         const transport = new hl.WebSocketTransport();
         const client = new hl.EventClient({ transport });
+        transport.socket.addEventListener("open", () => {
+            console.log("Connection opened. Reconnect?");
+        });
         client.userEvents({user: COPY_TRADER},
             async (data) => {
                 try {
@@ -60,6 +63,7 @@ export class CopyTradingManager {
                         const fills = data.fills;
                         const { coin, side } = fills[0];
                         if (COPY_TICKERS[coin]) {
+                            console.log(`COPY TRADING: new trade ${coin} ${side}`);
                             const tradingPosition = await HyperliquidConnector.getOpenPosition(WALLET, coin);
                             if (tradingPosition &&
                                 ((side === 'B' && HyperliquidConnector.positionSide(tradingPosition) === 'long') ||

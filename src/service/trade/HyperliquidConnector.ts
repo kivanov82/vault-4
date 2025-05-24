@@ -297,7 +297,7 @@ export class HyperliquidConnector {
         const currentValue = tradingPosition.marginUsed;
         const totalPortfolio = (await this.getPortfolio(TRADING_WALLET)).portfolio;
         if (Number(unrealizedPnl) > 0 &&
-            Number(unrealizedPnl) / Number(currentValue) > 0.75 /*50% gain*/ &&
+            Number(unrealizedPnl) / Number(currentValue) > 0.75 /*75% gain*/ &&
             Number(currentValue) / Number(totalPortfolio) > 0.15 /*15% of portfolio*/) {
             console.log(`TRADING: taking profit on ${tradingPosition.coin} position`);
             await this.marketCloseOrder(TICKERS[tradingPosition.coin],

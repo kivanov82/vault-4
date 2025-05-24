@@ -120,6 +120,10 @@ export class MarketAdaptor {
                 //would cross zero next?
                 const lastMove = Math.abs(ao[3] - ao[2]);
                 return ao[3] + lastMove > 0;
+            } else if (ao[2] > 0 && ao[3] > 0) {
+                //crossed recently and pushing?
+                const minBeforeCrossing = Math.max(Math.abs(ao[1]), Math.abs(ao[0]));
+                return ao[3] > minBeforeCrossing;
             } else {
                 return false;
             }
@@ -131,6 +135,10 @@ export class MarketAdaptor {
                 //would cross zero next?
                 const lastMove = Math.abs(ao[3] - ao[2]);
                 return ao[3] - lastMove < 0;
+            } else if (ao[2] < 0 && ao[3] < 0) {
+                //crossed recently and pushing?
+                const maxBeforeCrossing = Math.max(Math.abs(ao[1]), Math.abs(ao[0]));
+                return ao[3] < -maxBeforeCrossing;
             } else {
                 return false;
             }
