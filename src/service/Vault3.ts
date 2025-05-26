@@ -11,9 +11,9 @@ export class Vault3 {
             MarketAdaptor.scanMarkets('1h', 'ETH', 40000);
             MarketAdaptor.scanMarkets('1h', 'XRP', 60000);
         });
-        const copyTradingJob = schedule.scheduleJob("*/30 * * * *", () => {
-            CopyTradingManager.scanTraders();
-        });
+        //const copyTradingJob = schedule.scheduleJob("*/30 * * * *", () => {
+        //    CopyTradingManager.scanTraders();
+        //});
         CopyTradingManager.watchTraders();
         /*schedule.scheduleJob("*!/10 * * * *", () => {
             //scan for high volatility

@@ -51,10 +51,18 @@ export class CopyTradingManager {
     }
 
     static watchTraders() {
-        const transport = new hl.WebSocketTransport();
+        const transport = new hl.WebSocketTransport({
+            reconnect: {
+                shouldReconnect: event => {
+                    // Always attempt to reconnect on close events
+                    console.log("COPY TRADING: Close event received, attempting to reconnect...");
+                    return true;
+                }
+            }
+        });
         const client = new hl.EventClient({ transport });
         transport.socket.addEventListener("open", () => {
-            console.log("Connection opened. Reconnect?");
+            console.log("COPY TRADING: Connection opened.");
         });
         client.userEvents({user: COPY_TRADER},
             async (data) => {
@@ -68,16 +76,16 @@ export class CopyTradingManager {
                             if (tradingPosition &&
                                 ((side === 'B' && HyperliquidConnector.positionSide(tradingPosition) === 'long') ||
                                 side === 'A' && HyperliquidConnector.positionSide(tradingPosition) === 'short')) {
-                                //console.log(`COPY TRADING REACTION: both ${coin} positions exist, on the same side`);
+                                console.log(`COPY TRADING REACTION: both ${coin} positions exist, on the same side`);
                             } else if (tradingPosition &&
                                 ((side === 'A' && HyperliquidConnector.positionSide(tradingPosition) === 'long') ||
                                     side === 'B' && HyperliquidConnector.positionSide(tradingPosition) === 'short')) {
                                 console.log(`COPY TRADING REACTION: both ${coin} positions exist, BUT on opposite sides`);
                                 //close
-                                await HyperliquidConnector.marketCloseOrder(TICKERS[coin],
+                                HyperliquidConnector.marketCloseOrder(TICKERS[coin],
                                     HyperliquidConnector.positionSide(tradingPosition) === 'long');
                                 //open new
-                                await HyperliquidConnector.openOrder(TICKERS[coin], side === 'B');
+                                HyperliquidConnector.openOrder(TICKERS[coin], side === 'B');
                             } else if (!tradingPosition) {
                                 //open OUR position
                                 console.log(`COPY TRADING REACTION: open ${coin} position`);
@@ -91,5 +99,6 @@ export class CopyTradingManager {
             });
 
     }
+
 }
 
