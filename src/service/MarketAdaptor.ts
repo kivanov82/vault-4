@@ -13,6 +13,7 @@ export interface AOTrend {
     trendChange: 'no' | 'suddenSwift' | 'twoStick',
     values: number[],
     closeToZero: boolean,
+    zoomOutConstant: boolean,
     crossingZero: boolean
 }
 
@@ -41,6 +42,7 @@ export class MarketAdaptor {
                         bullSide: ao[3] > 0,
                         trendChange: this.trendChanged(ao),                                             //for trend changed
                         closeToZero: Math.abs(ao[3]) < market / 1000,                                    //for trend changed
+                        zoomOutConstant: this.fourSticksConstant(ao),
 
                         crossingZero: this.crossingZeroDecision(ao),                                     //for crossing zero
                         values: ao
@@ -75,38 +77,67 @@ export class MarketAdaptor {
                 console.log(`${ticker}: RETRACE: OPEN LONG`);
                 HyperliquidConnector.openOrder(TICKERS[ticker], true);
             } else if (aoTrend.bullSide && !aoTrend.bullTrend) {                                    //on a BULL side, change to BEAR trend
-                console.log(`${ticker}: Action required: CLOSE LONG`);
-                HyperliquidConnector.marketCloseOrder(TICKERS[ticker], true)
+                if (aoTrend.zoomOutConstant) {
+                    console.log(`${ticker}: Trend changed BUT overall is same direction`);
+                } else {
+                    console.log(`${ticker}: Action required: CLOSE LONG`);
+                    HyperliquidConnector.marketCloseOrder(TICKERS[ticker], true)
+                }
             } else if (!aoTrend.bullSide && !aoTrend.bullTrend &&
                 !rsiMetrics.bullSide && !rsiMetrics.over) {                             //on a BEAR side, change to BEAR trend
                 console.log(`${ticker}:RETRACE: OPEN SHORT`);
                 HyperliquidConnector.openOrder(TICKERS[ticker], false);
             } else if (!aoTrend.bullSide && aoTrend.bullTrend) {                                    //on a BULL side, change to BEAR trend
-                console.log(`${ticker}: Action required: CLOSE SHORT`);
-                HyperliquidConnector.marketCloseOrder(TICKERS[ticker], false)
+                if (aoTrend.zoomOutConstant) {
+                    console.log(`${ticker}: Trend changed BUT overall is same direction`);
+                } else {
+                    console.log(`${ticker}: Action required: CLOSE SHORT`);
+                    HyperliquidConnector.marketCloseOrder(TICKERS[ticker], false)
+                }
             }
         } else {
             HyperliquidConnector.getOpenPosition(WALLET, ticker).then(position => {
                 if (position) {
                     HyperliquidConnector.considerTakingProfit(position)
+
+                    //last check: if the trend is constant, but we still have the opposite position open
+                    const positionSide = HyperliquidConnector.positionSide(position);
+                    if (aoTrend.bullTrend && aoTrend.zoomOutConstant && positionSide === 'short') {
+                        console.log(`${ticker}: MISSED: CLOSE SHORT`);
+                        HyperliquidConnector.marketCloseOrder(TICKERS[ticker], false)
+                    } else if (!aoTrend.bullTrend && aoTrend.zoomOutConstant && positionSide === 'long') {
+                        console.log(`${ticker}: MISSED: CLOSE LONG`);
+                        HyperliquidConnector.marketCloseOrder(TICKERS[ticker], true)
+                    }
                 }
             });
         }
     }
 
     static trendChanged(ao: any[]) {
-        const lastBeforeLastDeviation = Math.abs(ao[1] - ao[0]);
         const lastDeviation = Math.abs(ao[2] - ao[1]);
         const currentDeviation = Math.abs(ao[3] - ao[2]);
+        const bullDirection = ao[3] > ao[2];
         if (currentDeviation > lastDeviation &&                                             //the threshold is higher than before ...
-            ((ao[2] > ao[1] && ao[3] < ao[2]) ||                                            //... and the opposite side
-                (ao[2] < ao[1] && ao[3] > ao[2]))) {
+            ((ao[2] > ao[1] && !bullDirection) ||                                            //... and the opposite side
+                (ao[2] < ao[1] && bullDirection))) {
             return 'suddenSwift';
-        } else if ((ao[3] < ao[2] && ao[2] < ao[1] && ao[1] > ao[0]) ||
-            (ao[3] > ao[2] && ao[2] > ao[1] && ao[1] < ao[0])) {
+        } else if ((!bullDirection && ao[2] < ao[1] && ao[1] > ao[0]) ||
+            (bullDirection && ao[2] > ao[1] && ao[1] < ao[0])) {
             return 'twoStick';
         } else {
             return 'no';
+        }
+    }
+
+    static fourSticksConstant(ao: any[]) {
+        const bullDirection = ao[3] > ao[2];
+        if (bullDirection && ao[3] > ao[0]) {                                               // Zoom out: Overall 4 stick the same direction
+            return true;
+        } else if (!bullDirection && ao[3] < ao[0]) {
+            return true;
+        } else {
+            return false;
         }
     }
 
