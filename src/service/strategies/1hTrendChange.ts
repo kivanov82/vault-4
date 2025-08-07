@@ -1,5 +1,5 @@
 import Taapi from "taapi";
-import {TICKERS, HyperliquidConnector} from "./trade/HyperliquidConnector";
+import {TICKERS, HyperliquidConnector} from "../trade/HyperliquidConnector";
 import dotenv from "dotenv";
 
 dotenv.config(); // Load environment variables
@@ -26,7 +26,7 @@ export interface RSIMetrics {
 const taapi = new Taapi(process.env.TAAPI_SECRET);
 
 
-export class MarketAdaptor {
+export class oneHTrendChange {
 
     static scanMarkets(interval: string, ticker: string, delay: number) {
         setTimeout(() => {
@@ -71,28 +71,28 @@ export class MarketAdaptor {
             } else {                                                                                        // AO side not same as RSI side
                 console.log(`${ticker}: Action MAYBE required: AO is about (or crossing) zero BUT AO side NOT same as RSI side`);
             }
-        } else if (aoTrend.trendChange != 'no'  && !aoTrend.closeToZero) {                        // AO changes trend
+        } else if (aoTrend.trendChange != 'no'  && !aoTrend.closeToZero) {                          // AO changes trend
             if (aoTrend.bullSide && aoTrend.bullTrend &&
-                rsiMetrics.bullSide && !rsiMetrics.over) {                              //on a BULL side, change to BULL trend
+                rsiMetrics.bullSide && !rsiMetrics.over) {                                          //on a BULL side, change to BULL trend
                 console.log(`${ticker}: RETRACE: OPEN LONG`);
                 HyperliquidConnector.openOrder(TICKERS[ticker], true);
             } else if (aoTrend.bullSide && !aoTrend.bullTrend) {                                    //on a BULL side, change to BEAR trend
                 if (aoTrend.zoomOutConstant) {
-                    console.log(`${ticker}: Trend changed BUT overall is same direction`);
+                    console.log(`${ticker}: Trend changed to ` + aoTrend.bullTrend ? 'bull' : 'bear' + `BUT overall is same direction`);
                 } else {
                     console.log(`${ticker}: Action required: CLOSE LONG`);
-                    HyperliquidConnector.marketCloseOrder(TICKERS[ticker], true)
+                    //HyperliquidConnector.marketCloseOrder(TICKERS[ticker], true)
                 }
             } else if (!aoTrend.bullSide && !aoTrend.bullTrend &&
-                !rsiMetrics.bullSide && !rsiMetrics.over) {                             //on a BEAR side, change to BEAR trend
+                !rsiMetrics.bullSide && !rsiMetrics.over) {                                         //on a BEAR side, change to BEAR trend
                 console.log(`${ticker}:RETRACE: OPEN SHORT`);
                 HyperliquidConnector.openOrder(TICKERS[ticker], false);
-            } else if (!aoTrend.bullSide && aoTrend.bullTrend) {                                    //on a BULL side, change to BEAR trend
+            } else if (!aoTrend.bullSide && aoTrend.bullTrend) {                                    //on a BEAR side, change to BULL trend
                 if (aoTrend.zoomOutConstant) {
-                    console.log(`${ticker}: Trend changed BUT overall is same direction`);
+                    console.log(`${ticker}: Trend changed to ` + aoTrend.bullTrend ? 'bull' : 'bear' + ` BUT overall is same direction`);
                 } else {
                     console.log(`${ticker}: Action required: CLOSE SHORT`);
-                    HyperliquidConnector.marketCloseOrder(TICKERS[ticker], false)
+                    //HyperliquidConnector.marketCloseOrder(TICKERS[ticker], false)
                 }
             }
         } else {
@@ -104,10 +104,10 @@ export class MarketAdaptor {
                     const positionSide = HyperliquidConnector.positionSide(position);
                     if (aoTrend.bullTrend && aoTrend.zoomOutConstant && positionSide === 'short') {
                         console.log(`${ticker}: MISSED: CLOSE SHORT`);
-                        HyperliquidConnector.marketCloseOrder(TICKERS[ticker], false)
+                        //HyperliquidConnector.marketCloseOrder(TICKERS[ticker], false)
                     } else if (!aoTrend.bullTrend && aoTrend.zoomOutConstant && positionSide === 'long') {
                         console.log(`${ticker}: MISSED: CLOSE LONG`);
-                        HyperliquidConnector.marketCloseOrder(TICKERS[ticker], true)
+                        //HyperliquidConnector.marketCloseOrder(TICKERS[ticker], true)
                     }
                 }
             });

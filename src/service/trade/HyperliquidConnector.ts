@@ -1,17 +1,16 @@
 import * as hl from "@nktkas/hyperliquid";
 import {privateKeyToAccount} from "viem/accounts";
 import dotenv from "dotenv";
-import {http} from "viem";
 
 dotenv.config(); // Load environment variables
 
 const TRADING_WALLET = process.env.WALLET as `0x${string}`;
 const TRADING_PKEY = process.env.WALLET_PK as `0x${string}`;
 
-const SL_PERCENT = 60;  // %
-const TP_PERCENT = 50;  // %
-const TP_SIZE = 30;  // %
-const ORDER_SIZE = 0.3;
+const SL_PERCENT = 20;  // %
+const TP_PERCENT = 30;  // %
+const TP_SIZE = 100;  // %
+const ORDER_SIZE = 0.5;
 
 export const TICKERS = {
     BTC: {
@@ -144,11 +143,8 @@ export class HyperliquidConnector {
 
     static openOrder(ticker, long: boolean) {
         return this.getOpenPosition(TRADING_WALLET, ticker.syn).then((position) => {
-            if (position && this.positionSide(position) === 'long' && long) {
-                console.log('LONG Position already exists');
-                return;
-            } else if (position && this.positionSide(position) === 'short' && !long) {
-                console.log('SHORT Position already exists');
+            if (position) {
+                console.log('Position already exists');
                 return;
             }
             return this.getPortfolio(TRADING_WALLET).then(portfolio => {
