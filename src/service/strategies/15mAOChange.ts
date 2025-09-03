@@ -4,9 +4,6 @@ import dotenv from "dotenv";
 
 dotenv.config(); // Load environment variables
 
-const WALLET = process.env.WALLET as `0x${string}`;
-
-
 export interface AOTrend {
     bullTrend: boolean,
     bullSide: boolean,

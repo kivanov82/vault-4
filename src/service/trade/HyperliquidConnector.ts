@@ -7,10 +7,10 @@ dotenv.config(); // Load environment variables
 const TRADING_WALLET = process.env.WALLET as `0x${string}`;
 const TRADING_PKEY = process.env.WALLET_PK as `0x${string}`;
 
-const SL_PERCENT = 20;  // %
-const TP_PERCENT = 30;  // %
+const SL_PERCENT = 15;  // %
+const TP_PERCENT = 20;  // %
 const TP_SIZE = 100;  // %
-const ORDER_SIZE = 0.5;
+const ORDER_SIZE = 0.25;
 
 export const TICKERS = {
     BTC: {
