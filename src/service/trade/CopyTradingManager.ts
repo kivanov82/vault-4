@@ -60,7 +60,7 @@ export class CopyTradingManager {
                 }
             }
         });
-        const client = new hl.EventClient({ transport });
+        const client = new hl.SubscriptionClient({ transport });
         transport.socket.addEventListener("open", () => {
             console.log("COPY TRADING: Connection opened.");
         });

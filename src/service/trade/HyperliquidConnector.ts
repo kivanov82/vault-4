@@ -10,7 +10,7 @@ const TRADING_PKEY = process.env.WALLET_PK as `0x${string}`;
 const SL_PERCENT = 15;  // %
 const TP_PERCENT = 20;  // %
 const TP_SIZE = 100;  // %
-const ORDER_SIZE = 0.25;
+const ORDER_SIZE = 0.3;
 
 export const TICKERS = {
     BTC: {
@@ -253,6 +253,16 @@ export class HyperliquidConnector {
         });
     }
 
+    static candleSnapshot15Min(ticker, count) {
+        return this.getClients().public.candleSnapshot({
+            coin: ticker,
+            interval: "15m",
+            startTime: Date.now() - 1000 * 60 * (15 * count - 3)
+        }).then(candles => {
+            return candles;
+        });
+    }
+
     static getOrders() {
         return this.getClients().public.userFills({user: TRADING_WALLET, aggregateByTime: true}).then(orders => {
             console.log(orders);
@@ -317,8 +327,8 @@ export class HyperliquidConnector {
             }
         });
         const viemAccount = privateKeyToAccount(TRADING_PKEY);
-        const viemClient = new hl.WalletClient({wallet: viemAccount, transport});
-        const client = new hl.PublicClient({transport});
+        const viemClient = new hl.ExchangeClient({wallet: viemAccount, transport});
+        const client = new hl.InfoClient({transport});
         return {
             public: client,
             wallet: viemClient
