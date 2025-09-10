@@ -218,7 +218,7 @@ export class HyperliquidConnector {
                         ],
                         grouping: "normalTpsl",
                     }).then((result) => {
-                        console.log(result.response);
+                        console.log(result.response.data);
                     }).catch(error => {
                         console.error(error)
                     });

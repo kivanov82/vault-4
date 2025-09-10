@@ -9,7 +9,7 @@ export interface IndicatorRow {
 }
 
 export interface SignalResult {
-    action: "buy" | "sell";
+    action: "buy" | "sell" | "hold";
     confidence: number; // 0..100
     debug?: Record<string, any>; // optional: remove in prod
 }
@@ -96,7 +96,7 @@ export function getSignal(
     if (rsiVal >= 70) rsiReg = -18;        // overbought
     else if (rsiVal >= 60) rsiReg = -4;    // stretched
     else if (rsiVal >= 45 && rsiVal <= 60) rsiReg = 10; // healthy
-    else if (rsiVal <= 30) rsiReg = 14;    // oversold bounce potential
+    else if (rsiVal <= 30) rsiReg = 18;    // oversold bounce potential
     else rsiReg = 2;                       // neutral-ish
 
     feats.rsiReg = rsiReg;
@@ -134,9 +134,9 @@ export function getSignal(
     // ---------- convert score to decision ----------
     // Calibrated thresholds (conservative because TP/SL = +1% / -0.5% requires ~33% win-rate)
     // We require stronger evidence for BUY due to asymmetry (downs often faster).
-    let action: "buy" | "sell" = "sell";
-    if (score >= 20) action = "buy";     // decent confluence
-    if (score <= -10) action = "sell";   // default; bearish or weak confluence
+    let action: "buy" | "sell" | "hold" = "hold";;
+    if (score >= 18) action = "buy";     // decent confluence
+    if (score <= -5) action = "sell";   // default; bearish or weak confluence
 
     // Confidence mapping (0..100) with softclip
     const softclip = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x));

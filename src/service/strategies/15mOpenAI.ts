@@ -65,8 +65,11 @@ export class openAI {
   }
 
   static assertActionRequired(ticker: string, signal : SignalResult): void {
-    console.log(`${ticker}:`, Object.entries(signal).map(([key, value]) => `${key}=${value}`).join(', '));
-    if (signal.confidence > 50) {
+    console.log(`${ticker}:`,
+        Object.entries(signal).map(([key, value]) => `${key}=${value}`).join(', '),
+        Object.entries(signal.debug).map(([key, value]) => `${key}=${value}`).join(', '));
+    //TODO if signal.confidence > 80 -> reverse position if exists
+    if (signal.confidence > 60) {
       if (signal.action == 'sell') {                                    //on a BULL side, change to BEAR trend
         console.log(`${ticker}: Action required: OPEN SHORT`);
         HyperliquidConnector.openOrder(TICKERS[ticker], false);
