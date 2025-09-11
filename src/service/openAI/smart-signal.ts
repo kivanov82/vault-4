@@ -93,10 +93,10 @@ export function getSignal(
     // 2) RSI regime (+ slope)
     const rsiVal = rsi[9];
     let rsiReg = 0;
-    if (rsiVal >= 70) rsiReg = -18;        // overbought
+    if (rsiVal >= 70) rsiReg = -24;        // overbought
     else if (rsiVal >= 60) rsiReg = -4;    // stretched
     else if (rsiVal >= 45 && rsiVal <= 60) rsiReg = 10; // healthy
-    else if (rsiVal <= 30) rsiReg = 18;    // oversold bounce potential
+    else if (rsiVal <= 30) rsiReg = 24;    // oversold bounce potential
     else rsiReg = 2;                       // neutral-ish
 
     feats.rsiReg = rsiReg;
@@ -105,10 +105,10 @@ export function getSignal(
     // 3) SRSI level + directional bias (crosses)
     const s = srsi[9];
     let srsiReg = 0;
-    if (s >= 90) srsiReg = -18;            // very overbought
-    else if (s >= 80) srsiReg = -10;
-    else if (s <= 10) srsiReg = 18;        // very oversold
-    else if (s <= 20) srsiReg = 10;
+    if (s >= 90) srsiReg = -24;            // very overbought
+    else if (s >= 80) srsiReg = -14;
+    else if (s <= 10) srsiReg = 24;        // very oversold
+    else if (s <= 20) srsiReg = 14;
     else if (s >= 40 && s <= 60) srsiReg = 6;  // mid rising often constructive
     else srsiReg = 2;
 
