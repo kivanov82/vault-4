@@ -16,6 +16,7 @@ export class Vault3 {
             //fifteenMinAOChange.scanMarkets('15m', 'ETH', 10000);
             //MarketAdaptor.scanMarkets('1h', 'XRP', 60000);
             openAI.scanMarkets('15m', 'ETH', 10000);
+            openAI.scanMarkets('15m', 'BTC', 40000);
         });
         /*schedule.scheduleJob("*!/30 * * * *", () => {
             CopyTradingManager.scanTraders();

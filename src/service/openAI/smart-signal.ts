@@ -124,8 +124,11 @@ export function getSignal(
     // If vol is unusually high AND srsi/RSI overbought, penalize longs; vice versa for oversold
     const volZ = (vol10 / 0.004) * symBoost; // 0.4% stdev baseline per 15m (tweakable)
     let volAdj = 0;
-    if (volZ > 1.6 && (rsiVal > 65 || s > 80)) volAdj -= 10;
-    if (volZ > 1.6 && (rsiVal < 35 || s < 20)) volAdj += 6;
+    const volAdjAbovePerTicker: Record<Symbol, number> = { BTC: 16, ETH: 10 };
+    const volAdjBelowPerTicker: Record<Symbol, number> = { BTC: 8, ETH: 6 };
+
+    if (volZ > 1.6 && (rsiVal > 65 || s > 80)) volAdj -= volAdjAbovePerTicker[symbol];
+    if (volZ > 1.6 && (rsiVal < 35 || s < 20)) volAdj += volAdjBelowPerTicker[symbol];
     feats.volAdj = volAdj;
 
     // Aggregate
@@ -134,19 +137,27 @@ export function getSignal(
     // ---------- convert score to decision ----------
     // Calibrated thresholds (conservative because TP/SL = +1% / -0.5% requires ~33% win-rate)
     // We require stronger evidence for BUY due to asymmetry (downs often faster).
-    let action: "buy" | "sell" | "hold" = "hold";;
-    if (score >= 18) action = "buy";     // decent confluence
-    if (score <= -5) action = "sell";   // default; bearish or weak confluence
+    let action: "buy" | "sell" | "hold" = "hold";
+    const buyLimitsPerTicker: Record<Symbol, number> = { BTC: 24, ETH: 18 };
+    const sellLimitsPerTicker: Record<Symbol, number> = { BTC: -12, ETH: -5 };
+
+    if (score >= buyLimitsPerTicker[symbol]) action = "buy";     // decent confluence
+    if (score <= sellLimitsPerTicker[symbol]) action = "sell";   // default; bearish or weak confluence
 
     // Confidence mapping (0..100) with softclip
     const softclip = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x));
     // Translate |score| into confidence; cap at 100
-    const confidence = softclip(Math.round(50 + (Math.abs(score) / 80) * 50), 50, 100);
+    const confidenceLoPerTicker: Record<Symbol, number> = { BTC: 55, ETH: 50 };
+    const confidence = softclip(Math.round(50 + (Math.abs(score) / 80) * 50), confidenceLoPerTicker[symbol], 100);
 
     const result: SignalResult = {
         action,
         confidence,
-        ...(opts?.returnDebug ? { debug: { score, feats, aoLevel, aoSlope5, rsiVal, srsiVal: s, vol10, volZ, higherHighs, higherLows } } : {})
+        ...(opts?.returnDebug ? { debug: { score,
+                feats: Object.entries(feats).map(([key, value]) => `${key}=${value}`).join(', '),
+                aoLevel, aoSlope5, rsiVal,
+                srsiVal: s,
+                vol10, volZ, higherHighs, higherLows } } : {})
     };
 
     return result;
