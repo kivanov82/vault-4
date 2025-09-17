@@ -11,6 +11,7 @@ export interface IndicatorRow {
 export interface SignalResult {
     action: "buy" | "sell" | "hold";
     confidence: number; // 0..100
+    debugLast10?: Record<string, any>; // optional: remove in prod
     debug?: Record<string, any>; // optional: remove in prod
 }
 
@@ -157,7 +158,13 @@ export function getSignal(
                 feats: Object.entries(feats).map(([key, value]) => `${key}=${value}`).join(', '),
                 aoLevel, aoSlope5, rsiVal,
                 srsiVal: s,
-                vol10, volZ, higherHighs, higherLows } } : {})
+                vol10, volZ, higherHighs, higherLows},
+            debugLast10: Object.fromEntries(
+                ["time", "close", "AO", "RSI", "SRSI"].map(col => [
+                    col,
+                    last10.map(row => String(row[col as keyof IndicatorRow])).join(",")
+                ]))
+        } : {})
     };
 
     return result;

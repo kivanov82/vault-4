@@ -68,7 +68,8 @@ export class openAI {
     console.log(`${ticker}:`,
         Object.entries(signal).map(([key, value]) => `${key}=${value}`).join(', '),
         Object.entries(signal.debug).map(([key, value]) => `${key}=${value}`).join(', '),
-        Object.entries(signal.debug).map(([key, value]) => `${key}=${value}`).join(', '));
+        Object.entries(signal.debugLast10).map(([key, value]) => `${key}=${value}`).join(', ')
+        );
     if (signal.confidence > 60) {
       if (signal.action == 'sell') {                                    //on a BULL side, change to BEAR trend
         console.log(`${ticker}: Action required: OPEN SHORT`);
