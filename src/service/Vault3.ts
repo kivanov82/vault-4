@@ -10,6 +10,7 @@ export class Vault3 {
     static async init(): Promise<any> {
         //schedule.scheduleJob("1 * * * *", () => {
         //schedule.scheduleJob("*/15 * * * *", () => {
+        openAI.subscribeToEvents();
         schedule.scheduleJob("1 * * * *", () => {
             //MarketAdaptor.scanMarkets('1h', 'BTC', 15000);
             //oneHTrendChange.scanMarkets('1h', 'ETH', 40000);

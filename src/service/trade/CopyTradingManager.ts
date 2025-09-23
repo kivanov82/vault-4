@@ -51,15 +51,7 @@ export class CopyTradingManager {
     }
 
     static watchTraders() {
-        const transport = new hl.WebSocketTransport({
-            reconnect: {
-                shouldReconnect: event => {
-                    // Always attempt to reconnect on close events
-                    console.log("COPY TRADING: Close event received, attempting to reconnect...");
-                    return true;
-                }
-            }
-        });
+        const transport = new hl.WebSocketTransport();
         const client = new hl.SubscriptionClient({ transport });
         transport.socket.addEventListener("open", () => {
             console.log("COPY TRADING: Connection opened.");

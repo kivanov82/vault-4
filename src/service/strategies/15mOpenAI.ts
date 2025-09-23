@@ -1,9 +1,11 @@
 import Taapi from "taapi";
 import {TICKERS, HyperliquidConnector} from "../trade/HyperliquidConnector";
 import dotenv from "dotenv";
-import {Candle} from "@nktkas/hyperliquid";
 import moment from "moment";
-import {getSignal, IndicatorRow, SignalResult} from "../openAI/smart-signal";
+import {getSignal, IndicatorRow, recordTradeOutcome, SignalResult} from "../openAI/smart-signal";
+import * as hl from "@nktkas/hyperliquid";
+
+const TRADING_WALLET = process.env.WALLET as `0x${string}`;
 
 dotenv.config(); // Load environment variables
 
@@ -11,6 +13,25 @@ const taapi = new Taapi(process.env.TAAPI_SECRET);
 
 export class openAI {
 
+  static subscribeToEvents() {
+    const transport = new hl.WebSocketTransport();
+    const client = new hl.SubscriptionClient({ transport });
+    transport.socket.addEventListener("open", () => {
+      console.log("COPY TRADING: Connection opened.");
+    });
+    client.userFills({ user: TRADING_WALLET }, (data) => {
+      data.fills.forEach(fill => {
+        if(fill.time >= Date.now() - 10 * 60 * 1000 &&
+            (fill.dir === 'Close Short' || fill.dir === 'Close Long') &&
+            Number(fill.closedPnl) < 0) {
+          console.log(`Position closed with loss, adjusting strategy for ${fill.coin}`);
+          recordTradeOutcome(fill.coin as any,
+              fill.side === 'B' ? 'short' : 'long',       //short (long) was closed in the opposite direction
+              'loss');
+        }
+      })
+    });
+  }
   static scanMarkets(interval: string, ticker: string, delay: number) {
     setTimeout(() => {
       taapi.resetBulkConstructs();
@@ -18,7 +39,7 @@ export class openAI {
       taapi.addCalculation("stochrsi", `${ticker}/USDT`, interval, `stochrsi_${interval}`, {"results": 10});
       taapi.addCalculation("ao", `${ticker}/USDT`, interval, `ao_${interval}`, {"results": 10});
 
-      HyperliquidConnector.candleSnapshot15Min(ticker, 10).then((candles: Candle[]) => {
+      HyperliquidConnector.candleSnapshot15Min(ticker, 10).then((candles) => {
         taapi.executeBulk().then(indicators => {
           // Process the data and update our data structure
           const rsiValues = indicators[`rsi_${interval}`].value;
@@ -39,8 +60,6 @@ export class openAI {
               SRSI: stochRsiValues[i].toFixed(1),
             });
           }
-          // Debug output
-          //console.log(this.formatDataPoints(newDataPoints));
           const result = getSignal(ticker as any, newDataPoints, {returnDebug: true});
           this.assertActionRequired(ticker, result);
         }).catch(error => {
@@ -51,33 +70,19 @@ export class openAI {
     }, delay);
   }
 
-  // Method to format the data points as requested
-  static formatDataPoints(newDataPoints : IndicatorRow[]): string {
-    // Create header
-    let output = "time,close,AO,RSI,SRSI\n";
-
-    // Add each data point
-    newDataPoints.forEach(point => {
-      output += `${point.time},${point.close},${point.AO},${point.RSI},${point.SRSI}\n`;
-    });
-
-    return output;
-  }
-
   static assertActionRequired(ticker: string, signal : SignalResult): void {
     console.log(`${ticker}:`,
         Object.entries(signal).map(([key, value]) => `${key}=${value}`).join(', '),
         Object.entries(signal.debug).map(([key, value]) => `${key}=${value}`).join(', '),
         Object.entries(signal.debugLast10).map(([key, value]) => `${key}=${value}`).join(', ')
         );
-    if (signal.confidence > 60) {
-      if (signal.action == 'sell') {                                    //on a BULL side, change to BEAR trend
-        console.log(`${ticker}: Action required: OPEN SHORT`);
-        HyperliquidConnector.openOrder(TICKERS[ticker], false);
-      } else if (signal.action == 'buy') {                      //on a BEAR side, change to BULL trend
-        console.log(`${ticker}: Action required: OPEN LONG`);
-        HyperliquidConnector.openOrder(TICKERS[ticker], true);
-      }
+    const baseMin = ticker === "BTC" ? 65 : 60;
+    const minConf = signal.volZ > 1.6 ? baseMin + 5 : baseMin;
+
+    if (signal.action === "hold" || signal.confidence < minConf) {
+      // no-trade
+    } else {
+      HyperliquidConnector.openOrder(TICKERS[ticker], signal.action == 'buy');
     }
   }
 }
