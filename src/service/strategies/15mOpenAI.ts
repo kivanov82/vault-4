@@ -2,7 +2,7 @@ import Taapi from "taapi";
 import {TICKERS, HyperliquidConnector} from "../trade/HyperliquidConnector";
 import dotenv from "dotenv";
 import moment from "moment";
-import {getSignal, IndicatorRow, recordTradeOutcome, SignalResult} from "../openAI/smart-signal";
+import {getSignal, IndicatorRow, recordTradeOutcome, reversalGuard, SignalResult} from "../openAI/smart-signal";
 import * as hl from "@nktkas/hyperliquid";
 
 const TRADING_WALLET = process.env.WALLET as `0x${string}`;
@@ -61,7 +61,7 @@ export class openAI {
             });
           }
           const result = getSignal(ticker as any, newDataPoints, {returnDebug: true});
-          this.assertActionRequired(ticker, result);
+          this.assertActionRequired(ticker, result, newDataPoints[newDataPoints.length -1]);
         }).catch(error => {
           console.error('Error when getting indicators, trying again in 20 seconds');
           this.scanMarkets(interval, ticker, delay);
@@ -70,7 +70,7 @@ export class openAI {
     }, delay);
   }
 
-  static assertActionRequired(ticker: string, signal : SignalResult): void {
+  static async assertActionRequired(ticker: string, signal: SignalResult, lastIndicator: IndicatorRow): void {
     console.log(`${ticker}:`,
         Object.entries(signal).map(([key, value]) => `${key}=${value}`).join(', '),
         Object.entries(signal.debug).map(([key, value]) => `${key}=${value}`).join(', '),
@@ -82,6 +82,27 @@ export class openAI {
     if (signal.action === "hold" || signal.confidence < minConf) {
       // no-trade
     } else {
+      //check if the opinion is strong for reversal trade
+      if (signal.confidence >= 80) {
+        const currentPosition = await HyperliquidConnector.getOpenPosition(TRADING_WALLET, ticker)
+        if (currentPosition &&
+            ((HyperliquidConnector.positionSide(currentPosition) === 'long' && signal.action == 'sell') ||
+            (HyperliquidConnector.positionSide(currentPosition) === 'short' && signal.action == 'buy'))) {
+          // opposite position exists
+          const reversalIndicator = reversalGuard({
+            inPosition: HyperliquidConnector.positionSide(currentPosition),
+            entryPrice: Number(currentPosition.entryPx),
+            lastPrice: Number(lastIndicator.close),
+            action: signal.action,
+            score: signal.score
+          });
+          if (reversalIndicator === 'reverse') {
+            console.log(`${ticker}: strong confidence reversal signal, reversing position`);
+            await HyperliquidConnector.marketClosePosition(TICKERS[ticker],
+                HyperliquidConnector.positionSide(currentPosition) === 'long');
+          }
+        }
+      }
       HyperliquidConnector.openOrder(TICKERS[ticker], signal.action == 'buy');
     }
   }

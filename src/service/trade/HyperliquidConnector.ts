@@ -104,11 +104,10 @@ export class HyperliquidConnector {
         })
     }
 
-    static marketCloseOrder(ticker, long: boolean, percent: number = 1) {
+    static marketClosePosition(ticker, long: boolean, percent: number = 1) {
         return this.getOpenPosition(TRADING_WALLET, ticker.syn).then(position => {
             if (position && ((this.positionSide(position) === 'long' && long) || (this.positionSide(position) === 'short' && !long))) {
                 return this.getMarket(ticker.syn).then(market => {
-                    //const priceDecimals = PERPS_MAX_DECIMALS - ticker.szDecimals - 1;
                     const priceDecimals = market < 1 ? 5 : (market < 10 ? 2 : 0);
                     //for instant fill
                     const orderInstantPrice = long ? (market * 99 / 100) : (market * 101 / 100);
@@ -306,7 +305,7 @@ export class HyperliquidConnector {
             Number(unrealizedPnl) / Number(currentValue) > 0.75 /*75% gain*/ &&
             Number(currentValue) / Number(totalPortfolio) > 0.15 /*15% of portfolio*/) {
             console.log(`TRADING: taking profit on ${tradingPosition.coin} position`);
-            await this.marketCloseOrder(TICKERS[tradingPosition.coin],
+            await this.marketClosePosition(TICKERS[tradingPosition.coin],
                 this.positionSide(tradingPosition) === 'long', 0.3);
         }
     }

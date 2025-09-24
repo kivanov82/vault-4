@@ -14,6 +14,7 @@ export interface IndicatorRow {
 
 export interface SignalResult {
     action: "buy" | "sell" | "hold";
+    score: number,
     confidence: number; // 0..100
     volZ: number,
     debugLast10?: Record<string, any>; // optional: remove in prod
@@ -106,7 +107,6 @@ export function getSignal(
     const lows  = last10.every(r => typeof r.low  === "number") ? last10.map(r => r.low  as number) : closes;
 
     const diff = (arr: number[]) => arr.map((v,i)=> i===0 ? NaN : v - arr[i-1]);
-    // const pct = (a: number, b: number) => (b === 0 ? 0 : (a/b - 1) * 100); // ★ OPTIONAL: unused, remove if not needed
 
     // price returns (close-to-close)
     const rets = diff(closes).slice(1).map((d,i)=> d / closes[i]); // ★ CHANGED: // 9 values
@@ -122,9 +122,6 @@ export function getSignal(
     const aoSlope5 = mean(diff(ao).slice(-5).filter(Number.isFinite));
     const rsiSlope5 = mean(diff(rsi).slice(-5).filter(Number.isFinite));
     const srsiSlope5 = mean(diff(srsi).slice(-5).filter(Number.isFinite));
-
-    const last = last10[9];
-    // const prev = last10[8]; // ★ OPTIONAL: unused, remove if not needed
 
     // AO zero-cross (from last 4 bars)
     const aoZeroCrossUp =
@@ -240,12 +237,12 @@ export function getSignal(
 
     const result: SignalResult = {
         action,
+        score,
         confidence,
         volZ,
         ...(opts?.returnDebug
             ? {
                 debug: {
-                    score,
                     feats: Object.fromEntries(Object.entries(feats)), // ★ CHANGED: structured map is easier to parse later
                     aoLevel, aoSlope5, rsiVal, srsiVal: s,
                     vol10, volZ, higherHighs, higherLows,

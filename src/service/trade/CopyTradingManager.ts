@@ -25,7 +25,7 @@ export class CopyTradingManager {
                     //both exist, BUT on the wrong side
                     console.log(`COPY TRADING: both ${ticker} positions exist, BUT on the wrong side`);
                     //close
-                    await HyperliquidConnector.marketCloseOrder(TICKERS[ticker],
+                    await HyperliquidConnector.marketClosePosition(TICKERS[ticker],
                         HyperliquidConnector.positionSide(tradingPosition) === 'long');
                     //open new
                     await HyperliquidConnector.openOrder(TICKERS[ticker],
@@ -39,7 +39,7 @@ export class CopyTradingManager {
                 } else if (!traderPosition && tradingPosition) {
                     //close OUR position
                     console.log(`COPY TRADING: close ${ticker} position`);
-                    await HyperliquidConnector.marketCloseOrder(TICKERS[ticker],
+                    await HyperliquidConnector.marketClosePosition(TICKERS[ticker],
                         HyperliquidConnector.positionSide(tradingPosition) === 'long');
                 }
             } catch (e) {
@@ -74,7 +74,7 @@ export class CopyTradingManager {
                                     side === 'B' && HyperliquidConnector.positionSide(tradingPosition) === 'short')) {
                                 console.log(`COPY TRADING REACTION: both ${coin} positions exist, BUT on opposite sides`);
                                 //close
-                                HyperliquidConnector.marketCloseOrder(TICKERS[coin],
+                                HyperliquidConnector.marketClosePosition(TICKERS[coin],
                                     HyperliquidConnector.positionSide(tradingPosition) === 'long');
                                 //open new
                                 HyperliquidConnector.openOrder(TICKERS[coin], side === 'B');
