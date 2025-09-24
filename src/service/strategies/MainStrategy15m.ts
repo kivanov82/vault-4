@@ -11,7 +11,7 @@ dotenv.config(); // Load environment variables
 
 const taapi = new Taapi(process.env.TAAPI_SECRET);
 
-export class openAI {
+export class MainStrategy15m {
 
   static subscribeToEvents() {
     const transport = new hl.WebSocketTransport();

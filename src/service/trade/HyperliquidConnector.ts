@@ -1,16 +1,12 @@
 import * as hl from "@nktkas/hyperliquid";
 import {privateKeyToAccount} from "viem/accounts";
 import dotenv from "dotenv";
+import {singleOrderSize, takeProfitSize, tpSl} from "../strategies/execution-config";
 
 dotenv.config(); // Load environment variables
 
 const TRADING_WALLET = process.env.WALLET as `0x${string}`;
 const TRADING_PKEY = process.env.WALLET_PK as `0x${string}`;
-
-const SL_PERCENT = 15;  // %
-const TP_PERCENT = 20;  // %
-const TP_SIZE = 100;  // %
-const ORDER_SIZE = 0.3;
 
 export const TICKERS = {
     BTC: {
@@ -152,13 +148,19 @@ export class HyperliquidConnector {
                     const priceDecimals = market < 1 ? 5 : (market < 10 ? 2 : 0);
                     //for instant fill
                     const orderInstantPrice = long ? (market * 101 / 100) : (market * 99 / 100);
-                    const slPrice = long ? (market * (100 - (SL_PERCENT / ticker.leverage)) / 100) : (market * (100 + (SL_PERCENT / ticker.leverage)) / 100);
+                    const SL = tpSl[ticker][long? 'long' : 'short'].sl
+                    const TP = tpSl[ticker][long? 'long' : 'short'].tp
+                    const slPrice = long ?
+                        (market * (100 - (SL / ticker.leverage)) / 100) :
+                        (market * (100 + (SL / ticker.leverage)) / 100);
                     const slInstantPrice = long ? (slPrice * 100.01 / 100) : (slPrice * 99.99 / 100);
-                    const tpPrice = long ? (market * (100 + (TP_PERCENT / ticker.leverage)) / 100) : (market * (100 - (TP_PERCENT / ticker.leverage)) / 100);
+                    const tpPrice = long ?
+                        (market * (100 + (TP / ticker.leverage)) / 100) :
+                        (market * (100 - (TP / ticker.leverage)) / 100);
                     const tpInstantPrice = long ? (tpPrice * 100.01 / 100) : (tpPrice * 99.99 / 100);
-                    const sizeInAsset = portfolio.available * ORDER_SIZE;
+                    const sizeInAsset = portfolio.available * singleOrderSize;
                     const orderSize = (sizeInAsset * ticker.leverage)/ market;
-                    const tpOrderSize = (sizeInAsset * ticker.leverage * (TP_SIZE / 100))/ market;
+                    const tpOrderSize = (sizeInAsset * ticker.leverage * (takeProfitSize / 100))/ market;
 
                     const orderInstantPriceString = orderInstantPrice.toFixed(priceDecimals).toString();
                     const slPriceString = slPrice.toFixed(priceDecimals).toString();
