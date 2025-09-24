@@ -70,7 +70,7 @@ export class openAI {
     }, delay);
   }
 
-  static async assertActionRequired(ticker: string, signal: SignalResult, lastIndicator: IndicatorRow): void {
+  static async assertActionRequired(ticker: string, signal: SignalResult, lastIndicator: IndicatorRow) {
     console.log(`${ticker}:`,
         Object.entries(signal).map(([key, value]) => `${key}=${value}`).join(', '),
         Object.entries(signal.debug).map(([key, value]) => `${key}=${value}`).join(', '),
