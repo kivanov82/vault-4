@@ -1,6 +1,6 @@
 export const tpSl = {
-    BTC: { long: { tp: 20, sl: 10 }, short: { tp: 22, sl: 12 } },
-    ETH: { long: { tp: 34, sl: 10 }, short: { tp: 20, sl: 12 } },
+    BTC: { long: { tp: 40, sl: 25 }, short: { tp: 40, sl: 25 } },
+    ETH: { long: { tp: 35, sl: 22 }, short: { tp: 35, sl: 22 } },
 } as const;
 
 export const singleOrderSize = 0.3;
