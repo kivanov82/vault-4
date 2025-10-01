@@ -2,6 +2,7 @@ import * as hl from "@nktkas/hyperliquid";
 import {privateKeyToAccount} from "viem/accounts";
 import dotenv from "dotenv";
 import {singleOrderSize, takeProfitSize, tpSl} from "../strategies/execution-config";
+import {logger} from "../utils/logger";
 
 dotenv.config(); // Load environment variables
 
@@ -91,9 +92,9 @@ export class HyperliquidConnector {
                         ],
                         grouping: "positionTpsl",
                     }).then((result) => {
-                        console.log(result.response);
+                        logger.info('Position opened', result.response);
                     }).catch(error => {
-                        console.error(error)
+                        logger.error(error)
                     });
                 });
             }
@@ -127,9 +128,9 @@ export class HyperliquidConnector {
                         ],
                         grouping: "na",
                     }).then((result) => {
-                        console.log(result.response);
+                        logger.info('Position closed', result.response);
                     }).catch(error => {
-                        console.error(error)
+                        logger.error(error)
                     });
                 });
             }
@@ -139,7 +140,7 @@ export class HyperliquidConnector {
     static openOrder(ticker, long: boolean) {
         return this.getOpenPosition(TRADING_WALLET, ticker.syn).then((position) => {
             if (position) {
-                console.log('Position already exists');
+                logger.info('Position already exists');
                 return;
             }
             return this.getPortfolio(TRADING_WALLET).then(portfolio => {
@@ -148,8 +149,8 @@ export class HyperliquidConnector {
                     const priceDecimals = market < 1 ? 5 : (market < 10 ? 2 : 0);
                     //for instant fill
                     const orderInstantPrice = long ? (market * 101 / 100) : (market * 99 / 100);
-                    const SL = tpSl[ticker][long? 'long' : 'short'].sl
-                    const TP = tpSl[ticker][long? 'long' : 'short'].tp
+                    const SL = tpSl[ticker.syn][long? 'long' : 'short'].sl
+                    const TP = tpSl[ticker.syn][long? 'long' : 'short'].tp
                     const slPrice = long ?
                         (market * (100 - (SL / ticker.leverage)) / 100) :
                         (market * (100 + (SL / ticker.leverage)) / 100);
@@ -219,9 +220,9 @@ export class HyperliquidConnector {
                         ],
                         grouping: "normalTpsl",
                     }).then((result) => {
-                        console.log(result.response.data);
+                        logger.info('Position opened', result.response);
                     }).catch(error => {
-                        console.error(error)
+                        logger.error(error)
                     });
                 });
             })
@@ -254,21 +255,14 @@ export class HyperliquidConnector {
         });
     }
 
-    static candleSnapshot15Min(ticker, count) {
+    static candleSnapshot1h(ticker, count) {
         return this.getClients().public.candleSnapshot({
             coin: ticker,
-            interval: "15m",
-            startTime: Date.now() - 1000 * 60 * (15 * count - 3)
+            interval: "1h",
+            startTime: Date.now() - 1000 * 60 * (60 * count - 3)
         }).then(candles => {
             return candles;
         });
-    }
-
-    static getOrders() {
-        return this.getClients().public.userFills({user: TRADING_WALLET, aggregateByTime: true}).then(orders => {
-            console.log(orders);
-            return orders;
-        })
     }
 
     static getPortfolio(trader: `0x${string}`) {
@@ -306,7 +300,7 @@ export class HyperliquidConnector {
         if (Number(unrealizedPnl) > 0 &&
             Number(unrealizedPnl) / Number(currentValue) > 0.75 /*75% gain*/ &&
             Number(currentValue) / Number(totalPortfolio) > 0.15 /*15% of portfolio*/) {
-            console.log(`TRADING: taking profit on ${tradingPosition.coin} position`);
+            logger.info(`TRADING: taking profit on ${tradingPosition.coin} position`);
             await this.marketClosePosition(TICKERS[tradingPosition.coin],
                 this.positionSide(tradingPosition) === 'long', 0.3);
         }
