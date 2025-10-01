@@ -20,13 +20,15 @@ export function subscribeToEvents() {
     const client = new hl.SubscriptionClient({ transport });
     client.userFills({ user: TRADING_WALLET }, (data) => {
         const pnlByCoin: Record<string, number> = {};
+        const priceByCoin: Record<string, number> = {};
         for (const fill of data.fills) {
             if (fill.time >= Date.now() - 10 * 60 * 1000) {
-                pnlByCoin[fill.coin] = (pnlByCoin[fill.coin] ?? 0) + Number(fill.closedPnl);
+                pnlByCoin[fill.coin] = (pnlByCoin[fill.coin] ?? 0) + Number(fill.closedPnl) - Number(fill.fee);
+                priceByCoin[fill.coin] = Number(fill.px);  // just last price if many fills
             }
         }
         for (const coin in pnlByCoin) {
-            logger.info(`[CLOSE] ${coin}`, { closedPnl: pnlByCoin[coin] });
+            logger.info(`[CLOSE] ${coin}`, { closedPnl: pnlByCoin[coin], price: priceByCoin[coin]});
         }
     });
 }
@@ -98,28 +100,39 @@ export async function runMainStrategy1h(symbols: Symbol[]) {
             if (!Number.isFinite(signal.confidence)) continue;
 
             const desiredSide = sideFromAction(signal.action);
+            const score = signal.debug?.score ?? 0;
+            // Logging
+            const dbg = {
+                symbol, desiredSide,
+                confidence: signal.confidence,
+                score,
+                volZ1h: signal.debug?.volZ1h,
+                feats: signal.debug?.feats,
+                closes: signal.debug?.closes,
+                ts: new Date().toISOString(),
+            };
+
             if (desiredSide === "flat") {
-                logger.info(`[1H] ${symbol} holding: action=${signal.action}`);
+                logger.info(`[1H] HOLDING ${symbol} action=${signal.action} conf=${signal.confidence} score=${score} json=${JSON.stringify(dbg)}`);
                 continue;
             }
 
             const minConf = MIN_CONF_1H[symbol][desiredSide];
             if (signal.confidence < minConf) {
-                logger.info(`[1H] ${symbol} rejected: conf=${signal.confidence} < ${minConf}`);
+                logger.info(`[1H] REJECTED ${symbol} by minConf. conf=${signal.confidence} < ${minConf} score=${score} json=${JSON.stringify(dbg)}`);
                 continue;
             }
 
             // Cooldown gating
             const streakKey = keySS(symbol, desiredSide);
             const extraScore = (lossStreak[streakKey] ?? 0) >= 2 ? RISK_1H.COOLDOWN_SCORE_BONUS : 0;
-            const score = signal.debug?.score ?? 0;
             const buyLimitH1 = symbol === "BTC" ? 30 : 28;
             const sellLimitH1 = symbol === "BTC" ? -10 : -8;
             const passScore =
                 desiredSide === "long" ? score >= (buyLimitH1 + extraScore)
                     : score <= (sellLimitH1 - extraScore);
             if (!passScore) {
-                logger.info(`[1H] ${symbol} rejected by score cooldown gate. score=${score}, extra=${extraScore}`);
+                logger.info(`[1H] REJECTED ${symbol} by score cooldown gate. conf=${signal.confidence} score=${score} extra=${extraScore} json=${JSON.stringify(dbg)}`);
                 continue;
             }
 
@@ -136,32 +149,23 @@ export async function runMainStrategy1h(symbols: Symbol[]) {
                 const strong = (signal.confidence >= REVERSAL_1H.MIN_CONF) && (oppositeScore >= (Math.abs(score) + REVERSAL_1H.MIN_SCORE_DELTA));
                 const nearEntry = withinBp(lastPrice, entryPx, REVERSAL_1H.MAX_ENTRY_DRIFT_BP);
                 if (strong && nearEntry) {
-                    logger.info(`[1H] ${symbol} reversal: ${posSide} -> ${desiredSide}, close & flip`);
+                    logger.info(`[1H] REVERSAL ${symbol} ${posSide} -> ${desiredSide}, close & flip. conf=${signal.confidence} score=${score} json=${JSON.stringify(dbg)}`);
                     await HyperliquidConnector.marketClosePosition(TICKERS[symbol], posSide === "long");
                     await HyperliquidConnector.openOrder(TICKERS[symbol], desiredSide === "long");
                     continue;
                 } else {
                     // Hold existing; do not add
-                    logger.info(`[1H] ${symbol} keep existing ${posSide}. Not flipping.`);
+                    logger.info(`[1H] REVERSAL ${symbol}  ${posSide} CONSIDERED BUT NOT STRONG. conf=${signal.confidence} score=${score} json=${JSON.stringify(dbg)}`);
                     continue;
                 }
             }
 
             // Already in same-side? Don't add.
             if (posSide === desiredSide) {
-                logger.info(`[1H] ${symbol} already ${posSide}. Skip add.`);
+                logger.info(`[1H] HOLDING ${symbol} ALREADY ${desiredSide.toUpperCase()} conf=${signal.confidence} score=${score} json=${JSON.stringify(dbg)}`);
                 continue;
             }
-            // Logging
-            const dbg = {
-                symbol, desiredSide,
-                confidence: signal.confidence,
-                score,
-                volZ1h: signal.debug?.volZ1h,
-                feats: signal.debug?.feats,
-                closes: signal.debug?.closes,
-                ts: new Date().toISOString(),
-            };
+
             logger.info(`[1H] OPENING ${symbol} ${desiredSide.toUpperCase()} conf=${signal.confidence} score=${score} json=${JSON.stringify(dbg)}`);
 
             // Open new position
