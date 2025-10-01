@@ -138,6 +138,7 @@ export function getSignalH1(
                     rsiVal, srsiVal: s,
                     vol10, volZ1h,
                     higherHighs, higherLows,
+                    closes: closes.join(',')
                 } }
             : undefined)
     };

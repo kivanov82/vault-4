@@ -142,6 +142,7 @@ export async function runMainStrategy1h(symbols: Symbol[]) {
                 score,
                 volZ1h: signal.debug?.volZ1h,
                 feats: signal.debug?.feats,
+                closes: signal.debug?.closes,
                 ts: new Date().toISOString(),
             };
             logger.info(`[1H] OPENING ${symbol} ${desiredSide.toUpperCase()} conf=${signal.confidence} score=${score} json=${JSON.stringify(dbg)}`);
