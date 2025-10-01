@@ -9,10 +9,27 @@ import { HyperliquidConnector, TICKERS } from "../trade/HyperliquidConnector";
 import { logger } from "../utils/logger";
 import moment from "moment/moment";
 import dotenv from "dotenv";
+import * as hl from "@nktkas/hyperliquid";
 
 const TRADING_WALLET = process.env.WALLET as `0x${string}`;
 dotenv.config(); // Load environment variables
 const taapi = new Taapi(process.env.TAAPI_SECRET);
+
+export function subscribeToEvents() {
+    const transport = new hl.WebSocketTransport();
+    const client = new hl.SubscriptionClient({ transport });
+    client.userFills({ user: TRADING_WALLET }, (data) => {
+        const pnlByCoin: Record<string, number> = {};
+        for (const fill of data.fills) {
+            if (fill.time >= Date.now() - 10 * 60 * 1000) {
+                pnlByCoin[fill.coin] = (pnlByCoin[fill.coin] ?? 0) + Number(fill.closedPnl);
+            }
+        }
+        for (const coin in pnlByCoin) {
+            logger.info(`[CLOSE] ${coin}`, { closedPnl: pnlByCoin[coin] });
+        }
+    });
+}
 
 function fetchLast10H1(ticker: Symbol, interval: string): Promise<IndicatorRow[]> {
     taapi.resetBulkConstructs();

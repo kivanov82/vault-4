@@ -91,8 +91,6 @@ export class HyperliquidConnector {
                             }
                         ],
                         grouping: "positionTpsl",
-                    }).then((result) => {
-                        logger.info('Position opened', result.response);
                     }).catch(error => {
                         logger.error(error)
                     });
@@ -127,8 +125,6 @@ export class HyperliquidConnector {
                             }
                         ],
                         grouping: "na",
-                    }).then((result) => {
-                        logger.info('Position closed', result.response);
                     }).catch(error => {
                         logger.error(error)
                     });
@@ -219,8 +215,6 @@ export class HyperliquidConnector {
                             }
                         ],
                         grouping: "normalTpsl",
-                    }).then((result) => {
-                        logger.info('Position opened', result.response);
                     }).catch(error => {
                         logger.error(error)
                     });
