@@ -20,15 +20,19 @@ export function subscribeToEvents() {
     const client = new hl.SubscriptionClient({ transport });
     client.userFills({ user: TRADING_WALLET }, (data) => {
         const pnlByCoin: Record<string, number> = {};
+        const feeByCoin: Record<string, number> = {};
         const priceByCoin: Record<string, number> = {};
+        const directionByCoin: Record<string, string> = {};
         for (const fill of data.fills) {
             if (fill.time >= Date.now() - 10 * 60 * 1000) {
                 pnlByCoin[fill.coin] = (pnlByCoin[fill.coin] ?? 0) + Number(fill.closedPnl) - Number(fill.fee);
+                feeByCoin[fill.coin] = (feeByCoin[fill.coin] ?? 0) + Number(fill.fee);
                 priceByCoin[fill.coin] = Number(fill.px);  // just last price if many fills
+                directionByCoin[fill.coin] = fill.dir;  // just last direction
             }
         }
         for (const coin in pnlByCoin) {
-            logger.info(`[CLOSE] ${coin}`, { closedPnl: pnlByCoin[coin], price: priceByCoin[coin]});
+            logger.info(`[1H] TRADE ${coin} ${directionByCoin[coin]}`, { fee: feeByCoin[coin], Pnl: pnlByCoin[coin], price: priceByCoin[coin]});
         }
     });
 }
