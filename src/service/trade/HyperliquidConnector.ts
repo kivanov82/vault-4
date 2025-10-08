@@ -1,7 +1,7 @@
 import * as hl from "@nktkas/hyperliquid";
 import {privateKeyToAccount} from "viem/accounts";
 import dotenv from "dotenv";
-import {singleOrderSize, takeProfitSize, tpSl} from "../strategies/execution-config";
+import {singleOrderSize, takeProfitSize, TP_SL_PER_TICKER} from "../strategies/execution-config";
 import {logger} from "../utils/logger";
 
 dotenv.config(); // Load environment variables
@@ -145,8 +145,8 @@ export class HyperliquidConnector {
                     const priceDecimals = market < 1 ? 5 : (market < 10 ? 2 : 0);
                     //for instant fill
                     const orderInstantPrice = long ? (market * 101 / 100) : (market * 99 / 100);
-                    const SL = tpSl[ticker.syn][long? 'long' : 'short'].sl
-                    const TP = tpSl[ticker.syn][long? 'long' : 'short'].tp
+                    const SL = TP_SL_PER_TICKER[ticker.syn][long? 'long' : 'short'].sl
+                    const TP = TP_SL_PER_TICKER[ticker.syn][long? 'long' : 'short'].tp
                     const slPrice = long ?
                         (market * (100 - (SL / ticker.leverage)) / 100) :
                         (market * (100 + (SL / ticker.leverage)) / 100);

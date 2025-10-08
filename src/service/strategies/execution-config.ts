@@ -1,4 +1,4 @@
-export const tpSl = {
+export const TP_SL_PER_TICKER = {
     BTC: { long: { tp: 40, sl: 25 }, short: { tp: 40, sl: 25 } },
     ETH: { long: { tp: 35, sl: 22 }, short: { tp: 35, sl: 22 } },
 } as const;
@@ -6,12 +6,11 @@ export const tpSl = {
 export const singleOrderSize = 0.3;
 export const takeProfitSize = 100;  // %
 
-
-// Confidence minimums (executor-side, extra safety)
-export const MIN_CONF_1H = {
-    BTC: { long: 62, short: 60 },
-    ETH: { long: 60, short: 58 },
-} as const;
+export const MIN_CONF_ALL = 60;            // base confidence floor for any entry
+export const VOL_GATES = {
+  BTC: { maxVolZ: 0.80 },                  // if volZ1h > 0.80 → HOLD on BTC
+  ETH: { highVolZ: 0.60, minConfHighVol: 65 } // if volZ1h > 0.60 → require conf ≥ 65 on ETH
+};
 
 // Reversal policy for H1: only near-entry and strong confluence
 export const REVERSAL_1H = {

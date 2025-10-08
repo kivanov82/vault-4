@@ -1,7 +1,6 @@
 import Taapi from "taapi";
 import { getSignalH1, type IndicatorRow, type Symbol } from "../utils/smart-signal";
 import {
-    MIN_CONF_1H,
     REVERSAL_1H,
     RISK_1H,
 } from "./execution-config";
@@ -11,8 +10,8 @@ import moment from "moment/moment";
 import dotenv from "dotenv";
 import * as hl from "@nktkas/hyperliquid";
 
-const TRADING_WALLET = process.env.WALLET as `0x${string}`;
 dotenv.config(); // Load environment variables
+const TRADING_WALLET = process.env.WALLET as `0x${string}`;
 const taapi = new Taapi(process.env.TAAPI_SECRET);
 
 export function subscribeToEvents() {
@@ -33,6 +32,10 @@ export function subscribeToEvents() {
         }
         for (const coin in pnlByCoin) {
             logger.info(`[1H] TRADE ${coin} ${directionByCoin[coin]}`, { fee: feeByCoin[coin], Pnl: pnlByCoin[coin], price: priceByCoin[coin]});
+            if (feeByCoin[coin] != Math.abs(pnlByCoin[coin])) {
+                //TP or SL
+                updateLossStreak(coin as Symbol, pnlByCoin[coin]);
+            }
         }
     });
 }
@@ -94,6 +97,15 @@ const lossStreak: Record<string, number> = {}; // key: `${symbol}:${side}`
 
 function keySS(sym: Symbol, side: "long"|"short") { return `${sym}:${side}`; }
 
+// When a position closes and you know its realized PnL:
+function updateLossStreak(symbol: "BTC" | "ETH", pnl: number) {
+    if (pnl < 0) {
+        lossStreak[symbol] = (lossStreak[symbol] || 0) + 1;
+    } else {
+        lossStreak[symbol] = 0; // reset on any win or break-even
+    }
+}
+
 export async function runMainStrategy1h(symbols: Symbol[]) {
     for (const symbol of symbols) {
         try {
@@ -117,13 +129,7 @@ export async function runMainStrategy1h(symbols: Symbol[]) {
             };
 
             if (desiredSide === "flat") {
-                logger.info(`[1H] HOLDING ${symbol} action=${signal.action} conf=${signal.confidence} score=${score} json=${JSON.stringify(dbg)}`);
-                continue;
-            }
-
-            const minConf = MIN_CONF_1H[symbol][desiredSide];
-            if (signal.confidence < minConf) {
-                logger.info(`[1H] REJECTED ${symbol} by minConf. conf=${signal.confidence} < ${minConf} score=${score} json=${JSON.stringify(dbg)}`);
+                logger.info(`[1H] HOLDING ${symbol} action=${signal.action} actionReason=${signal.actionReason} conf=${signal.confidence} score=${score} json=${JSON.stringify(dbg)}`);
                 continue;
             }
 
@@ -148,9 +154,7 @@ export async function runMainStrategy1h(symbols: Symbol[]) {
             if (posSide !== "flat" && posSide !== desiredSide && REVERSAL_1H.ENABLED) {
                 const lastPrice = last10[9].close;
                 const entryPx = pos ? Number(pos.entryPx) : NaN;
-                const oppositeScore = Math.abs(score); // simple: use magnitude as evidence
-                // For clarity, you could compute an opposite-side re-score; using magnitude here conservatively
-                const strong = (signal.confidence >= REVERSAL_1H.MIN_CONF) && (oppositeScore >= (Math.abs(score) + REVERSAL_1H.MIN_SCORE_DELTA));
+                const strong = signal.confidence >= REVERSAL_1H.MIN_CONF;
                 const nearEntry = withinBp(lastPrice, entryPx, REVERSAL_1H.MAX_ENTRY_DRIFT_BP);
                 if (strong && nearEntry) {
                     logger.info(`[1H] REVERSAL ${symbol} ${posSide} -> ${desiredSide}, close & flip. conf=${signal.confidence} score=${score} json=${JSON.stringify(dbg)}`);

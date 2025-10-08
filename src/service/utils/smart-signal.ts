@@ -1,3 +1,5 @@
+import {MIN_CONF_ALL, VOL_GATES} from "../strategies/execution-config";
+
 export type Symbol = "BTC" | "ETH";
 
 export interface IndicatorRow {
@@ -10,6 +12,7 @@ export interface IndicatorRow {
 
 export interface SignalResult {
     action: "buy" | "sell" | "hold";
+    actionReason: string; // for logging/analysis
     confidence: number; // 0..100
     debug?: Record<string, any>;
 }
@@ -116,19 +119,45 @@ export function getSignalH1(
 
     // ---------- decision ----------
     let action: "buy" | "sell" | "hold" = "hold";
+    let actionReason= "none";
     const buyLimitH1: Record<Symbol, number>  = { BTC: 30, ETH: 28 };
     const sellLimitH1: Record<Symbol, number> = { BTC: -10, ETH: -8 };
 
-    if (score >= buyLimitH1[symbol]) action = "buy";
-    if (score <= sellLimitH1[symbol]) action = "sell";
+    if (score >= buyLimitH1[symbol]) {
+        action = "buy";
+    } else {
+        actionReason = "scoreBelowBuyLimit";
+    }
+    if (score <= sellLimitH1[symbol]) {
+        action = "sell";
+    } else {
+        actionReason = "scoreAboveSellLimit";
+    }
 
     // Confidence (softclip, min higher for H1)
     const softclip = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x));
     const confMin: Record<Symbol, number> = { BTC: 60, ETH: 58 };
     const confidence = softclip(Math.round(50 + (Math.abs(score) / 80) * 50), confMin[symbol], 100);
 
+    //volume-based gating
+    //a. Don't do any trade
+    if (symbol === "BTC" && volZ1h > VOL_GATES.BTC.maxVolZ) {
+        action = "hold"; // override
+        actionReason = "highVol";
+    }
+    let minConf = MIN_CONF_ALL;
+    //b. Or adjust minimum confidence requirement
+    if (symbol === "ETH" && volZ1h > VOL_GATES.ETH.highVolZ) {
+        minConf = VOL_GATES.ETH.minConfHighVol;
+    }
+    if (confidence < minConf) {
+        action = "hold"; // override
+        actionReason = "lowConfidence";
+    }
+
     return {
         action,
+        actionReason,
         confidence,
         ...(opts?.returnDebug
             ? { debug: {

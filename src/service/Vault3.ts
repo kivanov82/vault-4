@@ -8,10 +8,10 @@ export class Vault3 {
         schedule.scheduleJob("1 * * * *", () => {
             setTimeout(() => {
                 runMainStrategy1h(['ETH']);
-            }, 10000);
+            }, 50000);
             setTimeout(() => {
                 runMainStrategy1h(['BTC']);
-            }, 45000);
+            }, 85000);
         });
         /*schedule.scheduleJob("*!/30 * * * *", () => {
             CopyTradingManager.scanTraders();
