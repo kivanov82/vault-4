@@ -125,13 +125,11 @@ export function getSignalH1(
 
     if (score >= buyLimitH1[symbol]) {
         action = "buy";
-    } else {
-        actionReason = "scoreBelowBuyLimit";
-    }
-    if (score <= sellLimitH1[symbol]) {
+    } else if (score <= sellLimitH1[symbol]) {
         action = "sell";
     } else {
-        actionReason = "scoreAboveSellLimit";
+        action = "hold";
+        actionReason = "scoreOutsideBuySellLimit";
     }
 
     // Confidence (softclip, min higher for H1)
@@ -139,18 +137,16 @@ export function getSignalH1(
     const confMin: Record<Symbol, number> = { BTC: 60, ETH: 58 };
     const confidence = softclip(Math.round(50 + (Math.abs(score) / 80) * 50), confMin[symbol], 100);
 
-    //volume-based gating
-    //a. Don't do any trade
-    if (symbol === "BTC" && volZ1h > VOL_GATES.BTC.maxVolZ) {
-        action = "hold"; // override
-        actionReason = "highVol";
-    }
     let minConf = MIN_CONF_ALL;
-    //b. Or adjust minimum confidence requirement
+    //Adjust minimum confidence requirement
     if (symbol === "ETH" && volZ1h > VOL_GATES.ETH.highVolZ) {
         minConf = VOL_GATES.ETH.minConfHighVol;
     }
-    if (confidence < minConf) {
+    //volume-based gating
+    if (symbol === "BTC" && volZ1h > VOL_GATES.BTC.maxVolZ) {
+        action = "hold"; // override
+        actionReason = "highVol";
+    } else  if (confidence < minConf) {
         action = "hold"; // override
         actionReason = "lowConfidence";
     }
