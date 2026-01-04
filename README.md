@@ -1,2 +1,2 @@
-# vault-3
-Trading bot
+# vault-4
+Hyperliquid AI-powered vault management system.
