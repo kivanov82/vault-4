@@ -21,6 +21,8 @@ const VAULTS_URL =
     "https://stats-data.hyperliquid.xyz/Mainnet/vaults";
 const HYPERLIQUID_RPC =
     process.env.HYPERLIQUID_RPC ?? "https://rpc.hyperlend.finance";
+const HYPERLIQUID_INFO_URL =
+    process.env.HYPERLIQUID_INFO_URL ?? "https://api.hyperliquid.xyz/info";
 const EXCHANGE_PKEY = process.env.WALLET_PK as `0x${string}` | undefined;
 
 export type VaultRaw = {
@@ -302,6 +304,63 @@ export class HyperliquidConnector {
             return Array.isArray(trades) ? trades.length : null;
         } catch (error: any) {
             logger.warn("Failed to fetch vault trades", {
+                vaultAddress,
+                message: error?.message,
+            });
+            return null;
+        }
+    }
+
+    static async getVaultTrades(
+        vaultAddress: string,
+        lookbackDays: number,
+        maxTrades?: number
+    ): Promise<{ time: number; dir: string; closedPnl: number; fee: number }[]> {
+        try {
+            const client = this.getPublicClient();
+            const startTime = Date.now() - lookbackDays * 24 * 60 * 60 * 1000;
+            const trades = await client.userFillsByTime({
+                user: vaultAddress,
+                startTime,
+            });
+            if (!Array.isArray(trades) || !trades.length) return [];
+            const mapped = trades
+                .map((trade) => ({
+                    time: toNumberSafe(trade.time),
+                    dir: typeof trade.dir === "string" ? trade.dir : "",
+                    closedPnl: toNumberSafe(trade.closedPnl),
+                    fee: toNumberSafe(trade.fee),
+                }))
+                .filter((trade) => Number.isFinite(trade.time));
+            mapped.sort((a, b) => b.time - a.time);
+            if (Number.isFinite(Number(maxTrades)) && Number(maxTrades) > 0) {
+                return mapped.slice(0, Number(maxTrades));
+            }
+            return mapped;
+        } catch (error: any) {
+            logger.warn("Failed to fetch vault trades", {
+                vaultAddress,
+                message: error?.message,
+            });
+            return [];
+        }
+    }
+
+    static async getVaultAccountSummary(
+        vaultAddress: string
+    ): Promise<{ assetPositions: any[] } | null> {
+        try {
+            const response = await axios.post(HYPERLIQUID_INFO_URL, {
+                type: "userState",
+                user: vaultAddress,
+            });
+            const data = response?.data;
+            if (!data || !Array.isArray(data.assetPositions)) {
+                return { assetPositions: [] };
+            }
+            return { assetPositions: data.assetPositions };
+        } catch (error: any) {
+            logger.warn("Failed to fetch vault account summary", {
                 vaultAddress,
                 message: error?.message,
             });

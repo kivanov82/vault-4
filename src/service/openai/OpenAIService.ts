@@ -1,5 +1,9 @@
 import OpenAI from "openai";
+import fs from "fs";
+import path from "path";
 import { logger } from "../utils/logger";
+import { HyperliquidConnector } from "../trade/HyperliquidConnector";
+import { MarketDataService } from "./MarketDataService";
 import type { VaultCandidate } from "../vaults/types";
 
 type OpenAIRankedVault = {
@@ -20,9 +24,20 @@ const RAW_TEMPERATURE = Number(process.env.OPENAI_TEMPERATURE ?? 0.2);
 const DEFAULT_TEMPERATURE = Number.isFinite(RAW_TEMPERATURE) ? RAW_TEMPERATURE : 0.2;
 const RAW_MAX_CANDIDATES = Number(process.env.OPENAI_MAX_CANDIDATES ?? 80);
 const MAX_CANDIDATES = Number.isFinite(RAW_MAX_CANDIDATES) ? RAW_MAX_CANDIDATES : 80;
+const RAW_MAX_TRADES = Number(process.env.OPENAI_MAX_TRADES_PER_VAULT ?? 250);
+const MAX_TRADES = Number.isFinite(RAW_MAX_TRADES) ? RAW_MAX_TRADES : 250;
+const RAW_MAX_POSITIONS = Number(process.env.OPENAI_MAX_POSITIONS_PER_VAULT ?? 30);
+const MAX_POSITIONS = Number.isFinite(RAW_MAX_POSITIONS) ? RAW_MAX_POSITIONS : 30;
+const RAW_DATA_CONCURRENCY = Number(process.env.OPENAI_DATA_CONCURRENCY ?? 3);
+const DATA_CONCURRENCY = Number.isFinite(RAW_DATA_CONCURRENCY)
+    ? Math.max(1, Math.floor(RAW_DATA_CONCURRENCY))
+    : 3;
+
+const PROMPT_PATH = path.join(__dirname, "prompts", "vault-ranking.md");
 
 export class OpenAIService {
     private static client: OpenAI | null = null;
+    private static promptCache: string | null = null;
 
     static isConfigured(): boolean {
         return Boolean(process.env.OPENAI_API_KEY);
@@ -40,42 +55,26 @@ export class OpenAIService {
         if (!candidates.length) return null;
 
         const client = this.getClient();
-        const trimmed = candidates.slice(0, MAX_CANDIDATES).map((candidate) => ({
-            vaultAddress: candidate.vaultAddress,
-            name: candidate.name,
-            tvl: candidate.tvl,
-            ageDays: candidate.ageDays,
-            weeklyPnl: candidate.weeklyPnl,
-            monthlyPnl: candidate.monthlyPnl,
-            allTimePnl: candidate.allTimePnl,
-            followers: candidate.followers,
-            tradesLast7d: candidate.tradesLast7d,
-            allowDeposits: candidate.allowDeposits,
-        }));
-
-        const systemPrompt =
-            "You are a quantitative analyst ranking Hyperliquid vaults. " +
-            "Return strict JSON only with keys: high_confidence, low_confidence. " +
-            "Each array must contain objects with vaultAddress, reason, score (0-100). " +
-            "Total length must equal the requested total count. " +
-            "High confidence count must match the requested count. " +
-            "Only select from the provided candidates and do not duplicate vaults.";
-
-        const userPrompt = JSON.stringify({
-            request: {
-                totalCount,
-                highConfidenceCount,
-                lowConfidenceCount: Math.max(totalCount - highConfidenceCount, 0),
-            },
-            candidates: trimmed,
-        });
+        const prompt = this.getPromptTemplate();
+        const vaultsPayload = await buildVaultPayload(
+            candidates.slice(0, MAX_CANDIDATES),
+            {
+                maxTrades: MAX_TRADES,
+                maxPositions: MAX_POSITIONS,
+                concurrency: DATA_CONCURRENCY,
+            }
+        );
+        const marketData = await MarketDataService.getMarketOverlay();
+        const userPrompt = `market_data = ${JSON.stringify(
+            marketData
+        )}\n\nvaults_json = ${JSON.stringify(vaultsPayload)}`;
 
         try {
             const response = await client.chat.completions.create({
                 model: DEFAULT_MODEL,
                 temperature: DEFAULT_TEMPERATURE,
                 messages: [
-                    { role: "system", content: systemPrompt },
+                    { role: "system", content: prompt },
                     { role: "user", content: userPrompt },
                 ],
             });
@@ -86,16 +85,33 @@ export class OpenAIService {
                 logger.warn("OpenAI response was not valid JSON");
                 return null;
             }
+            const top10 = normalizeTop10(parsed.top10 ?? parsed.top_10);
+            if (!top10.length) {
+                logger.warn("OpenAI response missing top10 array");
+                return null;
+            }
+            const ranked = top10
+                .map((entry) => ({
+                    vaultAddress: entry.address ?? entry.vaultAddress ?? "",
+                    reason: entry.why_now,
+                    score: entry.score_market,
+                    rank: entry.rank,
+                }))
+                .filter((entry) => Boolean(entry.vaultAddress));
 
-            const high = Array.isArray(parsed.high_confidence)
-                ? parsed.high_confidence
-                : parsed.highConfidence;
-            const low = Array.isArray(parsed.low_confidence)
-                ? parsed.low_confidence
-                : parsed.lowConfidence;
+            const ordered = ranked.some((entry) => Number.isFinite(entry.rank))
+                ? ranked
+                      .slice()
+                      .sort(
+                          (a, b) =>
+                              (Number(a.rank) || 0) - (Number(b.rank) || 0)
+                      )
+                : ranked;
 
-            if (!Array.isArray(high) || !Array.isArray(low)) {
-                logger.warn("OpenAI response missing confidence arrays");
+            const high = ordered.slice(0, highConfidenceCount);
+            const low = ordered.slice(highConfidenceCount, totalCount);
+            if (!high.length || high.length + low.length < totalCount) {
+                logger.warn("OpenAI response returned insufficient ranked vaults");
                 return null;
             }
 
@@ -117,6 +133,17 @@ export class OpenAIService {
         }
         return this.client;
     }
+
+    private static getPromptTemplate(): string {
+        if (!this.promptCache) {
+            this.promptCache = fs.readFileSync(PROMPT_PATH, "utf8");
+        }
+        return this.promptCache;
+    }
+}
+
+function normalizeTop10(entries: any): any[] {
+    return Array.isArray(entries) ? entries : [];
 }
 
 function normalizeRankedVaults(entries: any[]): OpenAIRankedVault[] {
@@ -127,6 +154,77 @@ function normalizeRankedVaults(entries: any[]): OpenAIRankedVault[] {
             score: Number.isFinite(Number(entry.score)) ? Number(entry.score) : undefined,
         }))
         .filter((entry) => Boolean(entry.vaultAddress));
+}
+
+type VaultTrade = {
+    time: number;
+    dir: string;
+    closedPnl: number;
+    fee: number;
+};
+
+type VaultPayload = {
+    vault: {
+        summary: {
+            name: string;
+            vaultAddress: string;
+            tvl: number;
+        };
+        pnls: any;
+    };
+    trades: VaultTrade[];
+    accountSummary: {
+        assetPositions: any[];
+    };
+};
+
+async function buildVaultPayload(
+    candidates: VaultCandidate[],
+    options: { maxTrades: number; maxPositions: number; concurrency: number }
+): Promise<VaultPayload[]> {
+    return mapWithConcurrency(candidates, options.concurrency, async (candidate) => {
+        const vaultAddress = candidate.vaultAddress;
+        const [trades, accountSummary] = await Promise.all([
+            HyperliquidConnector.getVaultTrades(vaultAddress, 7, options.maxTrades),
+            HyperliquidConnector.getVaultAccountSummary(vaultAddress),
+        ]);
+        const positions = Array.isArray(accountSummary?.assetPositions)
+            ? accountSummary.assetPositions.slice(0, options.maxPositions)
+            : [];
+        return {
+            vault: {
+                summary: {
+                    name: candidate.name,
+                    vaultAddress: candidate.vaultAddress,
+                    tvl: candidate.tvl,
+                },
+                pnls: candidate.raw?.pnls ?? [],
+            },
+            trades,
+            accountSummary: {
+                assetPositions: positions,
+            },
+        };
+    });
+}
+
+async function mapWithConcurrency<T, R>(
+    items: T[],
+    limit: number,
+    worker: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+    const results = new Array<R>(items.length);
+    let index = 0;
+    const workers = new Array(Math.min(limit, items.length)).fill(0).map(async () => {
+        while (true) {
+            const current = index;
+            index += 1;
+            if (current >= items.length) break;
+            results[current] = await worker(items[current], current);
+        }
+    });
+    await Promise.all(workers);
+    return results;
 }
 
 function parseJsonPayload(content: string): any | null {

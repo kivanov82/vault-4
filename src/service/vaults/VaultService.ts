@@ -58,7 +58,7 @@ const USER_VAULTS_CACHE_TTL_MS = readNumberEnv(
 );
 const USER_VAULTS_CONCURRENCY = Math.max(
     1,
-    readNumberEnv(process.env.USER_VAULTS_CONCURRENCY, 4)
+    readNumberEnv(process.env.USER_VAULTS_CONCURRENCY, 3)
 );
 const USER_PORTFOLIO_CACHE_TTL_MS = readNumberEnv(
     process.env.USER_PORTFOLIO_CACHE_TTL_MS,

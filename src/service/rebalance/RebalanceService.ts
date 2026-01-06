@@ -6,6 +6,7 @@ export type WithdrawAllOptions = {
     includeLocked?: boolean;
     dryRun?: boolean;
     usdBufferBps?: number;
+    sweepDust?: boolean;
 };
 
 export type VaultTransferAction = {
@@ -34,6 +35,7 @@ export type WithdrawVaultOptions = {
     includeLocked?: boolean;
     dryRun?: boolean;
     usdBufferBps?: number;
+    sweepDust?: boolean;
 };
 
 export type WithdrawVaultResult = {
@@ -69,6 +71,7 @@ export class RebalanceService {
         const dryRun = options.dryRun ?? true;
         const usdBufferBps =
             options.usdBufferBps ?? DEFAULT_USD_BUFFER_BPS;
+        const sweepDust = options.sweepDust ?? false;
 
         const equities = await HyperliquidConnector.getUserVaultEquities(
             userAddress
@@ -85,6 +88,7 @@ export class RebalanceService {
                 includeLocked,
                 dryRun,
                 usdBufferBps,
+                sweepDust,
                 now,
             });
             actions.push(action);
@@ -116,6 +120,7 @@ export class RebalanceService {
         const dryRun = options.dryRun ?? true;
         const usdBufferBps =
             options.usdBufferBps ?? DEFAULT_USD_BUFFER_BPS;
+        const sweepDust = options.sweepDust ?? false;
         const equities = await HyperliquidConnector.getUserVaultEquities(
             userAddress
         );
@@ -140,6 +145,7 @@ export class RebalanceService {
             includeLocked,
             dryRun,
             usdBufferBps,
+            sweepDust,
             now: Date.now(),
         });
         return { userAddress, dryRun, action };
@@ -225,6 +231,7 @@ async function withdrawFromEquity(
         includeLocked: boolean;
         dryRun: boolean;
         usdBufferBps: number;
+        sweepDust: boolean;
         now: number;
     }
 ): Promise<VaultTransferAction> {
@@ -242,13 +249,16 @@ async function withdrawFromEquity(
         };
     }
 
-    const usdMicros = toUsdMicros(equity.equity, options.usdBufferBps);
-    if (usdMicros <= 0) {
+    const bufferedMicros = toUsdMicros(equity.equity, options.usdBufferBps);
+    const fullMicros = toUsdMicros(equity.equity, 0);
+    const targetMicros = bufferedMicros > 0 ? bufferedMicros : fullMicros;
+
+    if (targetMicros <= 0) {
         return {
             vaultAddress: equity.vaultAddress,
             equity: equity.equity,
             lockedUntilTimestamp: equity.lockedUntilTimestamp,
-            usdMicros,
+            usdMicros: targetMicros,
             status: "skipped",
             reason: "zero-amount",
         };
@@ -259,36 +269,80 @@ async function withdrawFromEquity(
             vaultAddress: equity.vaultAddress,
             equity: equity.equity,
             lockedUntilTimestamp: equity.lockedUntilTimestamp,
-            usdMicros,
+            usdMicros: targetMicros,
             status: "prepared",
         };
     }
 
+    const primary = await attemptWithdrawal(equity.vaultAddress, targetMicros);
+    if (primary.status === "submitted") {
+        return {
+            vaultAddress: equity.vaultAddress,
+            equity: equity.equity,
+            lockedUntilTimestamp: equity.lockedUntilTimestamp,
+            usdMicros: targetMicros,
+            status: "submitted",
+        };
+    }
+
+    const shouldSweep =
+        options.sweepDust &&
+        options.usdBufferBps > 0 &&
+        fullMicros > 0 &&
+        fullMicros !== targetMicros &&
+        isInsufficientEquityError(primary.error);
+    if (!shouldSweep) {
+        return {
+            vaultAddress: equity.vaultAddress,
+            equity: equity.equity,
+            lockedUntilTimestamp: equity.lockedUntilTimestamp,
+            usdMicros: targetMicros,
+            status: "error",
+            error: primary.error,
+        };
+    }
+
+    const sweep = await attemptWithdrawal(equity.vaultAddress, fullMicros);
+    if (sweep.status === "submitted") {
+        return {
+            vaultAddress: equity.vaultAddress,
+            equity: equity.equity,
+            lockedUntilTimestamp: equity.lockedUntilTimestamp,
+            usdMicros: fullMicros,
+            status: "submitted",
+            reason: "sweep",
+        };
+    }
+
+    return {
+        vaultAddress: equity.vaultAddress,
+        equity: equity.equity,
+        lockedUntilTimestamp: equity.lockedUntilTimestamp,
+        usdMicros: fullMicros,
+        status: "error",
+        error: sweep.error,
+    };
+}
+
+async function attemptWithdrawal(
+    vaultAddress: string,
+    usdMicros: number
+): Promise<{ status: "submitted" | "error"; error?: string }> {
     try {
         await HyperliquidConnector.vaultTransfer(
-            equity.vaultAddress as `0x${string}`,
+            vaultAddress as `0x${string}`,
             false,
             usdMicros
         );
-        return {
-            vaultAddress: equity.vaultAddress,
-            equity: equity.equity,
-            lockedUntilTimestamp: equity.lockedUntilTimestamp,
-            usdMicros,
-            status: "submitted",
-        };
+        return { status: "submitted" };
     } catch (error: any) {
-        logger.warn("Withdraw failed", {
-            vaultAddress: equity.vaultAddress,
-            message: error?.message,
-        });
-        return {
-            vaultAddress: equity.vaultAddress,
-            equity: equity.equity,
-            lockedUntilTimestamp: equity.lockedUntilTimestamp,
-            usdMicros,
-            status: "error",
-            error: error?.message ?? String(error),
-        };
+        const message = error?.message ?? String(error);
+        logger.warn("Withdraw failed", { vaultAddress, message });
+        return { status: "error", error: message };
     }
+}
+
+function isInsufficientEquityError(message?: string): boolean {
+    if (!message) return false;
+    return message.toLowerCase().includes("insufficient vault equity");
 }
