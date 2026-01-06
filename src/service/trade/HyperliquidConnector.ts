@@ -1,6 +1,7 @@
 import * as hl from "@nktkas/hyperliquid";
 import axios from "axios";
 import dotenv from "dotenv";
+import { privateKeyToAccount } from "viem/accounts";
 import { logger } from "../utils/logger";
 import type {
     TimeSeries,
@@ -20,6 +21,7 @@ const VAULTS_URL =
     "https://stats-data.hyperliquid.xyz/Mainnet/vaults";
 const HYPERLIQUID_RPC =
     process.env.HYPERLIQUID_RPC ?? "https://rpc.hyperlend.finance";
+const EXCHANGE_PKEY = process.env.WALLET_PK as `0x${string}` | undefined;
 
 export type VaultRaw = {
     summary: {
@@ -58,6 +60,7 @@ export type VaultPerformance = {
 
 export class HyperliquidConnector {
     private static publicClient: hl.InfoClient | null = null;
+    private static exchangeClient: hl.ExchangeClient | null = null;
 
     static async getVaults(): Promise<VaultRaw[]> {
         return this.fetchVaultsRaw();
@@ -319,6 +322,58 @@ export class HyperliquidConnector {
             this.publicClient = new hl.InfoClient({ transport });
         }
         return this.publicClient;
+    }
+
+    static getExchangeClient(defaultVaultAddress?: `0x${string}`): hl.ExchangeClient {
+        if (defaultVaultAddress) {
+            const transport = new hl.HttpTransport({
+                timeout: null,
+                server: {
+                    mainnet: {
+                        rpc: HYPERLIQUID_RPC,
+                    },
+                },
+            });
+            const account = this.getExchangeAccount();
+            return new hl.ExchangeClient({
+                wallet: account,
+                transport,
+                defaultVaultAddress,
+            });
+        }
+        if (!this.exchangeClient) {
+            const transport = new hl.HttpTransport({
+                timeout: null,
+                server: {
+                    mainnet: {
+                        rpc: HYPERLIQUID_RPC,
+                    },
+                },
+            });
+            const account = this.getExchangeAccount();
+            this.exchangeClient = new hl.ExchangeClient({ wallet: account, transport });
+        }
+        return this.exchangeClient;
+    }
+
+    static async vaultTransfer(
+        vaultAddress: `0x${string}`,
+        isDeposit: boolean,
+        usdMicros: number
+    ): Promise<any> {
+        const client = this.getExchangeClient();
+        return client.vaultTransfer({
+            vaultAddress,
+            isDeposit,
+            usd: usdMicros,
+        });
+    }
+
+    private static getExchangeAccount() {
+        if (!EXCHANGE_PKEY) {
+            throw new Error("WALLET_PK is not set");
+        }
+        return privateKeyToAccount(EXCHANGE_PKEY);
     }
 
     private static getLatestPnl(vault: VaultRaw, index: number): number | null {

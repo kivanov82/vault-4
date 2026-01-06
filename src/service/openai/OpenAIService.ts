@@ -15,7 +15,7 @@ export type OpenAIRanking = {
     raw: string;
 };
 
-const DEFAULT_MODEL = process.env.OPENAI_MODEL ?? "gpt-5.2-thinking";
+const DEFAULT_MODEL = process.env.OPENAI_MODEL ?? "gpt-5.1";
 const RAW_TEMPERATURE = Number(process.env.OPENAI_TEMPERATURE ?? 0.2);
 const DEFAULT_TEMPERATURE = Number.isFinite(RAW_TEMPERATURE) ? RAW_TEMPERATURE : 0.2;
 const RAW_MAX_CANDIDATES = Number(process.env.OPENAI_MAX_CANDIDATES ?? 80);
