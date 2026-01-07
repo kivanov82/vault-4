@@ -27,82 +27,35 @@ app.get("/health", (req, res) => {
     res.json({ ok: true, service: "vault-4", timestamp: new Date().toISOString() });
 });
 
-app.get("/api/vaults/:vaultAddress/metrics", async (req, res) => {
+app.get("/api/positions", async (req, res) => {
     try {
-        const vaultAddress = String(req.params.vaultAddress);
-        const metrics = await VaultService.getVaultMetrics(vaultAddress);
-        if (!metrics) {
-            res.status(404).json({ error: "Vault not found" });
-            return;
-        }
-        res.json(metrics);
-    } catch (error: any) {
-        logger.error("Failed to fetch vault metrics", { message: error?.message });
-        res.status(500).json({ error: "Failed to fetch vault metrics" });
-    }
-});
-
-app.get("/api/vaults/:vaultAddress/history", async (req, res) => {
-    try {
-        const vaultAddress = String(req.params.vaultAddress);
-        const history = await VaultService.getVaultHistory(vaultAddress);
-        if (!history) {
-            res.status(404).json({ error: "Vault not found" });
-            return;
-        }
-        res.json(history);
-    } catch (error: any) {
-        logger.error("Failed to fetch vault history", { message: error?.message });
-        res.status(500).json({ error: "Failed to fetch vault history" });
-    }
-});
-
-app.get("/api/users/:userAddress/vaults", async (req, res) => {
-    try {
-        const userAddress = String(req.params.userAddress);
         const refresh = String(req.query.refresh ?? "false").toLowerCase() === "true";
-        const includeHistory =
-            String(req.query.includeHistory ?? "false").toLowerCase() === "true";
-        const vaults = await VaultService.getUserVaults(userAddress, {
-            refresh,
-            includeHistory,
+        const positions = await VaultService.getPlatformPositions({ refresh });
+        res.json(positions);
+    } catch (error: any) {
+        logger.error("Failed to fetch platform positions", {
+            message: error?.message,
         });
-        res.json(vaults);
-    } catch (error: any) {
-        logger.error("Failed to fetch user vaults", { message: error?.message });
-        res.status(500).json({ error: "Failed to fetch user vaults" });
+        res.status(500).json({ error: "Failed to fetch platform positions" });
     }
 });
 
-app.get("/api/users/:userAddress/vaults/:vaultAddress/history", async (req, res) => {
+app.get("/api/history", async (req, res) => {
     try {
-        const userAddress = String(req.params.userAddress);
-        const vaultAddress = String(req.params.vaultAddress);
-        const history = await VaultService.getUserVaultHistory(userAddress, vaultAddress);
-        if (!history) {
-            res.status(404).json({ error: "User vault history not found" });
-            return;
-        }
+        const refresh = String(req.query.refresh ?? "false").toLowerCase() === "true";
+        const page = Number(req.query.page ?? 1);
+        const pageSize = Number(req.query.pageSize ?? 15);
+        const history = await VaultService.getPlatformHistory({
+            refresh,
+            page,
+            pageSize,
+        });
         res.json(history);
     } catch (error: any) {
-        logger.error("Failed to fetch user vault history", { message: error?.message });
-        res.status(500).json({ error: "Failed to fetch user vault history" });
-    }
-});
-
-app.get("/api/users/:userAddress/portfolio", async (req, res) => {
-    try {
-        const userAddress = String(req.params.userAddress);
-        const refresh = String(req.query.refresh ?? "false").toLowerCase() === "true";
-        const portfolio = await VaultService.getUserPortfolio(userAddress, { refresh });
-        if (!portfolio) {
-            res.status(404).json({ error: "Portfolio not found" });
-            return;
-        }
-        res.json(portfolio);
-    } catch (error: any) {
-        logger.error("Failed to fetch user portfolio", { message: error?.message });
-        res.status(500).json({ error: "Failed to fetch user portfolio" });
+        logger.error("Failed to fetch platform history", {
+            message: error?.message,
+        });
+        res.status(500).json({ error: "Failed to fetch platform history" });
     }
 });
 

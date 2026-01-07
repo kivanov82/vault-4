@@ -9,7 +9,10 @@ import type {
     VaultHistory,
     VaultMetrics,
     VaultRecommendation,
+    PlatformHistoryEntry,
+    PlatformHistoryResponse,
     UserPortfolioSummary,
+    UserPositionsResponse,
     UserVaultHistory,
     UserVaultsResponse,
 } from "./types";
@@ -64,6 +67,7 @@ const USER_PORTFOLIO_CACHE_TTL_MS = readNumberEnv(
     process.env.USER_PORTFOLIO_CACHE_TTL_MS,
     2 * 60 * 1000
 );
+const MIN_POSITION_USD = readNumberEnv(process.env.MIN_POSITION_USD, 1);
 
 type CandidateOptions = {
     refresh?: boolean;
@@ -415,6 +419,139 @@ export class VaultService {
         return result;
     }
 
+    static async getUserPositions(
+        userAddress: string,
+        options: { refresh?: boolean } = {}
+    ): Promise<UserPositionsResponse> {
+        const vaults = await this.getUserVaults(userAddress, {
+            refresh: options.refresh,
+            includeHistory: true,
+        });
+        const ledgerUpdates = await HyperliquidConnector.getUserVaultLedgerUpdates(
+            userAddress as `0x${string}`
+        );
+        const ledgerByVault = buildLedgerByVault(ledgerUpdates, MIN_POSITION_USD);
+        const portfolio = await this.getUserPortfolio(userAddress, {
+            refresh: options.refresh,
+        });
+        const perpsEquity = extractAccountEquity(portfolio);
+        const investedUsd = vaults.items.reduce((sum, entry) => {
+            const equity = Number.isFinite(entry.equity) ? entry.equity : 0;
+            return equity >= MIN_POSITION_USD ? sum + equity : sum;
+        }, 0);
+        const totalCapital =
+            Number.isFinite(perpsEquity) ? perpsEquity + investedUsd : null;
+        const positions = vaults.items
+            .filter(
+                (entry) =>
+                    Number.isFinite(entry.equity) && entry.equity >= MIN_POSITION_USD
+            )
+            .map((entry) => {
+                const amountUsd = Number.isFinite(entry.equity)
+                    ? entry.equity
+                    : null;
+                const ledger = ledgerByVault.get(
+                    entry.vaultAddress.toLowerCase()
+                );
+                const pnlUsd = pickPnl(
+                    entry.userPerformance,
+                    entry.userHistory,
+                    amountUsd,
+                    ledger
+                );
+                const entryUsd = deriveEntryUsd(amountUsd, pnlUsd, ledger);
+                const roePct =
+                    entryUsd && entryUsd > 0 && pnlUsd !== null
+                        ? (pnlUsd / entryUsd) * 100
+                        : null;
+                const sizePct =
+                    totalCapital && totalCapital > 0 && amountUsd !== null
+                        ? (amountUsd / totalCapital) * 100
+                        : null;
+                return {
+                    vaultAddress: entry.vaultAddress,
+                    vaultName: entry.vaultName,
+                    sizePct: sizePct !== null ? round(sizePct, 4) : null,
+                    amountUsd: amountUsd !== null ? round(amountUsd, 6) : null,
+                    pnlUsd: pnlUsd !== null ? round(pnlUsd, 6) : null,
+                    roePct: roePct !== null ? round(roePct, 4) : null,
+                };
+            });
+        const netPnl = positions.reduce(
+            (sum, entry) => sum + (Number.isFinite(entry.pnlUsd) ? entry.pnlUsd : 0),
+            0
+        );
+        return {
+            userAddress,
+            totalPositions: positions.length,
+            totalCapitalUsd: totalCapital !== null ? round(totalCapital, 6) : null,
+            totalInvestedUsd:
+                Number.isFinite(investedUsd) ? round(investedUsd, 6) : null,
+            netPnlUsd: Number.isFinite(netPnl) ? round(netPnl, 6) : null,
+            positions,
+        };
+    }
+
+    static async getPlatformHistory(
+        options: { refresh?: boolean; page?: number; pageSize?: number } = {}
+    ): Promise<PlatformHistoryResponse> {
+        const wallet = process.env.WALLET as `0x${string}` | undefined;
+        if (!wallet) {
+            throw new Error("WALLET is not set");
+        }
+        const updates = await HyperliquidConnector.getUserVaultLedgerUpdates(wallet);
+        const vaultNames = await fetchVaultNames(
+            updates.map((entry) => entry.vault)
+        );
+        const entries: PlatformHistoryEntry[] = updates.map((entry) => {
+            const amountUsd = Number.isFinite(entry.usdc)
+                ? round(entry.usdc, 6)
+                : null;
+            const realized =
+                entry.type === "vaultWithdraw" &&
+                Number.isFinite(entry.netWithdrawnUsd) &&
+                Number.isFinite(entry.basisUsd)
+                    ? round(
+                          Number(entry.netWithdrawnUsd) - Number(entry.basisUsd),
+                          6
+                      )
+                    : null;
+            return {
+                time: entry.time,
+                type: entry.type,
+                vaultAddress: entry.vault,
+                vaultName: vaultNames.get(entry.vault.toLowerCase()),
+                amountUsd,
+                realizedPnlUsd: realized,
+            };
+        });
+        entries.sort((a, b) => b.time - a.time);
+        const pageSize = clampInt(options.pageSize ?? 15, 1, 100);
+        const total = entries.length;
+        const totalPages = Math.max(1, Math.ceil(total / pageSize));
+        const page = clampInt(options.page ?? 1, 1, totalPages);
+        const start = (page - 1) * pageSize;
+        const pageEntries = entries.slice(start, start + pageSize);
+        return {
+            userAddress: wallet,
+            total,
+            page,
+            pageSize,
+            totalPages,
+            entries: pageEntries,
+        };
+    }
+
+    static async getPlatformPositions(
+        options: { refresh?: boolean } = {}
+    ): Promise<UserPositionsResponse> {
+        const wallet = process.env.WALLET as `0x${string}` | undefined;
+        if (!wallet) {
+            throw new Error("WALLET is not set");
+        }
+        return this.getUserPositions(wallet, options);
+    }
+
     static async getUserVaultHistory(
         userAddress: string,
         vaultAddress: string
@@ -462,6 +599,148 @@ function mergeFilters(overrides?: Partial<VaultFilters>): VaultFilters {
         (merged as any)[key] = value;
     }
     return merged;
+}
+
+function extractAccountEquity(
+    portfolio: UserPortfolioSummary | null
+): number | null {
+    const equity = portfolio?.metrics?.accountEquity;
+    if (!equity) return null;
+    return (
+        pickFinite(equity.allTime) ??
+        pickFinite(equity["30d"]) ??
+        pickFinite(equity["7d"]) ??
+        pickFinite(equity["24h"])
+    );
+}
+
+type LedgerSummary = {
+    deposits: number;
+    withdrawals: number;
+    currentDeposits: number;
+};
+
+function pickPnl(
+    perf: { pnl?: number | null; allTimePnl?: number | null } | null,
+    history: { pnl?: { points: { timestamp: number; value: number }[] } | null } | undefined,
+    amountUsd: number | null,
+    ledger?: LedgerSummary
+) {
+    const ledgerPnl = calcUnrealizedPnlFromLedger(amountUsd, ledger);
+    if (Number.isFinite(ledgerPnl)) return ledgerPnl as number;
+    if (perf) {
+        if (Number.isFinite(Number(perf.pnl))) return Number(perf.pnl);
+        if (Number.isFinite(Number(perf.allTimePnl))) return Number(perf.allTimePnl);
+    }
+    const points = history?.pnl?.points;
+    if (Array.isArray(points) && points.length) {
+        const last = points[points.length - 1]?.value;
+        if (Number.isFinite(Number(last))) return Number(last);
+    }
+    return null;
+}
+
+function deriveEntryUsd(
+    amountUsd: number | null,
+    pnlUsd: number | null,
+    ledger?: LedgerSummary
+): number | null {
+    if (ledger && ledger.currentDeposits > 0) {
+        return ledger.currentDeposits;
+    }
+    if (amountUsd !== null && pnlUsd !== null) {
+        const entryUsd = amountUsd - pnlUsd;
+        return Number.isFinite(entryUsd) ? entryUsd : null;
+    }
+    return amountUsd;
+}
+
+function buildLedgerByVault(
+    updates: { vault: string; type: string; usdc: number; time?: number }[],
+    minPositionUsd: number
+): Map<string, LedgerSummary> {
+    const grouped = new Map<string, { vault: string; type: string; usdc: number; time: number }[]>();
+    for (const update of updates) {
+        const vault = update.vault?.toLowerCase();
+        if (!vault) continue;
+        const time = Number(update.time);
+        if (!Number.isFinite(time)) continue;
+        const bucket = grouped.get(vault) ?? [];
+        bucket.push({
+            vault,
+            type: update.type,
+            usdc: update.usdc,
+            time,
+        });
+        grouped.set(vault, bucket);
+    }
+
+    const map = new Map<string, LedgerSummary>();
+    for (const [vault, entries] of grouped.entries()) {
+        entries.sort((a, b) => a.time - b.time);
+        let deposits = 0;
+        let withdrawals = 0;
+        let current = 0;
+        for (const entry of entries) {
+            if (entry.type === "vaultDeposit") {
+                deposits += entry.usdc;
+                current += entry.usdc;
+            } else if (entry.type === "vaultWithdraw") {
+                withdrawals += entry.usdc;
+                current -= entry.usdc;
+            }
+            if (current < minPositionUsd) {
+                current = 0;
+            }
+        }
+        map.set(vault, { deposits, withdrawals, currentDeposits: current });
+    }
+    return map;
+}
+
+function calcUnrealizedPnlFromLedger(
+    amountUsd: number | null,
+    ledger?: LedgerSummary
+): number | null {
+    if (!ledger) return null;
+    const netDeposits = ledger.currentDeposits;
+    if (!Number.isFinite(netDeposits) || netDeposits <= 0) return null;
+    if (!Number.isFinite(amountUsd)) return null;
+    return amountUsd - netDeposits;
+}
+
+async function fetchVaultNames(
+    vaults: string[]
+): Promise<Map<string, string>> {
+    const unique = Array.from(
+        new Set(
+            vaults
+                .filter((vault) => typeof vault === "string")
+                .map((vault) => vault.toLowerCase())
+        )
+    );
+    if (!unique.length) return new Map();
+    const details = await mapWithConcurrency(unique, 3, async (vault) => {
+        const info = await HyperliquidConnector.getVaultDetails(
+            vault as `0x${string}`
+        );
+        return { vault, name: info?.name ?? "" };
+    });
+    const map = new Map<string, string>();
+    for (const entry of details) {
+        if (entry.name) map.set(entry.vault, entry.name);
+    }
+    return map;
+}
+
+function pickFinite(value: number | null | undefined): number | null {
+    return Number.isFinite(Number(value)) ? Number(value) : null;
+}
+
+function clampInt(value: number, min: number, max: number): number {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return min;
+    return Math.min(max, Math.max(min, Math.floor(num)));
 }
 
 async function mapWithConcurrency<T, R>(

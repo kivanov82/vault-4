@@ -24,6 +24,15 @@ const HYPERLIQUID_RPC =
 const HYPERLIQUID_INFO_URL =
     process.env.HYPERLIQUID_INFO_URL ?? "https://api.hyperliquid.xyz/info";
 const EXCHANGE_PKEY = process.env.WALLET_PK as `0x${string}` | undefined;
+const VAULT_DETAILS_TTL_MS = Number(
+    process.env.HYPERLIQUID_VAULT_DETAILS_TTL_MS ?? 120000
+);
+const USER_LEDGER_TTL_MS = Number(
+    process.env.USER_LEDGER_TTL_MS ?? 120000
+);
+const USER_LEDGER_LOOKBACK_DAYS = Number(
+    process.env.USER_LEDGER_LOOKBACK_DAYS ?? 365
+);
 
 export type VaultRaw = {
     summary: {
@@ -60,9 +69,29 @@ export type VaultPerformance = {
     pnls?: any;
 };
 
+export type UserLedgerUpdate = {
+    time: number;
+    type: "vaultDeposit" | "vaultWithdraw";
+    vault: string;
+    usdc: number;
+    requestedUsd?: number;
+    netWithdrawnUsd?: number;
+    basisUsd?: number;
+    commissionUsd?: number;
+    closingCostUsd?: number;
+};
+
 export class HyperliquidConnector {
     private static publicClient: hl.InfoClient | null = null;
     private static exchangeClient: hl.ExchangeClient | null = null;
+    private static vaultDetailsCache: Map<
+        string,
+        { fetchedAt: number; details: VaultDetails }
+    > = new Map();
+    private static ledgerCache: Map<
+        string,
+        { fetchedAt: number; updates: UserLedgerUpdate[] }
+    > = new Map();
 
     static async getVaults(): Promise<VaultRaw[]> {
         return this.fetchVaultsRaw();
@@ -206,16 +235,43 @@ export class HyperliquidConnector {
     }
 
     static async getVaultDetails(vaultAddress: string): Promise<VaultDetails | null> {
-        try {
-            const client = this.getPublicClient();
-            return await client.vaultDetails({ vaultAddress });
-        } catch (error: any) {
-            logger.warn("Failed to fetch vault details", {
-                vaultAddress,
-                message: error?.message,
-            });
-            return null;
+        const cacheKey = vaultAddress.toLowerCase();
+        const cached = this.vaultDetailsCache.get(cacheKey);
+        if (
+            cached &&
+            Number.isFinite(cached.fetchedAt) &&
+            Date.now() - cached.fetchedAt < VAULT_DETAILS_TTL_MS
+        ) {
+            return cached.details;
         }
+        const client = this.getPublicClient();
+        const attempts = 2;
+        for (let attempt = 0; attempt < attempts; attempt += 1) {
+            try {
+                const details = await client.vaultDetails({ vaultAddress });
+                if (details) {
+                    this.vaultDetailsCache.set(cacheKey, {
+                        fetchedAt: Date.now(),
+                        details,
+                    });
+                }
+                return details;
+            } catch (error: any) {
+                const message = error?.message ?? String(error);
+                const retryable =
+                    message.includes("429") || message.includes("rate limited");
+                logger.warn("Failed to fetch vault details", {
+                    vaultAddress,
+                    message,
+                });
+                if (attempt < attempts - 1 && retryable) {
+                    await sleep(400 * (attempt + 1));
+                    continue;
+                }
+                break;
+            }
+        }
+        return cached?.details ?? null;
     }
 
     static getVaultMetricsFromDetails(
@@ -254,6 +310,46 @@ export class HyperliquidConnector {
                 message: error?.message,
             });
             return [];
+        }
+    }
+
+    static async getUserVaultLedgerUpdates(
+        userAddress: `0x${string}`,
+        lookbackDays = USER_LEDGER_LOOKBACK_DAYS
+    ): Promise<UserLedgerUpdate[]> {
+        const cacheKey = userAddress.toLowerCase();
+        const cached = this.ledgerCache.get(cacheKey);
+        if (
+            cached &&
+            Number.isFinite(cached.fetchedAt) &&
+            Date.now() - cached.fetchedAt < USER_LEDGER_TTL_MS
+        ) {
+            return cached.updates;
+        }
+        try {
+            const client = this.getPublicClient();
+            const startTime =
+                Date.now() - Math.max(1, lookbackDays) * 24 * 60 * 60 * 1000;
+            const updates = await client.userNonFundingLedgerUpdates({
+                user: userAddress,
+                startTime,
+            });
+            const mapped = Array.isArray(updates)
+                ? updates
+                      .map((entry) => normalizeLedgerUpdate(entry))
+                      .filter((entry): entry is UserLedgerUpdate => Boolean(entry))
+                : [];
+            this.ledgerCache.set(cacheKey, {
+                fetchedAt: Date.now(),
+                updates: mapped,
+            });
+            return mapped;
+        } catch (error: any) {
+            logger.warn("Failed to fetch user ledger updates", {
+                userAddress,
+                message: error?.message,
+            });
+            return cached?.updates ?? [];
         }
     }
 
@@ -1123,6 +1219,42 @@ function toNumberSafe(value: any): number | null {
     return Number.isFinite(num) ? num : null;
 }
 
+function normalizeLedgerUpdate(entry: any): UserLedgerUpdate | null {
+    if (!entry || typeof entry !== "object") return null;
+    const time = Number(entry.time);
+    const delta = entry.delta ?? {};
+    const type = delta.type;
+    if (!Number.isFinite(time)) return null;
+    if (type === "vaultDeposit") {
+        const usdc = toNumberSafe(delta.usdc);
+        if (!Number.isFinite(usdc)) return null;
+        return {
+            time,
+            type: "vaultDeposit",
+            vault: String(delta.vault ?? ""),
+            usdc,
+        };
+    }
+    if (type === "vaultWithdraw") {
+        const net = toNumberSafe(delta.netWithdrawnUsd);
+        const fallback = toNumberSafe(delta.requestedUsd);
+        const usdc = Number.isFinite(net) ? (net as number) : fallback;
+        if (!Number.isFinite(usdc)) return null;
+        return {
+            time,
+            type: "vaultWithdraw",
+            vault: String(delta.vault ?? ""),
+            usdc,
+            requestedUsd: fallback ?? undefined,
+            netWithdrawnUsd: Number.isFinite(net) ? (net as number) : undefined,
+            basisUsd: toNumberSafe(delta.basis) ?? undefined,
+            commissionUsd: toNumberSafe(delta.commission) ?? undefined,
+            closingCostUsd: toNumberSafe(delta.closingCost) ?? undefined,
+        };
+    }
+    return null;
+}
+
 function getByPath(root: any, path: string): any {
     const parts = path.split(".");
     let current = root;
@@ -1136,4 +1268,8 @@ function getByPath(root: any, path: string): any {
 function round(value: number, digits: number): number {
     const factor = Math.pow(10, digits);
     return Math.round(value * factor) / factor;
+}
+
+function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
 }

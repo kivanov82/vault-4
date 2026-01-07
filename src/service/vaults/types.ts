@@ -135,6 +135,42 @@ export type UserVaultsResponse = {
     items: UserVaultEntry[];
 };
 
+export type UserPosition = {
+    vaultAddress: string;
+    vaultName?: string;
+    sizePct: number | null;
+    amountUsd: number | null;
+    pnlUsd: number | null;
+    roePct: number | null;
+};
+
+export type UserPositionsResponse = {
+    userAddress: string;
+    totalPositions: number;
+    totalCapitalUsd: number | null;
+    totalInvestedUsd: number | null;
+    netPnlUsd: number | null;
+    positions: UserPosition[];
+};
+
+export type PlatformHistoryEntry = {
+    time: number;
+    type: "vaultDeposit" | "vaultWithdraw";
+    vaultAddress: string;
+    vaultName?: string;
+    amountUsd: number | null;
+    realizedPnlUsd: number | null;
+};
+
+export type PlatformHistoryResponse = {
+    userAddress: string;
+    total: number;
+    page: number;
+    pageSize: number;
+    totalPages: number;
+    entries: PlatformHistoryEntry[];
+};
+
 export type UserPortfolioSummary = {
     userAddress: string;
     metrics: {
