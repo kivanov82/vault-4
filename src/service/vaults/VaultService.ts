@@ -1,4 +1,5 @@
 import { HyperliquidConnector } from "../trade/HyperliquidConnector";
+import type { UserLedgerUpdate } from "../trade/HyperliquidConnector";
 import { OpenAIService } from "../openai/OpenAIService";
 import { logger } from "../utils/logger";
 import type {
@@ -11,6 +12,8 @@ import type {
     VaultRecommendation,
     PlatformHistoryEntry,
     PlatformHistoryResponse,
+    PlatformMetricsResponse,
+    TimeSeriesPoint,
     UserPortfolioSummary,
     UserPositionsResponse,
     UserVaultHistory,
@@ -68,6 +71,12 @@ const USER_PORTFOLIO_CACHE_TTL_MS = readNumberEnv(
     2 * 60 * 1000
 );
 const MIN_POSITION_USD = readNumberEnv(process.env.MIN_POSITION_USD, 1);
+const LAUNCH_DATE_ISO =
+    process.env.LAUNCH_DATE ?? "2026-01-06T22:17:00+01:00";
+const LAUNCH_DATE_MS = readDateMsEnv(
+    LAUNCH_DATE_ISO,
+    "2026-01-06T22:17:00+01:00"
+);
 
 type CandidateOptions = {
     refresh?: boolean;
@@ -415,8 +424,9 @@ export class VaultService {
         const result = await HyperliquidConnector.getUserPortfolioSummary(
             userAddress as `0x${string}`
         );
-        this.userPortfolioCache.set(key, { fetchedAt: now, result });
-        return result;
+        const adjusted = rebasePortfolioPnl(result, LAUNCH_DATE_MS);
+        this.userPortfolioCache.set(key, { fetchedAt: now, result: adjusted });
+        return adjusted;
     }
 
     static async getUserPositions(
@@ -500,10 +510,16 @@ export class VaultService {
             throw new Error("WALLET is not set");
         }
         const updates = await HyperliquidConnector.getUserVaultLedgerUpdates(wallet);
-        const vaultNames = await fetchVaultNames(
-            updates.map((entry) => entry.vault)
+        const filtered = updates.filter(
+            (entry) =>
+                Number.isFinite(entry.time) &&
+                entry.time >= LAUNCH_DATE_MS &&
+                Math.abs(entry.usdc) >= MIN_POSITION_USD
         );
-        const entries: PlatformHistoryEntry[] = updates.map((entry) => {
+        const vaultNames = await fetchVaultNames(
+            filtered.map((entry) => entry.vault)
+        );
+        const entries: PlatformHistoryEntry[] = filtered.map((entry) => {
             const amountUsd = Number.isFinite(entry.usdc)
                 ? round(entry.usdc, 6)
                 : null;
@@ -542,6 +558,58 @@ export class VaultService {
         };
     }
 
+    static async getPlatformPerformanceMetrics(
+        options: { refresh?: boolean } = {}
+    ): Promise<PlatformMetricsResponse> {
+        const wallet = process.env.WALLET as `0x${string}` | undefined;
+        if (!wallet) {
+            throw new Error("WALLET is not set");
+        }
+        const [portfolio, positions, updates] = await Promise.all([
+            this.getPlatformPortfolio({ refresh: options.refresh }),
+            this.getPlatformPositions({ refresh: options.refresh }),
+            HyperliquidConnector.getUserVaultLedgerUpdates(wallet),
+        ]);
+
+        const now = Date.now();
+        const accountSeries = normalizeSeries(
+            portfolio?.history?.accountValue?.points
+        );
+        const filteredSeries = accountSeries.filter(
+            (point) => point.timestamp >= LAUNCH_DATE_MS
+        );
+        const currentAccountValue = latestSeriesValue(accountSeries);
+        const tvlUsd =
+            currentAccountValue ??
+            (Number.isFinite(positions.totalInvestedUsd)
+                ? (positions.totalInvestedUsd as number)
+                : null);
+        const value30d = findValueAtOrBefore(
+            accountSeries,
+            now - 30 * MS_PER_DAY
+        );
+        const tvlChange30dUsd =
+            Number.isFinite(currentAccountValue) && Number.isFinite(value30d)
+                ? (currentAccountValue as number) - (value30d as number)
+                : null;
+        const maxDrawdownPct = calcMaxDrawdownPct(filteredSeries);
+        const sharpeRatio = calcSharpeRatio(filteredSeries);
+        const winRatePct = calcWinRatePct(updates, LAUNCH_DATE_MS, MIN_POSITION_USD);
+
+        return {
+            userAddress: wallet,
+            tvlUsd: tvlUsd !== null ? round(tvlUsd, 6) : null,
+            tvlChange30dUsd:
+                tvlChange30dUsd !== null ? round(tvlChange30dUsd, 6) : null,
+            winRatePct: winRatePct !== null ? round(winRatePct, 4) : null,
+            maxDrawdownPct:
+                maxDrawdownPct !== null ? round(maxDrawdownPct, 4) : null,
+            sharpeRatio: sharpeRatio !== null ? round(sharpeRatio, 4) : null,
+            since: new Date(LAUNCH_DATE_MS).toISOString(),
+            calculatedAt: new Date().toISOString(),
+        };
+    }
+
     static async getPlatformPositions(
         options: { refresh?: boolean } = {}
     ): Promise<UserPositionsResponse> {
@@ -550,6 +618,16 @@ export class VaultService {
             throw new Error("WALLET is not set");
         }
         return this.getUserPositions(wallet, options);
+    }
+
+    static async getPlatformPortfolio(
+        options: { refresh?: boolean } = {}
+    ): Promise<UserPortfolioSummary | null> {
+        const wallet = process.env.WALLET as `0x${string}` | undefined;
+        if (!wallet) {
+            throw new Error("WALLET is not set");
+        }
+        return this.getUserPortfolio(wallet, options);
     }
 
     static async getUserVaultHistory(
@@ -572,6 +650,14 @@ function ageInDays(createTimeMillis: number): number {
 function readNumberEnv(value: any, fallback: number): number {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function readDateMsEnv(value: string | undefined, fallbackIso: string): number {
+    const raw = value && value.trim().length > 0 ? value : fallbackIso;
+    const parsed = Date.parse(raw);
+    if (Number.isFinite(parsed)) return parsed;
+    const fallback = Date.parse(fallbackIso);
+    return Number.isFinite(fallback) ? fallback : Date.now();
 }
 
 function toNumber(value: any, fallback: number): number {
@@ -929,4 +1015,144 @@ function applyAllocation(
 function round(value: number, digits: number): number {
     const factor = Math.pow(10, digits);
     return Math.round(value * factor) / factor;
+}
+
+function normalizeSeries(
+    points?: TimeSeriesPoint[] | null
+): TimeSeriesPoint[] {
+    if (!Array.isArray(points)) return [];
+    return points
+        .map((point) => ({
+            timestamp: Number(point.timestamp),
+            value: Number(point.value),
+        }))
+        .filter(
+            (point) =>
+                Number.isFinite(point.timestamp) && Number.isFinite(point.value)
+        )
+        .sort((a, b) => a.timestamp - b.timestamp);
+}
+
+function latestSeriesValue(points: TimeSeriesPoint[]): number | null {
+    if (!points.length) return null;
+    const last = points[points.length - 1];
+    return Number.isFinite(last?.value) ? last.value : null;
+}
+
+function findValueAtOrBefore(
+    points: TimeSeriesPoint[],
+    target: number
+): number | null {
+    if (!Number.isFinite(target) || !points.length) return null;
+    let value: number | null = null;
+    for (const point of points) {
+        if (point.timestamp <= target) {
+            value = point.value;
+        } else {
+            break;
+        }
+    }
+    return Number.isFinite(value) ? (value as number) : null;
+}
+
+function calcMaxDrawdownPct(points: TimeSeriesPoint[]): number | null {
+    if (points.length < 2) return null;
+    let peak = points[0].value;
+    if (!Number.isFinite(peak) || peak <= 0) return null;
+    let maxDrawdown = 0;
+    for (const point of points) {
+        const value = point.value;
+        if (!Number.isFinite(value)) continue;
+        if (value > peak) {
+            peak = value;
+            continue;
+        }
+        const drawdown = (value - peak) / peak;
+        if (drawdown < maxDrawdown) {
+            maxDrawdown = drawdown;
+        }
+    }
+    return maxDrawdown * 100;
+}
+
+function calcSharpeRatio(points: TimeSeriesPoint[]): number | null {
+    if (points.length < 2) return null;
+    const dailyValues: number[] = [];
+    let lastDay = "";
+    for (const point of points) {
+        if (!Number.isFinite(point.timestamp) || !Number.isFinite(point.value)) {
+            continue;
+        }
+        const day = new Date(point.timestamp).toISOString().slice(0, 10);
+        if (day !== lastDay) {
+            dailyValues.push(point.value);
+            lastDay = day;
+        } else {
+            dailyValues[dailyValues.length - 1] = point.value;
+        }
+    }
+    if (dailyValues.length < 2) return null;
+    const returns: number[] = [];
+    for (let i = 1; i < dailyValues.length; i += 1) {
+        const prev = dailyValues[i - 1];
+        const next = dailyValues[i];
+        if (!Number.isFinite(prev) || !Number.isFinite(next) || prev <= 0) continue;
+        returns.push((next - prev) / prev);
+    }
+    if (returns.length < 2) return null;
+    const mean = returns.reduce((sum, value) => sum + value, 0) / returns.length;
+    const variance =
+        returns.reduce((sum, value) => sum + Math.pow(value - mean, 2), 0) /
+        (returns.length - 1);
+    const std = Math.sqrt(variance);
+    if (!Number.isFinite(std) || std === 0) return null;
+    return (mean / std) * Math.sqrt(365);
+}
+
+function calcWinRatePct(
+    updates: UserLedgerUpdate[],
+    sinceMs: number,
+    minUsd: number
+): number | null {
+    const realized = updates.filter((entry) => {
+        if (entry.type !== "vaultWithdraw") return false;
+        if (!Number.isFinite(entry.time) || entry.time < sinceMs) return false;
+        if (Math.abs(entry.usdc) < minUsd) return false;
+        return (
+            Number.isFinite(entry.netWithdrawnUsd) &&
+            Number.isFinite(entry.basisUsd)
+        );
+    });
+    if (!realized.length) return null;
+    const wins = realized.filter(
+        (entry) =>
+            Number(entry.netWithdrawnUsd) - Number(entry.basisUsd) > 0
+    ).length;
+    return (wins / realized.length) * 100;
+}
+
+function rebasePortfolioPnl(
+    portfolio: UserPortfolioSummary | null,
+    sinceMs: number
+): UserPortfolioSummary | null {
+    if (!portfolio?.history?.pnl?.points) return portfolio;
+    const points = normalizeSeries(portfolio.history.pnl.points);
+    if (!points.length) return portfolio;
+    const baseline =
+        findValueAtOrBefore(points, sinceMs) ??
+        points[0]?.value ??
+        0;
+    const rebased = points
+        .filter((point) => point.timestamp >= sinceMs)
+        .map((point) => ({
+            timestamp: point.timestamp,
+            value: round(point.value - baseline, 8),
+        }));
+    return {
+        ...portfolio,
+        history: {
+            ...portfolio.history,
+            pnl: { points: rebased },
+        },
+    };
 }

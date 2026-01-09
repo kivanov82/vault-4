@@ -59,6 +59,36 @@ app.get("/api/history", async (req, res) => {
     }
 });
 
+app.get("/api/portfolio", async (req, res) => {
+    try {
+        const refresh = String(req.query.refresh ?? "false").toLowerCase() === "true";
+        const portfolio = await VaultService.getPlatformPortfolio({ refresh });
+        if (!portfolio) {
+            res.status(404).json({ error: "Portfolio not found" });
+            return;
+        }
+        res.json(portfolio);
+    } catch (error: any) {
+        logger.error("Failed to fetch platform portfolio", {
+            message: error?.message,
+        });
+        res.status(500).json({ error: "Failed to fetch platform portfolio" });
+    }
+});
+
+app.get("/api/metrics", async (req, res) => {
+    try {
+        const refresh = String(req.query.refresh ?? "false").toLowerCase() === "true";
+        const metrics = await VaultService.getPlatformPerformanceMetrics({ refresh });
+        res.json(metrics);
+    } catch (error: any) {
+        logger.error("Failed to fetch platform metrics", {
+            message: error?.message,
+        });
+        res.status(500).json({ error: "Failed to fetch platform metrics" });
+    }
+});
+
 
 app.listen(port, () => {
     Vault4.init();

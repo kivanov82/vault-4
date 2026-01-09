@@ -171,6 +171,17 @@ export type PlatformHistoryResponse = {
     entries: PlatformHistoryEntry[];
 };
 
+export type PlatformMetricsResponse = {
+    userAddress: string;
+    tvlUsd: number | null;
+    tvlChange30dUsd: number | null;
+    winRatePct: number | null;
+    maxDrawdownPct: number | null;
+    sharpeRatio: number | null;
+    since: string;
+    calculatedAt: string;
+};
+
 export type UserPortfolioSummary = {
     userAddress: string;
     metrics: {
