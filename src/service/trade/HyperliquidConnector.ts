@@ -124,19 +124,6 @@ export class HyperliquidConnector {
         };
     }
 
-    static async getVaultPerformance(
-        vaultAddress: string
-    ): Promise<VaultPerformance | null> {
-        const vaults = await this.fetchVaultsRaw();
-        const match = vaults.find(
-            (vault) =>
-                vault?.summary?.vaultAddress?.toLowerCase() ===
-                vaultAddress.toLowerCase()
-        );
-        if (!match) return null;
-        return this.parsePerformance(match);
-    }
-
     static async getVaultMetrics(vaultAddress: string): Promise<VaultMetrics | null> {
         const details = await this.getVaultDetails(vaultAddress);
         const metricsFromDetails = details
@@ -447,14 +434,15 @@ export class HyperliquidConnector {
     ): Promise<{ assetPositions: any[] } | null> {
         try {
             const response = await axios.post(HYPERLIQUID_INFO_URL, {
-                type: "userState",
+                type: "webData2",
                 user: vaultAddress,
             });
             const data = response?.data;
-            if (!data || !Array.isArray(data.assetPositions)) {
+            const assetPositions = data?.clearinghouseState?.assetPositions;
+            if (!data || !Array.isArray(assetPositions)) {
                 return { assetPositions: [] };
             }
-            return { assetPositions: data.assetPositions };
+            return { assetPositions };
         } catch (error: any) {
             logger.warn("Failed to fetch vault account summary", {
                 vaultAddress,

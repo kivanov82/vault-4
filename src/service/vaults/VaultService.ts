@@ -24,7 +24,7 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 const RESERVED_NAMES = new Set(
     (process.env.VAULT_RESERVED_NAMES ??
-        "HLP Strategy A,HLP Liquidator,HLP Strategy B,HLP Liquidator 2")
+        "Hyperliquidity Provider (HLP),Hyperliquidity Trader (HLT),HLP Strategy A,HLP Strategy B,HLP Strategy X,HLP Liquidator,HLP Liquidator 2,HLP Liquidator 3,HLP Liquidator 4")
         .split(",")
         .map((name) => name.trim())
         .filter(Boolean)
@@ -34,22 +34,21 @@ const DEFAULT_FILTERS: VaultFilters = {
     minTvl: readNumberEnv(process.env.VAULT_MIN_TVL, 10000),
     minAgeDays: readNumberEnv(process.env.VAULT_MIN_AGE_DAYS, 21),
     minFollowers: readNumberEnv(process.env.VAULT_MIN_FOLLOWERS, 10),
-    minTrades7d: readNumberEnv(process.env.VAULT_MIN_TRADES_7D, 10),
+    minTrades7d: readNumberEnv(process.env.VAULT_MIN_TRADES_7D, 5),
     requirePositiveWeeklyPnl:
-        (process.env.VAULT_REQUIRE_POSITIVE_WEEKLY_PNL ?? "true") === "true",
+        (process.env.VAULT_REQUIRE_POSITIVE_WEEKLY_PNL ?? "false") === "true",
     requirePositiveMonthlyPnl:
-        (process.env.VAULT_REQUIRE_POSITIVE_MONTHLY_PNL ?? "true") === "true",
-    requireDepositsOpen:
-        (process.env.VAULT_REQUIRE_DEPOSITS_OPEN ?? "true") === "true",
+        (process.env.VAULT_REQUIRE_POSITIVE_MONTHLY_PNL ?? "false") === "true",
+    requireDepositsOpen: true
 };
 
 const CANDIDATE_CACHE_TTL_MS = readNumberEnv(
     process.env.VAULT_CACHE_TTL_MS,
     5 * 60 * 1000
 );
-const RECOMMENDATION_CACHE_TTL_MS = readNumberEnv(
-    process.env.VAULT_RECOMMENDATION_TTL_MS,
-    15 * 60 * 1000
+const CANDIDATE_LIMIT = readNumberEnv(
+    process.env.VAULT_CANDIDATE_LIMIT,
+    100
 );
 const RECOMMENDATION_COUNT = readNumberEnv(
     process.env.VAULT_RECOMMENDATION_COUNT,
@@ -92,8 +91,6 @@ type Cached<T> = { fetchedAt: number; result: T };
 
 export class VaultService {
     private static candidatesCache: Cached<CandidatesResult> | null = null;
-    private static recommendationsCache: Cached<RecommendationSet> | null = null;
-    private static recommendationsHistory: RecommendationSet[] = [];
     private static userVaultsCache: Map<string, Cached<UserVaultsResponse>> =
         new Map();
     private static userPortfolioCache: Map<
@@ -125,12 +122,18 @@ export class VaultService {
         }
 
         const rawVaults = await HyperliquidConnector.getVaults();
-        const candidates: VaultCandidate[] = [];
+        const prefiltered: {
+            vault: any;
+            summary: any;
+            tvl: number;
+            ageDays: number;
+            performance: ReturnType<typeof HyperliquidConnector.parsePerformance>;
+        }[] = [];
 
         for (const vault of rawVaults) {
             const summary = vault.summary;
             if (!summary || summary.isClosed) continue;
-            if (RESERVED_NAMES.has(summary.name)) continue;
+            if (RESERVED_NAMES.has(summary.name?.trim?.() ?? summary.name)) continue;
 
             const tvl = toNumber(summary.tvl, 0);
             const ageDays = ageInDays(summary.createTimeMillis);
@@ -149,19 +152,39 @@ export class VaultService {
             )
                 continue;
 
+            prefiltered.push({
+                vault,
+                summary,
+                tvl,
+                ageDays,
+                performance,
+            });
+        }
+
+        prefiltered.sort((a, b) => b.tvl - a.tvl);
+        const limited =
+            CANDIDATE_LIMIT > 0 ? prefiltered.slice(0, CANDIDATE_LIMIT) : prefiltered;
+
+        const candidates: VaultCandidate[] = [];
+        for (const entry of limited) {
             const details = await HyperliquidConnector.getVaultDetails(
-                summary.vaultAddress
+                entry.summary.vaultAddress
             );
             const followers =
-                Array.isArray(details?.followers) ? details?.followers.length : null;
+                Array.isArray(details?.followers)
+                    ? details?.followers.length
+                    : null;
             const allowDeposits =
                 typeof details?.allowDeposits === "boolean"
                     ? details.allowDeposits
                     : null;
-            const tradesLast7d = await HyperliquidConnector.getVaultTradesCount(
-                summary.vaultAddress,
-                7
-            );
+            const tradesLast7d =
+                filters.minTrades7d > 0
+                    ? await HyperliquidConnector.getVaultTradesCount(
+                          entry.summary.vaultAddress,
+                          7
+                      )
+                    : null;
 
             if (filters.requireDepositsOpen && allowDeposits === false) continue;
             if (
@@ -177,21 +200,21 @@ export class VaultService {
             )
                 continue;
 
-            logger.info("Found vault candidate", {name: summary.name});
+            logger.info("Found vault candidate", { name: entry.summary.name });
             candidates.push({
-                vaultAddress: summary.vaultAddress,
-                name: summary.name,
-                tvl,
-                ageDays,
-                isClosed: summary.isClosed,
-                weeklyPnl: performance.weeklyPnl,
-                monthlyPnl: performance.monthlyPnl,
-                allTimePnl: performance.allTimePnl,
+                vaultAddress: entry.summary.vaultAddress,
+                name: entry.summary.name,
+                tvl: entry.tvl,
+                ageDays: entry.ageDays,
+                isClosed: entry.summary.isClosed,
+                weeklyPnl: entry.performance.weeklyPnl,
+                monthlyPnl: entry.performance.monthlyPnl,
+                allTimePnl: entry.performance.allTimePnl,
                 followers,
                 allowDeposits,
                 tradesLast7d,
-                performance,
-                raw: vault,
+                performance: entry.performance,
+                raw: entry.vault,
             });
         }
 
@@ -208,56 +231,10 @@ export class VaultService {
         return result;
     }
 
-    static async getVaultSnapshot(vaultAddress: string): Promise<VaultCandidate | null> {
-        const rawVaults = await HyperliquidConnector.getVaults();
-        const match = rawVaults.find(
-            (vault) =>
-                vault?.summary?.vaultAddress?.toLowerCase() ===
-                vaultAddress.toLowerCase()
-        );
-        if (!match) return null;
-
-        const summary = match.summary;
-        const performance = HyperliquidConnector.parsePerformance(match);
-        const details = await HyperliquidConnector.getVaultDetails(summary.vaultAddress);
-        const followers =
-            Array.isArray(details?.followers) ? details?.followers.length : null;
-        const allowDeposits =
-            typeof details?.allowDeposits === "boolean" ? details.allowDeposits : null;
-        const tradesLast7d = await HyperliquidConnector.getVaultTradesCount(
-            summary.vaultAddress,
-            7
-        );
-
-        return {
-            vaultAddress: summary.vaultAddress,
-            name: summary.name,
-            tvl: toNumber(summary.tvl, 0),
-            ageDays: ageInDays(summary.createTimeMillis),
-            isClosed: summary.isClosed,
-            weeklyPnl: performance.weeklyPnl,
-            monthlyPnl: performance.monthlyPnl,
-            allTimePnl: performance.allTimePnl,
-            followers,
-            allowDeposits,
-            tradesLast7d,
-            performance,
-            raw: match,
-        };
-    }
-
     static async getRecommendations(
         options: RecommendationOptions = {}
     ): Promise<RecommendationSet> {
         logger.info("Generating vault recommendations");
-        const now = Date.now();
-        if (
-            !options.refresh &&
-            this.recommendationsCache &&
-            now - this.recommendationsCache.fetchedAt < RECOMMENDATION_CACHE_TTL_MS
-        ) {
-            return this.recommendationsCache.result;
-        }
 
         const candidatesResult = await this.getCandidates({
             refresh: options.refreshCandidates,
@@ -319,12 +296,6 @@ export class VaultService {
                 generatedAt: candidatesResult.generatedAt,
             },
         };
-
-        if (this.recommendationsCache?.result) {
-            this.recommendationsHistory.unshift(this.recommendationsCache.result);
-            this.recommendationsHistory = this.recommendationsHistory.slice(0, 20);
-        }
-        this.recommendationsCache = { fetchedAt: now, result };
         logger.info("Generated vault recommendations", {
             source,
             model,

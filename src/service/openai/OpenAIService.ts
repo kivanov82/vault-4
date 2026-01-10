@@ -22,16 +22,8 @@ export type OpenAIRanking = {
 const DEFAULT_MODEL = process.env.OPENAI_MODEL ?? "gpt-5.1";
 const RAW_TEMPERATURE = Number(process.env.OPENAI_TEMPERATURE ?? 0.2);
 const DEFAULT_TEMPERATURE = Number.isFinite(RAW_TEMPERATURE) ? RAW_TEMPERATURE : 0.2;
-const RAW_MAX_CANDIDATES = Number(process.env.OPENAI_MAX_CANDIDATES ?? 80);
-const MAX_CANDIDATES = Number.isFinite(RAW_MAX_CANDIDATES) ? RAW_MAX_CANDIDATES : 80;
-const RAW_MAX_TRADES = Number(process.env.OPENAI_MAX_TRADES_PER_VAULT ?? 250);
-const MAX_TRADES = Number.isFinite(RAW_MAX_TRADES) ? RAW_MAX_TRADES : 250;
-const RAW_MAX_POSITIONS = Number(process.env.OPENAI_MAX_POSITIONS_PER_VAULT ?? 30);
-const MAX_POSITIONS = Number.isFinite(RAW_MAX_POSITIONS) ? RAW_MAX_POSITIONS : 30;
-const RAW_DATA_CONCURRENCY = Number(process.env.OPENAI_DATA_CONCURRENCY ?? 3);
-const DATA_CONCURRENCY = Number.isFinite(RAW_DATA_CONCURRENCY)
-    ? Math.max(1, Math.floor(RAW_DATA_CONCURRENCY))
-    : 3;
+const MAX_TRADES = Number(process.env.OPENAI_MAX_TRADES_PER_VAULT ?? 100);
+const MAX_POSITIONS = Number(process.env.OPENAI_MAX_POSITIONS_PER_VAULT ?? 30);
 
 const PROMPT_PATH = path.join(__dirname, "prompts", "vault-ranking.md");
 
@@ -56,14 +48,10 @@ export class OpenAIService {
 
         const client = this.getClient();
         const prompt = this.getPromptTemplate();
-        const vaultsPayload = await buildVaultPayload(
-            candidates.slice(0, MAX_CANDIDATES),
-            {
-                maxTrades: MAX_TRADES,
-                maxPositions: MAX_POSITIONS,
-                concurrency: DATA_CONCURRENCY,
-            }
-        );
+        const vaultsPayload = await buildVaultPayload(candidates, {
+            maxTrades: MAX_TRADES,
+            maxPositions: MAX_POSITIONS,
+        });
         const marketData = await MarketDataService.getMarketOverlay();
         const userPrompt = `market_data = ${JSON.stringify(
             marketData
@@ -180,51 +168,41 @@ type VaultPayload = {
 
 async function buildVaultPayload(
     candidates: VaultCandidate[],
-    options: { maxTrades: number; maxPositions: number; concurrency: number }
+    options: { maxTrades: number; maxPositions: number }
 ): Promise<VaultPayload[]> {
-    return mapWithConcurrency(candidates, options.concurrency, async (candidate) => {
+    const payload: VaultPayload[] = [];
+    for (const candidate of candidates) {
         const vaultAddress = candidate.vaultAddress;
-        const [trades, accountSummary] = await Promise.all([
-            HyperliquidConnector.getVaultTrades(vaultAddress, 7, options.maxTrades),
-            HyperliquidConnector.getVaultAccountSummary(vaultAddress),
-        ]);
+        const trades = await HyperliquidConnector.getVaultTrades(
+                vaultAddress,
+                30,
+                options.maxTrades
+            );
+        const accountSummary =  await HyperliquidConnector.getVaultAccountSummary(vaultAddress);
+        const details = HyperliquidConnector.getVaultDetails(vaultAddress);
+
         const positions = Array.isArray(accountSummary?.assetPositions)
             ? accountSummary.assetPositions.slice(0, options.maxPositions)
             : [];
-        return {
+        const pnlSeries =
+            buildPnlsFromDetails(details) ??
+            normalizePnls(candidate.raw?.pnls, Date.now());
+        payload.push({
             vault: {
                 summary: {
                     name: candidate.name,
                     vaultAddress: candidate.vaultAddress,
                     tvl: candidate.tvl,
                 },
-                pnls: candidate.raw?.pnls ?? [],
+                pnls: pnlSeries,
             },
             trades,
             accountSummary: {
                 assetPositions: positions,
             },
-        };
-    });
-}
-
-async function mapWithConcurrency<T, R>(
-    items: T[],
-    limit: number,
-    worker: (item: T, index: number) => Promise<R>
-): Promise<R[]> {
-    const results = new Array<R>(items.length);
-    let index = 0;
-    const workers = new Array(Math.min(limit, items.length)).fill(0).map(async () => {
-        while (true) {
-            const current = index;
-            index += 1;
-            if (current >= items.length) break;
-            results[current] = await worker(items[current], current);
-        }
-    });
-    await Promise.all(workers);
-    return results;
+        });
+    }
+    return payload;
 }
 
 function parseJsonPayload(content: string): any | null {
@@ -241,4 +219,91 @@ function parseJsonPayload(content: string): any | null {
             return null;
         }
     }
+}
+
+type PnlPoint = [number, number];
+type PnlSeries = [string, PnlPoint[]];
+
+function buildPnlsFromDetails(details: any): PnlSeries[] | null {
+    const portfolio = details?.portfolio;
+    if (!Array.isArray(portfolio)) return null;
+    const mapped = portfolio
+        .map((entry: any) => {
+            if (!Array.isArray(entry) || entry.length < 2) return null;
+            const period = String(entry[0] ?? "");
+            const pnlHistory = entry[1]?.pnlHistory;
+            const points = normalizePnlHistory(pnlHistory);
+            if (!period || !points.length) return null;
+            return [period, points] as PnlSeries;
+        })
+        .filter((entry): entry is PnlSeries => Boolean(entry));
+    return mapped.length ? mapped : null;
+}
+
+function normalizePnls(raw: any, nowMs: number): any[] {
+    if (!Array.isArray(raw)) return [];
+    return raw
+        .map((entry) => {
+            if (!Array.isArray(entry) || entry.length < 2) return null;
+            const period = String(entry[0] ?? "");
+            const values = Array.isArray(entry[1]) ? entry[1] : [];
+            const numeric = values
+                .map((value: any) => Number(value))
+                .filter((value: number) => Number.isFinite(value));
+            if (!period || !numeric.length) return null;
+            const points = buildSyntheticPoints(period, numeric, nowMs);
+            return [period, points];
+        })
+        .filter(Boolean);
+}
+
+function normalizePnlHistory(raw: any): PnlPoint[] {
+    if (!Array.isArray(raw)) return [];
+    return raw
+        .map((entry) => {
+            if (!Array.isArray(entry) || entry.length < 2) return null;
+            const ts = normalizeTimestamp(entry[0]);
+            const value = Number(entry[1]);
+            if (!Number.isFinite(ts) || !Number.isFinite(value)) return null;
+            return [ts, value] as PnlPoint;
+        })
+        .filter((entry): entry is PnlPoint => Boolean(entry))
+        .sort((a, b) => a[0] - b[0]);
+}
+
+function normalizeTimestamp(value: any): number {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return NaN;
+    return num < 1e12 ? num * 1000 : num;
+}
+
+
+function buildSyntheticPoints(
+    period: string,
+    values: number[],
+    nowMs: number
+): PnlPoint[] {
+    const windowMs = periodWindowMs(period, values.length);
+    if (values.length === 1) {
+        return [[nowMs, values[0]]];
+    }
+    const start = nowMs - windowMs;
+    const step = windowMs / (values.length - 1);
+    return values.map((value, index) => [
+        Math.round(start + step * index),
+        value,
+    ]);
+}
+
+function periodWindowMs(period: string, count: number): number {
+    const day = 24 * 60 * 60 * 1000;
+    if (period === "day") return day;
+    if (period === "week") return 7 * day;
+    if (period === "month") return 30 * day;
+    if (period === "allTime") return Math.max(365 * day, count * 7 * day);
+    if (period === "perpDay") return day;
+    if (period === "perpWeek") return 7 * day;
+    if (period === "perpMonth") return 30 * day;
+    if (period === "perpAllTime") return Math.max(365 * day, count * 7 * day);
+    return Math.max(30 * day, count * day);
 }
