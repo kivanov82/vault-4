@@ -61,6 +61,26 @@ export type RecommendationSet = {
         count: number;
         generatedAt: string;
     };
+    suggestedAllocations?: SuggestedAllocations;
+};
+
+export type SuggestedAllocationTarget = {
+    rank: number | null;
+    vaultAddress: string;
+    confidence: "high" | "low" | null;
+    allocationPct: number;
+    notes?: string;
+};
+
+export type SuggestedAllocations = {
+    totalPct: number;
+    maxActive: number | null;
+    highPct: number | null;
+    lowPct: number | null;
+    highCount: number | null;
+    lowCount: number | null;
+    barbellNote?: string;
+    targets: SuggestedAllocationTarget[];
 };
 
 export type WindowKey = "24h" | "7d" | "30d" | "allTime";

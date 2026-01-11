@@ -4,7 +4,11 @@ import path from "path";
 import { logger } from "../utils/logger";
 import { HyperliquidConnector } from "../trade/HyperliquidConnector";
 import { MarketDataService } from "./MarketDataService";
-import type { VaultCandidate } from "../vaults/types";
+import type {
+    SuggestedAllocations,
+    SuggestedAllocationTarget,
+    VaultCandidate,
+} from "../vaults/types";
 
 type OpenAIRankedVault = {
     vaultAddress: string;
@@ -17,15 +21,19 @@ export type OpenAIRanking = {
     highConfidence: OpenAIRankedVault[];
     lowConfidence: OpenAIRankedVault[];
     raw: string;
+    suggestedAllocations?: SuggestedAllocations;
+    allocationMap?: Record<string, number>;
 };
 
 const DEFAULT_MODEL = process.env.OPENAI_MODEL ?? "gpt-5.1";
 const RAW_TEMPERATURE = Number(process.env.OPENAI_TEMPERATURE ?? 0.2);
 const DEFAULT_TEMPERATURE = Number.isFinite(RAW_TEMPERATURE) ? RAW_TEMPERATURE : 0.2;
-const MAX_TRADES = Number(process.env.OPENAI_MAX_TRADES_PER_VAULT ?? 100);
-const MAX_POSITIONS = Number(process.env.OPENAI_MAX_POSITIONS_PER_VAULT ?? 30);
+const MAX_TRADES = Number(process.env.OPENAI_MAX_TRADES_PER_VAULT ?? 20);
+const MAX_POSITIONS = Number(process.env.OPENAI_MAX_POSITIONS_PER_VAULT ?? 20);
+const MAX_PNL_POINTS = Number(process.env.OPENAI_MAX_PNL_POINTS ?? 30);
 
 const PROMPT_PATH = path.join(__dirname, "prompts", "vault-ranking.md");
+const DATA_DELAY_MS = Number(process.env.HYPERLIQUID_DATA_REQUEST_DELAY_MS ?? 200);
 
 export class OpenAIService {
     private static client: OpenAI | null = null;
@@ -78,6 +86,18 @@ export class OpenAIService {
                 logger.warn("OpenAI response missing top10 array");
                 return null;
             }
+            const suggestedAllocations = parseSuggestedAllocations(
+                parsed.suggested_allocations ?? parsed.suggestedAllocations
+            );
+
+            if (suggestedAllocations) {
+                logger.info("OpenAI barbell suggestion received", {
+                    note: suggestedAllocations.barbellNote,
+                    totalPct: suggestedAllocations.totalPct,
+                    highPct: suggestedAllocations.highPct,
+                    lowPct: suggestedAllocations.lowPct,
+                });
+            }
             const ranked = top10
                 .map((entry) => ({
                     vaultAddress: entry.address ?? entry.vaultAddress ?? "",
@@ -103,11 +123,27 @@ export class OpenAIService {
                 return null;
             }
 
+            const allocationMap = suggestedAllocations
+                ? buildAllocationMap(suggestedAllocations.targets)
+                : undefined;
+
+            logger.info("OpenAI ranking parsed", {
+                model: DEFAULT_MODEL,
+                total: ordered.length,
+                suggestedAllocations: {
+                    totalPct: suggestedAllocations?.totalPct,
+                    highPct: suggestedAllocations?.highPct,
+                    lowPct: suggestedAllocations?.lowPct,
+                },
+            });
+
             return {
                 model: DEFAULT_MODEL,
                 highConfidence: normalizeRankedVaults(high),
                 lowConfidence: normalizeRankedVaults(low),
                 raw: content,
+                allocationMap,
+                suggestedAllocations: suggestedAllocations ?? undefined,
             };
         } catch (error: any) {
             logger.warn("OpenAI ranking failed", { message: error?.message });
@@ -174,12 +210,15 @@ async function buildVaultPayload(
     for (const candidate of candidates) {
         const vaultAddress = candidate.vaultAddress;
         const trades = await HyperliquidConnector.getVaultTrades(
-                vaultAddress,
-                30,
-                options.maxTrades
-            );
-        const accountSummary =  await HyperliquidConnector.getVaultAccountSummary(vaultAddress);
-        const details = HyperliquidConnector.getVaultDetails(vaultAddress);
+            vaultAddress,
+            30,
+            options.maxTrades
+        );
+        await delayBetweenRequests();
+        const accountSummary =
+            await HyperliquidConnector.getVaultAccountSummary(vaultAddress);
+        await delayBetweenRequests();
+        const details = await HyperliquidConnector.getVaultDetails(vaultAddress);
 
         const positions = Array.isArray(accountSummary?.assetPositions)
             ? accountSummary.assetPositions.slice(0, options.maxPositions)
@@ -234,7 +273,7 @@ function buildPnlsFromDetails(details: any): PnlSeries[] | null {
             const pnlHistory = entry[1]?.pnlHistory;
             const points = normalizePnlHistory(pnlHistory);
             if (!period || !points.length) return null;
-            return [period, points] as PnlSeries;
+            return [period, limitSeriesPoints(points, MAX_PNL_POINTS)] as PnlSeries;
         })
         .filter((entry): entry is PnlSeries => Boolean(entry));
     return mapped.length ? mapped : null;
@@ -252,14 +291,14 @@ function normalizePnls(raw: any, nowMs: number): any[] {
                 .filter((value: number) => Number.isFinite(value));
             if (!period || !numeric.length) return null;
             const points = buildSyntheticPoints(period, numeric, nowMs);
-            return [period, points];
+            return [period, limitSeriesPoints(points, MAX_PNL_POINTS)];
         })
         .filter(Boolean);
 }
 
 function normalizePnlHistory(raw: any): PnlPoint[] {
     if (!Array.isArray(raw)) return [];
-    return raw
+    const points = raw
         .map((entry) => {
             if (!Array.isArray(entry) || entry.length < 2) return null;
             const ts = normalizeTimestamp(entry[0]);
@@ -269,6 +308,7 @@ function normalizePnlHistory(raw: any): PnlPoint[] {
         })
         .filter((entry): entry is PnlPoint => Boolean(entry))
         .sort((a, b) => a[0] - b[0]);
+    return limitSeriesPoints(points, MAX_PNL_POINTS);
 }
 
 function normalizeTimestamp(value: any): number {
@@ -306,4 +346,118 @@ function periodWindowMs(period: string, count: number): number {
     if (period === "perpMonth") return 30 * day;
     if (period === "perpAllTime") return Math.max(365 * day, count * 7 * day);
     return Math.max(30 * day, count * day);
+}
+
+function limitSeriesPoints(points: PnlPoint[], max: number): PnlPoint[] {
+    if (!Array.isArray(points) || !points.length) return [];
+    if (!Number.isFinite(max) || max <= 0) return points;
+    const limit = Math.max(0, Math.floor(max));
+    if (points.length <= limit) return points;
+    return points.slice(points.length - limit);
+}
+
+function parseSuggestedAllocations(raw: any): SuggestedAllocations | undefined {
+    if (!raw || typeof raw !== "object") return undefined;
+    const targetsRaw = Array.isArray(raw.targets) ? raw.targets : [];
+    const targets = targetsRaw
+        .map((entry) => parseAllocationTarget(entry))
+        .filter((entry): entry is SuggestedAllocationTarget => Boolean(entry));
+    if (!targets.length) return undefined;
+    const totalPct = pickNumber(raw.total_pct ?? raw.totalPct ?? raw.total ?? 100, 100);
+    const highPct = pickNumber(raw.high_pct ?? raw.highPct ?? raw.high ?? 0, 0);
+    const lowPct = pickNumber(raw.low_pct ?? raw.lowPct ?? raw.low ?? 0, 0);
+    const maxActive =
+        Number.isFinite(Number(raw.max_active ?? raw.maxActive))
+            ? Number(raw.max_active ?? raw.maxActive)
+            : null;
+    const highCount =
+        Number.isFinite(Number(raw.high_count ?? raw.highCount))
+            ? Number(raw.high_count ?? raw.highCount)
+            : null;
+    const lowCount =
+        Number.isFinite(Number(raw.low_count ?? raw.lowCount))
+            ? Number(raw.low_count ?? raw.lowCount)
+            : null;
+    const barbellNote =
+        typeof raw.barbell_note === "string"
+            ? raw.barbell_note
+            : typeof raw.barbellNote === "string"
+            ? raw.barbellNote
+            : undefined;
+    return {
+        totalPct,
+        maxActive,
+        highPct,
+        lowPct,
+        highCount,
+        lowCount,
+        barbellNote,
+        targets,
+    };
+}
+
+function parseAllocationTarget(value: any): SuggestedAllocationTarget | null {
+    if (!value || typeof value !== "object") return null;
+    const rawAddress = String(
+        value.vaultAddress ?? value.address ?? value.vault ?? ""
+    ).trim();
+    if (!rawAddress) return null;
+    const allocationPct = pickNumber(
+        value.allocation_pct ?? value.allocationPct ?? value.pct ?? 0,
+        0
+    );
+    const rank = Number.isFinite(Number(value.rank)) ? Number(value.rank) : null;
+    const confidence = normalizeConfidence(
+        value.confidence ?? value.group ?? value.bucket
+    );
+    const notes =
+        typeof value.notes === "string"
+            ? value.notes
+            : typeof value.reason === "string"
+            ? value.reason
+            : undefined;
+    return {
+        rank,
+        vaultAddress: rawAddress.toLowerCase(),
+        confidence,
+        allocationPct,
+        notes,
+    };
+}
+
+function normalizeConfidence(value: any): "high" | "low" | null {
+    if (!value || typeof value !== "string") return null;
+    const normalized = value.toLowerCase();
+    if (normalized.includes("high")) return "high";
+    if (normalized.includes("low")) return "low";
+    if (normalized === "primary" || normalized === "top") return "high";
+    if (normalized === "secondary" || normalized === "diversify") return "low";
+    return null;
+}
+
+function pickNumber(value: any, fallback: number): number {
+    const num = Number(value);
+    return Number.isFinite(num) ? num : fallback;
+}
+
+function buildAllocationMap(
+    targets: SuggestedAllocationTarget[]
+): Record<string, number> {
+    const map: Record<string, number> = {};
+    for (const target of targets) {
+        if (!target.vaultAddress) continue;
+        map[target.vaultAddress.toLowerCase()] = Number.isFinite(
+            Number(target.allocationPct)
+        )
+            ? Number(target.allocationPct)
+            : 0;
+    }
+    return map;
+}
+
+async function delayBetweenRequests(): Promise<void> {
+    const ms = Number.isFinite(DATA_DELAY_MS) ? DATA_DELAY_MS : 0;
+    if (ms > 0) {
+        await new Promise((resolve) => setTimeout(resolve, ms));
+    }
 }

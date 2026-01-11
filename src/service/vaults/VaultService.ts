@@ -1,6 +1,7 @@
 import { HyperliquidConnector } from "../trade/HyperliquidConnector";
 import type { UserLedgerUpdate } from "../trade/HyperliquidConnector";
 import { OpenAIService } from "../openai/OpenAIService";
+import type { OpenAIRanking } from "../openai/OpenAIService";
 import { logger } from "../utils/logger";
 import type {
     CandidatesResult,
@@ -98,16 +99,6 @@ export class VaultService {
         Cached<UserPortfolioSummary | null>
     > = new Map();
 
-    static async warm(): Promise<void> {
-        try {
-            if (process.env.VAULT_WARM_RECOMMENDATIONS === "true") {
-                await this.getRecommendations({ refresh: true, refreshCandidates: true });
-            }
-        } catch (error: any) {
-            logger.warn("Warmup failed", { message: error?.message });
-        }
-    }
-
     static async getCandidates(options: CandidateOptions = {}): Promise<CandidatesResult> {
         logger.info("Searching for vault candidates");
         const filters = mergeFilters(options.filters);
@@ -178,6 +169,10 @@ export class VaultService {
                 typeof details?.allowDeposits === "boolean"
                     ? details.allowDeposits
                     : null;
+
+            //wait a bit to avoid rate limits
+            await new Promise((resolve) => setTimeout(resolve, 200));
+
             const tradesLast7d =
                 filters.minTrades7d > 0
                     ? await HyperliquidConnector.getVaultTradesCount(
@@ -247,25 +242,27 @@ export class VaultService {
         let model: string | undefined;
         let highConfidence: VaultRecommendation[] = [];
         let lowConfidence: VaultRecommendation[] = [];
+        let aiRankingResult: OpenAIRanking | null = null;
 
         if (totalCount > 0) {
             logger.info("Ranking vault candidates with OpenAI");
-            const aiRanking = await OpenAIService.rankVaults(
+            aiRankingResult = await OpenAIService.rankVaults(
                 candidates,
                 totalCount,
                 highCount
             );
-            if (aiRanking) {
+            if (aiRankingResult) {
                 const mapped = mapOpenAiRanking(
-                    aiRanking.highConfidence,
-                    aiRanking.lowConfidence,
+                    aiRankingResult.highConfidence,
+                    aiRankingResult.lowConfidence,
                     candidates,
                     highCount,
-                    totalCount
+                    totalCount,
+                    aiRankingResult.allocationMap
                 );
                 if (mapped) {
                     source = "openai";
-                    model = aiRanking.model;
+                    model = aiRankingResult.model;
                     highConfidence = mapped.highConfidence;
                     lowConfidence = mapped.lowConfidence;
                 }
@@ -278,23 +275,30 @@ export class VaultService {
             }
         }
 
-        const allocations = allocateGroups(
-            highConfidence,
-            lowConfidence,
-            HIGH_ALLOC_PCT,
-            LOW_ALLOC_PCT
-        );
+        const allocationBuckets =
+            source === "openai"
+                ? {
+                      highConfidence,
+                      lowConfidence,
+                  }
+                : allocateGroups(
+                      highConfidence,
+                      lowConfidence,
+                      HIGH_ALLOC_PCT,
+                      LOW_ALLOC_PCT
+                  );
 
         const result: RecommendationSet = {
             generatedAt: new Date().toISOString(),
             source,
             model,
-            highConfidence: allocations.highConfidence,
-            lowConfidence: allocations.lowConfidence,
+            highConfidence: allocationBuckets.highConfidence,
+            lowConfidence: allocationBuckets.lowConfidence,
             candidates: {
                 count: candidates.length,
                 generatedAt: candidatesResult.generatedAt,
             },
+            suggestedAllocations: aiRankingResult?.suggestedAllocations,
         };
         logger.info("Generated vault recommendations", {
             source,
@@ -302,14 +306,6 @@ export class VaultService {
             total: result.highConfidence.length + result.lowConfidence.length,
         });
         return result;
-    }
-
-    static async getVaultMetrics(vaultAddress: string): Promise<VaultMetrics | null> {
-        return HyperliquidConnector.getVaultMetrics(vaultAddress);
-    }
-
-    static async getVaultHistory(vaultAddress: string): Promise<VaultHistory | null> {
-        return HyperliquidConnector.getVaultHistory(vaultAddress);
     }
 
     static async getUserVaults(
@@ -873,37 +869,13 @@ function safeRatio(value: number | null, denom: number): number {
     return value / denom;
 }
 
-function buildRecommendation(
-    candidate: VaultCandidate,
-    confidence: "high" | "low",
-    score?: number,
-    reason?: string
-): VaultRecommendation {
-    return {
-        vaultAddress: candidate.vaultAddress,
-        name: candidate.name,
-        confidence,
-        allocationPct: 0,
-        reason,
-        score,
-        metrics: {
-            tvl: candidate.tvl,
-            weeklyPnl: candidate.weeklyPnl,
-            monthlyPnl: candidate.monthlyPnl,
-            allTimePnl: candidate.allTimePnl,
-            ageDays: candidate.ageDays,
-            followers: candidate.followers,
-            tradesLast7d: candidate.tradesLast7d,
-        },
-    };
-}
-
 function mapOpenAiRanking(
     high: { vaultAddress: string; reason?: string; score?: number }[],
     low: { vaultAddress: string; reason?: string; score?: number }[],
     candidates: VaultCandidate[],
     highCount: number,
-    totalCount: number
+    totalCount: number,
+    allocationMap?: Record<string, number>
 ):
     | { highConfidence: VaultRecommendation[]; lowConfidence: VaultRecommendation[] }
     | null {
@@ -924,8 +896,18 @@ function mapOpenAiRanking(
         const candidate = map.get(address);
         if (!candidate) continue;
         seen.add(address);
+        const allocationPct =
+            allocationMap && Object.prototype.hasOwnProperty.call(allocationMap, address)
+                ? allocationMap[address]
+                : 0;
         highRecs.push(
-            buildRecommendation(candidate, "high", entry.score, entry.reason)
+            buildRecommendation(
+                candidate,
+                "high",
+                entry.score,
+                entry.reason,
+                allocationPct
+            )
         );
         if (highRecs.length >= highCount) break;
     }
@@ -936,8 +918,18 @@ function mapOpenAiRanking(
         const candidate = map.get(address);
         if (!candidate) continue;
         seen.add(address);
+        const allocationPct =
+            allocationMap && Object.prototype.hasOwnProperty.call(allocationMap, address)
+                ? allocationMap[address]
+                : 0;
         lowRecs.push(
-            buildRecommendation(candidate, "low", entry.score, entry.reason)
+            buildRecommendation(
+                candidate,
+                "low",
+                entry.score,
+                entry.reason,
+                allocationPct
+            )
         );
         if (highRecs.length + lowRecs.length >= totalCount) break;
     }
@@ -947,6 +939,32 @@ function mapOpenAiRanking(
         return null;
     }
     return { highConfidence: highRecs, lowConfidence: lowRecs };
+}
+
+function buildRecommendation(
+    candidate: VaultCandidate,
+    confidence: "high" | "low",
+    score?: number,
+    reason?: string,
+    allocationPct?: number
+): VaultRecommendation {
+    return {
+        vaultAddress: candidate.vaultAddress,
+        name: candidate.name,
+        confidence,
+        allocationPct: Number.isFinite(Number(allocationPct)) ? Number(allocationPct) : 0,
+        reason,
+        score,
+        metrics: {
+            tvl: candidate.tvl,
+            weeklyPnl: candidate.weeklyPnl,
+            monthlyPnl: candidate.monthlyPnl,
+            allTimePnl: candidate.allTimePnl,
+            ageDays: candidate.ageDays,
+            followers: candidate.followers,
+            tradesLast7d: candidate.tradesLast7d,
+        },
+    };
 }
 
 function allocateGroups(

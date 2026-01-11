@@ -1,6 +1,11 @@
+import { logger } from "../utils/logger";
 import { HyperliquidConnector } from "../trade/HyperliquidConnector";
 import { VaultService } from "../vaults/VaultService";
-import type { RecommendationSet, VaultRecommendation } from "../vaults/types";
+import type {
+    RecommendationSet,
+    SuggestedAllocations,
+    VaultRecommendation,
+} from "../vaults/types";
 import { RebalanceService, type VaultTransferAction } from "./RebalanceService";
 
 export type DepositPlanOptions = {
@@ -39,6 +44,7 @@ export type DepositPlan = {
         highTotalPct: number;
         lowTotalPct: number;
     };
+    suggestedAllocations?: SuggestedAllocations;
     targets: DepositTarget[];
 };
 
@@ -105,6 +111,15 @@ export class DepositService {
             actualHighCount,
             actualLowCount
         );
+        const hints = recommendations.suggestedAllocations;
+        const groupHighPct =
+            hints && Number.isFinite(Number(hints.highPct))
+                ? hints.highPct
+                : highPct;
+        const groupLowPct =
+            hints && Number.isFinite(Number(hints.lowPct))
+                ? hints.lowPct
+                : lowPct;
 
         const perpsBalanceUsd =
             (await getAccountEquity(sourceWalletAddress)) ?? 0;
@@ -127,7 +142,7 @@ export class DepositService {
                 buildTarget(
                     rec,
                     "high",
-                    highPct,
+                    groupHighPct,
                     actualHighCount,
                     totalCapitalUsd,
                     currentEquityMap
@@ -137,7 +152,7 @@ export class DepositService {
                 buildTarget(
                     rec,
                     "low",
-                    lowPct,
+                    groupLowPct,
                     actualLowCount,
                     totalCapitalUsd,
                     currentEquityMap
@@ -149,6 +164,20 @@ export class DepositService {
             targets,
             perpsBalanceUsd
         );
+
+        const planSummaryTargets = planned.map((target) => ({
+            vaultAddress: target.vaultAddress,
+            depositUsd: target.depositUsd,
+            targetPct: target.targetPct,
+        }));
+        logger.info("Deposit plan ready", {
+            sourceWalletAddress,
+            totalCapitalUsd,
+            availableBalanceUsd: perpsBalanceUsd,
+            targetCount: planned.length,
+            suggestedAllocations: recommendations.suggestedAllocations,
+            targets: planSummaryTargets,
+        });
 
         return {
             generatedAt: new Date().toISOString(),
@@ -165,6 +194,7 @@ export class DepositService {
                 highTotalPct: highPct,
                 lowTotalPct: lowPct,
             },
+            suggestedAllocations: recommendations.suggestedAllocations,
             targets: planned,
         };
     }
@@ -223,8 +253,13 @@ function buildTarget(
     totalCapitalUsd: number,
     currentEquityMap: Map<string, number>
 ): DepositTarget {
-    const perVaultPct = groupCount > 0 ? groupPct / groupCount : 0;
-    const targetUsd = totalCapitalUsd * (perVaultPct / 100);
+    const targetPct =
+        Number.isFinite(rec.allocationPct) && rec.allocationPct > 0
+            ? rec.allocationPct
+            : groupCount > 0
+            ? groupPct / groupCount
+            : 0;
+    const targetUsd = totalCapitalUsd * (targetPct / 100);
     const currentUsd =
         currentEquityMap.get(rec.vaultAddress.toLowerCase()) ?? 0;
     const desiredUsd = Math.max(0, targetUsd - currentUsd);
@@ -232,7 +267,7 @@ function buildTarget(
         vaultAddress: rec.vaultAddress as `0x${string}`,
         name: rec.name,
         confidence,
-        targetPct: perVaultPct,
+        targetPct,
         targetUsd,
         currentUsd,
         desiredUsd,
