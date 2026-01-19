@@ -61,8 +61,11 @@ export class OpenAIService {
             maxPositions: MAX_POSITIONS,
         });
         const marketData = await MarketDataService.getMarketOverlay();
+        const alreadyExposed = await getAlreadyExposedVaults();
         const userPrompt = `market_data = ${JSON.stringify(
             marketData
+        )}\n\nalready_exposed = ${JSON.stringify(
+            alreadyExposed
         )}\n\nvaults_json = ${JSON.stringify(vaultsPayload)}`;
 
         try {
@@ -459,5 +462,21 @@ async function delayBetweenRequests(): Promise<void> {
     const ms = Number.isFinite(DATA_DELAY_MS) ? DATA_DELAY_MS : 0;
     if (ms > 0) {
         await new Promise((resolve) => setTimeout(resolve, ms));
+    }
+}
+
+async function getAlreadyExposedVaults(): Promise<string[]> {
+    const wallet = process.env.WALLET as `0x${string}` | undefined;
+    if (!wallet) return [];
+    try {
+        const equities = await HyperliquidConnector.getUserVaultEquities(wallet);
+        const unique = new Set<string>();
+        for (const entry of equities) {
+            if (!entry?.vaultAddress) continue;
+            unique.add(String(entry.vaultAddress).toLowerCase());
+        }
+        return Array.from(unique);
+    } catch {
+        return [];
     }
 }
