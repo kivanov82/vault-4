@@ -542,6 +542,7 @@ export class VaultService {
         const accountSeries = normalizeSeries(
             portfolio?.history?.accountValue?.points
         );
+        const pnlSeries = normalizeSeries(portfolio?.history?.pnl?.points);
         const filteredSeries = accountSeries.filter(
             (point) => point.timestamp >= LAUNCH_DATE_MS
         );
@@ -559,8 +560,26 @@ export class VaultService {
             Number.isFinite(currentAccountValue) && Number.isFinite(value30d)
                 ? (currentAccountValue as number) - (value30d as number)
                 : null;
+        const pnlValue30d = findValueAtOrBefore(
+            pnlSeries,
+            now - 30 * MS_PER_DAY
+        );
+        const pnlLatest = latestSeriesValue(pnlSeries);
+        const pnlChange30dUsd =
+            Number.isFinite(pnlLatest) && Number.isFinite(pnlValue30d)
+                ? (pnlLatest as number) - (pnlValue30d as number)
+                : null;
+        const capital30d =
+            Number.isFinite(value30d) && Number.isFinite(pnlValue30d)
+                ? (value30d as number) - (pnlValue30d as number)
+                : null;
+        const pnlChange30dPct =
+            Number.isFinite(pnlChange30dUsd) &&
+            Number.isFinite(capital30d) &&
+            (capital30d as number) > 0
+                ? ((pnlChange30dUsd as number) / (capital30d as number)) * 100
+                : null;
         const maxDrawdownPct = calcMaxDrawdownPct(filteredSeries);
-        const sharpeRatio = calcSharpeRatio(filteredSeries);
         const winRatePct = calcWinRatePct(updates, LAUNCH_DATE_MS, MIN_POSITION_USD);
 
         return {
@@ -568,10 +587,11 @@ export class VaultService {
             tvlUsd: tvlUsd !== null ? round(tvlUsd, 6) : null,
             tvlChange30dUsd:
                 tvlChange30dUsd !== null ? round(tvlChange30dUsd, 6) : null,
+            pnlChange30dPct:
+                pnlChange30dPct !== null ? round(pnlChange30dPct, 4) : null,
             winRatePct: winRatePct !== null ? round(winRatePct, 4) : null,
             maxDrawdownPct:
                 maxDrawdownPct !== null ? round(maxDrawdownPct, 4) : null,
-            sharpeRatio: sharpeRatio !== null ? round(sharpeRatio, 4) : null,
             since: new Date(LAUNCH_DATE_MS).toISOString(),
             calculatedAt: new Date().toISOString(),
         };
@@ -1064,39 +1084,6 @@ function calcMaxDrawdownPct(points: TimeSeriesPoint[]): number | null {
     return maxDrawdown * 100;
 }
 
-function calcSharpeRatio(points: TimeSeriesPoint[]): number | null {
-    if (points.length < 2) return null;
-    const dailyValues: number[] = [];
-    let lastDay = "";
-    for (const point of points) {
-        if (!Number.isFinite(point.timestamp) || !Number.isFinite(point.value)) {
-            continue;
-        }
-        const day = new Date(point.timestamp).toISOString().slice(0, 10);
-        if (day !== lastDay) {
-            dailyValues.push(point.value);
-            lastDay = day;
-        } else {
-            dailyValues[dailyValues.length - 1] = point.value;
-        }
-    }
-    if (dailyValues.length < 2) return null;
-    const returns: number[] = [];
-    for (let i = 1; i < dailyValues.length; i += 1) {
-        const prev = dailyValues[i - 1];
-        const next = dailyValues[i];
-        if (!Number.isFinite(prev) || !Number.isFinite(next) || prev <= 0) continue;
-        returns.push((next - prev) / prev);
-    }
-    if (returns.length < 2) return null;
-    const mean = returns.reduce((sum, value) => sum + value, 0) / returns.length;
-    const variance =
-        returns.reduce((sum, value) => sum + Math.pow(value - mean, 2), 0) /
-        (returns.length - 1);
-    const std = Math.sqrt(variance);
-    if (!Number.isFinite(std) || std === 0) return null;
-    return (mean / std) * Math.sqrt(365);
-}
 
 function calcWinRatePct(
     updates: UserLedgerUpdate[],

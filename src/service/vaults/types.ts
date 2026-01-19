@@ -195,9 +195,9 @@ export type PlatformMetricsResponse = {
     userAddress: string;
     tvlUsd: number | null;
     tvlChange30dUsd: number | null;
+    pnlChange30dPct: number | null;
     winRatePct: number | null;
     maxDrawdownPct: number | null;
-    sharpeRatio: number | null;
     since: string;
     calculatedAt: string;
 };
