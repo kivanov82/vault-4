@@ -28,16 +28,27 @@ export type OpenAIRanking = {
 const DEFAULT_MODEL = process.env.OPENAI_MODEL ?? "gpt-5.1";
 const RAW_TEMPERATURE = Number(process.env.OPENAI_TEMPERATURE ?? 0.2);
 const DEFAULT_TEMPERATURE = Number.isFinite(RAW_TEMPERATURE) ? RAW_TEMPERATURE : 0.2;
-const MAX_TRADES = Number(process.env.OPENAI_MAX_TRADES_PER_VAULT ?? 20);
-const MAX_POSITIONS = Number(process.env.OPENAI_MAX_POSITIONS_PER_VAULT ?? 20);
-const MAX_PNL_POINTS = Number(process.env.OPENAI_MAX_PNL_POINTS ?? 30);
+const MAX_TRADES = Number(process.env.OPENAI_MAX_TRADES_PER_VAULT ?? 50);
+const MAX_POSITIONS = Number(process.env.OPENAI_MAX_POSITIONS_PER_VAULT ?? 30);
+const MAX_PNL_POINTS = Number(process.env.OPENAI_MAX_PNL_POINTS ?? 60);
+const BATCH_SIZE = Number(process.env.OPENAI_BATCH_SIZE ?? 20);
 
 const PROMPT_PATH = path.join(__dirname, "prompts", "vault-ranking.md");
+const SCORING_PROMPT_PATH = path.join(__dirname, "prompts", "vault-scoring.md");
 const DATA_DELAY_MS = Number(process.env.HYPERLIQUID_DATA_REQUEST_DELAY_MS ?? 200);
+
+type ScoredVault = {
+    vaultAddress: string;
+    name: string;
+    score: number;
+    reason?: string;
+    candidate: VaultCandidate;
+};
 
 export class OpenAIService {
     private static client: OpenAI | null = null;
     private static promptCache: string | null = null;
+    private static scoringPromptCache: string | null = null;
 
     static isConfigured(): boolean {
         return Boolean(process.env.OPENAI_API_KEY);
@@ -54,21 +65,176 @@ export class OpenAIService {
         }
         if (!candidates.length) return null;
 
+        const marketData = await MarketDataService.getMarketOverlay();
+        const alreadyExposed = await getAlreadyExposedVaults();
+
+        // Stage 1: Score vaults in batches
+        const batches = chunkArray(candidates, BATCH_SIZE);
+        logger.info("Starting batched vault scoring", {
+            totalCandidates: candidates.length,
+            batchSize: BATCH_SIZE,
+            batchCount: batches.length,
+        });
+
+        const batchResults = await Promise.all(
+            batches.map((batch, index) =>
+                this.scoreVaultBatch(batch, marketData, alreadyExposed, index)
+            )
+        );
+
+        const allScored = batchResults
+            .flat()
+            .filter((v): v is ScoredVault => v !== null)
+            .sort((a, b) => b.score - a.score);
+
+        if (!allScored.length) {
+            logger.warn("No vaults scored in Stage 1");
+            return null;
+        }
+
+        logger.info("Stage 1 scoring complete", {
+            scoredCount: allScored.length,
+            topScore: allScored[0]?.score,
+            bottomScore: allScored[allScored.length - 1]?.score,
+        });
+
+        // Stage 2: Final ranking of top candidates
+        const topCandidates = allScored.slice(0, Math.max(totalCount * 2, 20));
+        const topVaultCandidates = topCandidates.map((s) => s.candidate);
+
+        return this.finalRanking(
+            topVaultCandidates,
+            marketData,
+            alreadyExposed,
+            totalCount,
+            highConfidenceCount
+        );
+    }
+
+    static async scoreVaultBatch(
+        batch: VaultCandidate[],
+        marketData: any,
+        alreadyExposed: string[],
+        batchIndex: number
+    ): Promise<ScoredVault[]> {
+        const client = this.getClient();
+        const prompt = this.getScoringPromptTemplate();
+
+        const vaultsPayload = await buildVaultPayload(batch, {
+            maxTrades: MAX_TRADES,
+            maxPositions: MAX_POSITIONS,
+        });
+
+        const userPrompt = `market_data = ${JSON.stringify(marketData)}
+
+already_exposed = ${JSON.stringify(alreadyExposed)}
+
+vaults_json = ${JSON.stringify(vaultsPayload)}`;
+
+        try {
+            logger.info("Scoring batch", {
+                batchIndex,
+                vaultCount: batch.length,
+            });
+
+            const response = await client.chat.completions.create({
+                model: DEFAULT_MODEL,
+                temperature: DEFAULT_TEMPERATURE,
+                messages: [
+                    { role: "system", content: prompt },
+                    { role: "user", content: userPrompt },
+                ],
+            });
+
+            const content = response.choices?.[0]?.message?.content?.trim() ?? "";
+            const parsed = parseJsonPayload(content);
+
+            if (!parsed || !Array.isArray(parsed.scores)) {
+                logger.warn("Batch scoring response invalid", { batchIndex, raw: content.slice(0, 200) });
+                return [];
+            }
+
+            const scored: ScoredVault[] = [];
+            const scoredAddresses = new Set<string>();
+            for (const entry of parsed.scores) {
+                const address = String(entry.address ?? entry.vaultAddress ?? "").toLowerCase();
+                const candidate = batch.find(
+                    (c) => c.vaultAddress.toLowerCase() === address
+                );
+                if (!candidate) continue;
+
+                scoredAddresses.add(address);
+                scored.push({
+                    vaultAddress: address,
+                    name: candidate.name,
+                    score: Number(entry.score) || 0,
+                    reason: entry.reason ?? entry.why,
+                    candidate,
+                });
+            }
+
+            // Add missing vaults with default score of 25 (below average)
+            for (const candidate of batch) {
+                const addr = candidate.vaultAddress.toLowerCase();
+                if (!scoredAddresses.has(addr)) {
+                    logger.warn("Vault missing from batch scores, adding with default", {
+                        name: candidate.name,
+                        batchIndex,
+                    });
+                    scored.push({
+                        vaultAddress: addr,
+                        name: candidate.name,
+                        score: 25,
+                        reason: "Not scored by AI - using default",
+                        candidate,
+                    });
+                }
+            }
+
+            logger.info("Batch scored", {
+                batchIndex,
+                scoredCount: scored.length,
+                avgScore: scored.length
+                    ? Math.round(scored.reduce((sum, s) => sum + s.score, 0) / scored.length)
+                    : 0,
+            });
+
+            return scored;
+        } catch (error: any) {
+            logger.warn("Batch scoring failed", {
+                batchIndex,
+                message: error?.message,
+            });
+            return [];
+        }
+    }
+
+    private static async finalRanking(
+        candidates: VaultCandidate[],
+        marketData: any,
+        alreadyExposed: string[],
+        totalCount: number,
+        highConfidenceCount: number
+    ): Promise<OpenAIRanking | null> {
         const client = this.getClient();
         const prompt = this.getPromptTemplate();
+
         const vaultsPayload = await buildVaultPayload(candidates, {
             maxTrades: MAX_TRADES,
             maxPositions: MAX_POSITIONS,
         });
-        const marketData = await MarketDataService.getMarketOverlay();
-        const alreadyExposed = await getAlreadyExposedVaults();
-        const userPrompt = `market_data = ${JSON.stringify(
-            marketData
-        )}\n\nalready_exposed = ${JSON.stringify(
-            alreadyExposed
-        )}\n\nvaults_json = ${JSON.stringify(vaultsPayload)}`;
+
+        const userPrompt = `market_data = ${JSON.stringify(marketData)}
+
+already_exposed = ${JSON.stringify(alreadyExposed)}
+
+vaults_json = ${JSON.stringify(vaultsPayload)}`;
 
         try {
+            logger.info("Stage 2: Final ranking", {
+                candidateCount: candidates.length,
+            });
+
             const response = await client.chat.completions.create({
                 model: DEFAULT_MODEL,
                 temperature: DEFAULT_TEMPERATURE,
@@ -166,6 +332,13 @@ export class OpenAIService {
             this.promptCache = fs.readFileSync(PROMPT_PATH, "utf8");
         }
         return this.promptCache;
+    }
+
+    private static getScoringPromptTemplate(): string {
+        if (!this.scoringPromptCache) {
+            this.scoringPromptCache = fs.readFileSync(SCORING_PROMPT_PATH, "utf8");
+        }
+        return this.scoringPromptCache;
     }
 }
 
@@ -479,4 +652,12 @@ async function getAlreadyExposedVaults(): Promise<string[]> {
     } catch {
         return [];
     }
+}
+
+function chunkArray<T>(array: T[], size: number): T[][] {
+    const chunks: T[][] = [];
+    for (let i = 0; i < array.length; i += size) {
+        chunks.push(array.slice(i, i + size));
+    }
+    return chunks;
 }

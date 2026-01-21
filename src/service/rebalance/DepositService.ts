@@ -137,33 +137,74 @@ export class DepositService {
         );
         const totalCapitalUsd = perpsBalanceUsd + currentInvestedUsd;
 
+        // Filter out vaults we already have exposure to (avoid concentration risk)
+        const highWithoutExposure = highSelected.filter(
+            (rec) => !currentEquityMap.has(rec.vaultAddress.toLowerCase())
+        );
+        const lowWithoutExposure = lowSelected.filter(
+            (rec) => !currentEquityMap.has(rec.vaultAddress.toLowerCase())
+        );
+
+        const skippedCount =
+            (highSelected.length - highWithoutExposure.length) +
+            (lowSelected.length - lowWithoutExposure.length);
+        if (skippedCount > 0) {
+            logger.info("Skipping vaults with existing exposure", {
+                skippedCount,
+                highSkipped: highSelected.length - highWithoutExposure.length,
+                lowSkipped: lowSelected.length - lowWithoutExposure.length,
+            });
+        }
+
+        const filteredHighCount = highWithoutExposure.length;
+        const filteredLowCount = lowWithoutExposure.length;
+
+        // Calculate deposit amounts based on available balance only (not total capital)
+        // Split available balance between high and low confidence groups
+        const availableForDeposit = perpsBalanceUsd;
+        const highGroupAllocation = filteredHighCount > 0
+            ? availableForDeposit * (groupHighPct / 100)
+            : 0;
+        const lowGroupAllocation = filteredLowCount > 0
+            ? availableForDeposit * (groupLowPct / 100)
+            : 0;
+
+        // If one group is empty, give its allocation to the other
+        const adjustedHighAllocation = filteredLowCount === 0
+            ? availableForDeposit
+            : highGroupAllocation;
+        const adjustedLowAllocation = filteredHighCount === 0
+            ? availableForDeposit
+            : lowGroupAllocation;
+
         const targets: DepositTarget[] = [
-            ...highSelected.map((rec) =>
-                buildTarget(
+            ...highWithoutExposure.map((rec) =>
+                buildTargetFromAllocation(
                     rec,
                     "high",
-                    groupHighPct,
-                    actualHighCount,
-                    totalCapitalUsd,
-                    currentEquityMap
+                    adjustedHighAllocation,
+                    filteredHighCount
                 )
             ),
-            ...lowSelected.map((rec) =>
-                buildTarget(
+            ...lowWithoutExposure.map((rec) =>
+                buildTargetFromAllocation(
                     rec,
                     "low",
-                    groupLowPct,
-                    actualLowCount,
-                    totalCapitalUsd,
-                    currentEquityMap
+                    adjustedLowAllocation,
+                    filteredLowCount
                 )
             ),
         ];
 
-        const planned = applyAvailableBalance(
-            targets,
-            perpsBalanceUsd
-        );
+        logger.info("Deposit allocation calculated", {
+            availableForDeposit,
+            highGroupAllocation: adjustedHighAllocation,
+            lowGroupAllocation: adjustedLowAllocation,
+            highVaults: filteredHighCount,
+            lowVaults: filteredLowCount,
+        });
+
+        const planned = targets;
 
         const planSummaryTargets = planned.map((target) => ({
             vaultAddress: target.vaultAddress,
@@ -245,76 +286,33 @@ export class DepositService {
     }
 }
 
-function buildTarget(
+function buildTargetFromAllocation(
     rec: VaultRecommendation,
     confidence: "high" | "low",
-    groupPct: number,
-    groupCount: number,
-    totalCapitalUsd: number,
-    currentEquityMap: Map<string, number>
+    groupAllocationUsd: number,
+    groupCount: number
 ): DepositTarget {
-    const targetPct =
+    // Split group allocation evenly among vaults, or use AI-suggested allocation if available
+    const perVaultUsd = groupCount > 0
+        ? groupAllocationUsd / groupCount
+        : 0;
+    const depositUsd = roundUsd(
         Number.isFinite(rec.allocationPct) && rec.allocationPct > 0
-            ? rec.allocationPct
-            : groupCount > 0
-            ? groupPct / groupCount
-            : 0;
-    const targetUsd = totalCapitalUsd * (targetPct / 100);
-    const currentUsd =
-        currentEquityMap.get(rec.vaultAddress.toLowerCase()) ?? 0;
-    const desiredUsd = Math.max(0, targetUsd - currentUsd);
+            ? groupAllocationUsd * (rec.allocationPct / 100) * groupCount // Use AI suggestion proportionally
+            : perVaultUsd
+    );
+    const targetPct = groupCount > 0 ? 100 / groupCount : 0;
+
     return {
         vaultAddress: rec.vaultAddress as `0x${string}`,
         name: rec.name,
         confidence,
         targetPct,
-        targetUsd,
-        currentUsd,
-        desiredUsd,
-        depositUsd: desiredUsd,
+        targetUsd: depositUsd,
+        currentUsd: 0, // No existing exposure (filtered out earlier)
+        desiredUsd: depositUsd,
+        depositUsd,
     };
-}
-
-function applyAvailableBalance(
-    targets: DepositTarget[],
-    availableBalanceUsd: number
-): DepositTarget[] {
-    if (availableBalanceUsd <= 0) {
-        return targets.map((target) => ({ ...target, depositUsd: 0 }));
-    }
-
-    const highTargets = targets.filter((t) => t.confidence === "high");
-    const lowTargets = targets.filter((t) => t.confidence === "low");
-    const desiredHigh = sumTargets(highTargets);
-    const desiredLow = sumTargets(lowTargets);
-    const desiredTotal = desiredHigh + desiredLow;
-
-    if (desiredTotal <= availableBalanceUsd) {
-        return targets.map((target) => ({
-            ...target,
-            depositUsd: target.desiredUsd,
-        }));
-    }
-
-    let remaining = availableBalanceUsd;
-    const highAllocation = desiredHigh > 0
-        ? Math.min(remaining, desiredHigh)
-        : 0;
-    remaining = Math.max(0, remaining - highAllocation);
-    const lowAllocation = desiredLow > 0
-        ? Math.min(remaining, desiredLow)
-        : 0;
-
-    const highRatio = desiredHigh > 0 ? highAllocation / desiredHigh : 0;
-    const lowRatio = desiredLow > 0 ? lowAllocation / desiredLow : 0;
-
-    return targets.map((target) => {
-        const ratio = target.confidence === "high" ? highRatio : lowRatio;
-        return {
-            ...target,
-            depositUsd: roundUsd(target.desiredUsd * ratio),
-        };
-    });
 }
 
 async function getAccountEquity(
@@ -335,13 +333,6 @@ async function getAccountEquity(
 
 function pickFirstNumber(value: number | null | undefined): number | null {
     return Number.isFinite(Number(value)) ? Number(value) : null;
-}
-
-function sumTargets(targets: DepositTarget[]): number {
-    return targets.reduce(
-        (sum, target) => sum + (Number.isFinite(target.desiredUsd) ? target.desiredUsd : 0),
-        0
-    );
 }
 
 function normalizeGroupPcts(
