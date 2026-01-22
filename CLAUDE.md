@@ -77,7 +77,6 @@ The rebalancing cycle runs every 2 days and follows these rules:
 - **Services**: Static methods, singletons under `src/service/`
 - **Caching**: Multiple TTL configs (vault cache 5min, portfolio 2min, market data 60s)
 - **Barbell Strategy**: 70-80% to high-confidence vaults, 20-30% to low-confidence
-- **Dry Run**: Rebalancing defaults to dry-run mode (`REBALANCE_DRY_RUN=true`)
 - **Two-Stage Ranking**: Batches of 20 vaults scored in parallel, then top candidates ranked for final allocation. Configurable via `OPENAI_BATCH_SIZE` (default 20), with richer data per vault (`OPENAI_MAX_TRADES_PER_VAULT=50`, `OPENAI_MAX_POSITIONS_PER_VAULT=30`, `OPENAI_MAX_PNL_POINTS=60`)
 
 ## Environment Variables

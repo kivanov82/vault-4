@@ -16,6 +16,7 @@ export type RebalanceRoundResult = {
     startedAt: string;
     planTargets: number;
     recommended: string[];
+    tpWithdrawals: VaultTransferAction[];
     withdrawals: VaultTransferAction[];
     deposits: Awaited<ReturnType<typeof DepositService.executeDepositPlan>> | null;
 };
@@ -56,6 +57,82 @@ export class RebalanceOrchestrator {
             refresh: options.refreshRecommendations ?? options.refreshCandidates,
         });
 
+        // Get recommendations to build target allocations
+        const recommendations = await VaultService.getRecommendations({
+            refresh: options.refreshRecommendations,
+            refreshCandidates: options.refreshCandidates,
+        });
+
+        // Build target allocations map (barbell strategy)
+        const targetAllocations = buildTargetAllocations(
+            recommendations,
+            plan.totalCapitalUsd
+        );
+
+        // TP Strategy: Partial withdrawals from over-allocated positions
+        const TP_THRESHOLD_PCT = 10; // Hardcoded 10% profit threshold
+        const tpWithdrawals: VaultTransferAction[] = [];
+
+        for (const position of positions.positions) {
+            const address = position.vaultAddress.toLowerCase();
+
+            // Only process vaults still in recommendations
+            if (!recommendedSet.has(address)) {
+                continue;
+            }
+
+            // Check if profitable enough for TP
+            const roePct = position.roePct ?? 0;
+            if (roePct < TP_THRESHOLD_PCT) {
+                continue;
+            }
+
+            // Check if over-allocated
+            const targetAllocation = targetAllocations.get(address);
+            if (!targetAllocation) {
+                continue;
+            }
+
+            const currentUsd = position.amountUsd ?? 0;
+            const targetUsd = targetAllocation.targetUsd;
+
+            if (currentUsd <= targetUsd) {
+                // Under-allocated or at target, keep it
+                continue;
+            }
+
+            logger.info("Take-profit opportunity detected", {
+                vaultAddress: address,
+                vaultName: position.vaultName,
+                currentUsd,
+                targetUsd,
+                excessUsd: currentUsd - targetUsd,
+                roePct,
+                confidence: targetAllocation.confidence,
+            });
+
+            // Execute partial withdrawal to bring position to target
+            const result = await RebalanceService.withdrawPartialFromVault({
+                vaultAddress: address as `0x${string}`,
+                targetAmountUsd: targetUsd,
+                dryRun,
+            });
+
+            if (result.action.status === "submitted" || result.action.status === "prepared") {
+                logger.info("Take-profit withdrawal executed", {
+                    vaultAddress: address,
+                    vaultName: position.vaultName,
+                    withdrawnUsd: (result.action.usdMicros ?? 0) / 1e6,
+                    remainingUsd: targetUsd,
+                    roePct,
+                    dryRun,
+                });
+            }
+
+            tpWithdrawals.push(result.action);
+        }
+
+        // Full exit from non-recommended vaults (existing logic)
         const withdrawals: VaultTransferAction[] = [];
         for (const position of positions.positions) {
             const address = position.vaultAddress.toLowerCase();
@@ -82,7 +159,8 @@ export class RebalanceOrchestrator {
 
         if (
             withdrawalDelayMs > 0 &&
-            withdrawals.some((action) => action.status === "submitted")
+            (withdrawals.some((action) => action.status === "submitted") ||
+                tpWithdrawals.some((action) => action.status === "submitted"))
         ) {
             logger.info("Waiting for withdrawals to settle", {
                 withdrawalDelayMs,
@@ -97,6 +175,7 @@ export class RebalanceOrchestrator {
 
         logger.info("Rebalance round completed", {
             startedAt,
+            tpWithdrawals: tpWithdrawals.length,
             withdrawals: withdrawals.length,
             depositsSubmitted: deposits.submitted,
             dryRun,
@@ -106,10 +185,53 @@ export class RebalanceOrchestrator {
             startedAt,
             planTargets: plan.targets.length,
             recommended,
+            tpWithdrawals,
             withdrawals,
             deposits,
         };
     }
+}
+
+function buildTargetAllocations(
+    recommendations: Awaited<ReturnType<typeof VaultService.getRecommendations>>,
+    totalCapitalUsd: number
+): Map<string, { targetUsd: number; confidence: "high" | "low" }> {
+    const allocations = new Map<string, { targetUsd: number; confidence: "high" | "low" }>();
+
+    // Use barbell strategy: split total capital between confidence groups
+    const highCount = recommendations.highConfidence.length;
+    const lowCount = recommendations.lowConfidence.length;
+
+    if (highCount === 0 && lowCount === 0) {
+        return allocations;
+    }
+
+    // Get group percentages from env or use defaults (80/20 split)
+    const DEFAULT_HIGH_PCT = Number(process.env.DEPOSIT_HIGH_PCT || 80);
+    const DEFAULT_LOW_PCT = Number(process.env.DEPOSIT_LOW_PCT || 20);
+
+    const highTotalUsd = totalCapitalUsd * (DEFAULT_HIGH_PCT / 100);
+    const lowTotalUsd = totalCapitalUsd * (DEFAULT_LOW_PCT / 100);
+
+    // Split evenly within each group
+    const targetPerHighVault = highCount > 0 ? highTotalUsd / highCount : 0;
+    const targetPerLowVault = lowCount > 0 ? lowTotalUsd / lowCount : 0;
+
+    for (const rec of recommendations.highConfidence) {
+        allocations.set(rec.vaultAddress.toLowerCase(), {
+            targetUsd: targetPerHighVault,
+            confidence: "high",
+        });
+    }
+
+    for (const rec of recommendations.lowConfidence) {
+        allocations.set(rec.vaultAddress.toLowerCase(), {
+            targetUsd: targetPerLowVault,
+            confidence: "low",
+        });
+    }
+
+    return allocations;
 }
 
 function sleep(ms: number): Promise<void> {

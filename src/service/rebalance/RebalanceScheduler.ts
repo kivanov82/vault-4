@@ -59,7 +59,7 @@ export class RebalanceScheduler {
         this.running = true;
         try {
             await RebalanceOrchestrator.runRound({
-                dryRun: (process.env.REBALANCE_DRY_RUN ?? "true") !== "false",
+                dryRun: false,
                 refreshCandidates: true,
                 refreshRecommendations: true,
             });

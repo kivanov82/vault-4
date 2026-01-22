@@ -44,6 +44,20 @@ export type WithdrawVaultResult = {
     action: VaultTransferAction;
 };
 
+export type WithdrawPartialOptions = {
+    userAddress?: `0x${string}`;
+    vaultAddress: `0x${string}`;
+    targetAmountUsd: number;
+    dryRun?: boolean;
+    usdBufferBps?: number;
+};
+
+export type WithdrawPartialResult = {
+    userAddress: `0x${string}`;
+    dryRun: boolean;
+    action: VaultTransferAction;
+};
+
 export type DepositVaultOptions = {
     vaultAddress: `0x${string}`;
     amountUsd?: number;
@@ -149,6 +163,125 @@ export class RebalanceService {
             now: Date.now(),
         });
         return { userAddress, dryRun, action };
+    }
+
+    static async withdrawPartialFromVault(
+        options: WithdrawPartialOptions
+    ): Promise<WithdrawPartialResult> {
+        const userAddress = (options.userAddress ??
+            (process.env.WALLET as `0x${string}`)) as `0x${string}`;
+        if (!userAddress) {
+            throw new Error("WALLET is not set");
+        }
+        const dryRun = options.dryRun ?? true;
+        const usdBufferBps =
+            options.usdBufferBps ?? DEFAULT_USD_BUFFER_BPS;
+
+        const equities = await HyperliquidConnector.getUserVaultEquities(
+            userAddress
+        );
+        const equity = equities.find(
+            (entry) =>
+                entry.vaultAddress.toLowerCase() ===
+                options.vaultAddress.toLowerCase()
+        );
+
+        if (!equity) {
+            return {
+                userAddress,
+                dryRun,
+                action: {
+                    vaultAddress: options.vaultAddress,
+                    usdMicros: 0,
+                    status: "skipped",
+                    reason: "not-deposited",
+                },
+            };
+        }
+
+        const currentEquityUsd = equity.equity;
+        const targetAmountUsd = options.targetAmountUsd;
+
+        if (currentEquityUsd <= targetAmountUsd) {
+            return {
+                userAddress,
+                dryRun,
+                action: {
+                    vaultAddress: options.vaultAddress,
+                    equity: currentEquityUsd,
+                    usdMicros: 0,
+                    status: "skipped",
+                    reason: "already-at-target",
+                },
+            };
+        }
+
+        const withdrawAmountUsd = currentEquityUsd - targetAmountUsd;
+        const withdrawMicros = toUsdMicros(withdrawAmountUsd, usdBufferBps);
+
+        if (withdrawMicros <= 0) {
+            return {
+                userAddress,
+                dryRun,
+                action: {
+                    vaultAddress: options.vaultAddress,
+                    equity: currentEquityUsd,
+                    usdMicros: 0,
+                    status: "skipped",
+                    reason: "zero-amount",
+                },
+            };
+        }
+
+        if (dryRun) {
+            return {
+                userAddress,
+                dryRun,
+                action: {
+                    vaultAddress: options.vaultAddress,
+                    equity: currentEquityUsd,
+                    usdMicros: withdrawMicros,
+                    status: "prepared",
+                    reason: "take-profit",
+                },
+            };
+        }
+
+        try {
+            await HyperliquidConnector.vaultTransfer(
+                options.vaultAddress,
+                false,
+                withdrawMicros
+            );
+            return {
+                userAddress,
+                dryRun,
+                action: {
+                    vaultAddress: options.vaultAddress,
+                    equity: currentEquityUsd,
+                    usdMicros: withdrawMicros,
+                    status: "submitted",
+                    reason: "take-profit",
+                },
+            };
+        } catch (error: any) {
+            const message = error?.message ?? String(error);
+            logger.warn("Partial withdraw (TP) failed", {
+                vaultAddress: options.vaultAddress,
+                message,
+            });
+            return {
+                userAddress,
+                dryRun,
+                action: {
+                    vaultAddress: options.vaultAddress,
+                    equity: currentEquityUsd,
+                    usdMicros: withdrawMicros,
+                    status: "error",
+                    error: message,
+                },
+            };
+        }
     }
 
     static async depositToVault(
