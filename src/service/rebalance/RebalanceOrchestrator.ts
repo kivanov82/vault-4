@@ -22,7 +22,7 @@ export type RebalanceRoundResult = {
 };
 
 const DEFAULT_WITHDRAWAL_DELAY_MS = Number(
-    process.env.REBALANCE_WITHDRAWAL_DELAY_MS ?? 0
+    process.env.REBALANCE_WITHDRAWAL_DELAY_MS ?? 60000
 );
 
 export class RebalanceOrchestrator {
@@ -57,11 +57,8 @@ export class RebalanceOrchestrator {
             refresh: options.refreshRecommendations ?? options.refreshCandidates,
         });
 
-        // Get recommendations to build target allocations
-        const recommendations = await VaultService.getRecommendations({
-            refresh: options.refreshRecommendations,
-            refreshCandidates: options.refreshCandidates,
-        });
+        // Use recommendations from the plan (already fetched in buildDepositPlan)
+        const recommendations = plan.recommendations;
 
         // Build target allocations map (barbell strategy)
         const targetAllocations = buildTargetAllocations(

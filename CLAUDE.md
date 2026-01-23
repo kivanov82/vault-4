@@ -111,3 +111,6 @@ Add `?refresh=true` to bypass cache.
 - 30D performance uses `pnlChange30dPct` derived from PnL history, not TVL change
 - Warmup: `VaultService.warm()` runs at startup when `VAULT_WARM_RECOMMENDATIONS=true`
 - Withdrawals only from positive-PnL vaults no longer recommended
+
+## ToDos
+- move from OpenAI to Claude API

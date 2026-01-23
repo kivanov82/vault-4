@@ -1066,21 +1066,54 @@ function findValueAtOrBefore(
 
 function calcMaxDrawdownPct(points: TimeSeriesPoint[]): number | null {
     if (points.length < 2) return null;
-    let peak = points[0].value;
-    if (!Number.isFinite(peak) || peak <= 0) return null;
+
+    // Calculate returns-based drawdown to avoid issues with deposits/withdrawals
+    // We track cumulative returns from initial value and calculate drawdown from peak return
+    const initialValue = points[0].value;
+    if (!Number.isFinite(initialValue) || initialValue <= 0) {
+        // If initial value is 0 or negative, use absolute peak-to-trough
+        let peak = points[0].value;
+        let maxDrawdown = 0;
+        for (const point of points) {
+            const value = point.value;
+            if (!Number.isFinite(value)) continue;
+            if (value > peak) {
+                peak = value;
+                continue;
+            }
+            if (peak > 0) {
+                const drawdown = (value - peak) / peak;
+                if (drawdown < maxDrawdown) {
+                    maxDrawdown = drawdown;
+                }
+            }
+        }
+        return maxDrawdown * 100;
+    }
+
+    // Calculate cumulative return at each point: (value / initialValue) - 1
+    let peakReturn = 0; // Peak cumulative return
     let maxDrawdown = 0;
+
     for (const point of points) {
         const value = point.value;
         if (!Number.isFinite(value)) continue;
-        if (value > peak) {
-            peak = value;
+
+        const cumulativeReturn = (value / initialValue) - 1;
+
+        if (cumulativeReturn > peakReturn) {
+            peakReturn = cumulativeReturn;
             continue;
         }
-        const drawdown = (value - peak) / peak;
+
+        // Drawdown from peak: (currentReturn - peakReturn) / (1 + peakReturn)
+        // This represents the percentage loss from the peak equity value
+        const drawdown = (cumulativeReturn - peakReturn) / (1 + peakReturn);
         if (drawdown < maxDrawdown) {
             maxDrawdown = drawdown;
         }
     }
+
     return maxDrawdown * 100;
 }
 

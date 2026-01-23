@@ -45,6 +45,7 @@ export type DepositPlan = {
         lowTotalPct: number;
     };
     suggestedAllocations?: SuggestedAllocations;
+    recommendations: RecommendationSet;
     targets: DepositTarget[];
 };
 
@@ -236,6 +237,7 @@ export class DepositService {
                 lowTotalPct: lowPct,
             },
             suggestedAllocations: recommendations.suggestedAllocations,
+            recommendations,
             targets: planned,
         };
     }
