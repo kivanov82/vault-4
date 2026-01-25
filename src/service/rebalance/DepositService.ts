@@ -247,7 +247,7 @@ export class DepositService {
         options: ExecuteDepositPlanOptions = {}
     ): Promise<ExecuteDepositPlanResult> {
         const dryRun = options.dryRun ?? true;
-        const minDepositUsd = Math.max(0, options.minDepositUsd ?? 1);
+        const minDepositUsd = Math.max(0, options.minDepositUsd ?? 5);
 
         let submitted = 0;
         let skipped = 0;
@@ -257,6 +257,11 @@ export class DepositService {
         for (const target of plan.targets) {
             if (target.depositUsd < minDepositUsd) {
                 skipped += 1;
+                logger.info("Skipping deposit (below minimum)", {
+                    vaultAddress: target.vaultAddress,
+                    depositUsd: target.depositUsd,
+                    minDepositUsd,
+                });
                 actions.push({
                     vaultAddress: target.vaultAddress,
                     usdMicros: Math.floor(target.depositUsd * 1e6),
@@ -273,7 +278,14 @@ export class DepositService {
             actions.push(result.action);
             if (result.action.status === "submitted") submitted += 1;
             if (result.action.status === "skipped") skipped += 1;
-            if (result.action.status === "error") errors += 1;
+            if (result.action.status === "error") {
+                errors += 1;
+                logger.warn("Deposit failed, continuing with remaining deposits", {
+                    vaultAddress: target.vaultAddress,
+                    error: result.action.error,
+                    remainingTargets: plan.targets.length - actions.length,
+                });
+            }
         }
 
         return {

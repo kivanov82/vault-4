@@ -1,6 +1,7 @@
 import { DepositService } from "./DepositService";
 import { RebalanceService, type VaultTransferAction } from "./RebalanceService";
 import { VaultService } from "../vaults/VaultService";
+import { HyperliquidConnector } from "../trade/HyperliquidConnector";
 import { logger } from "../utils/logger";
 
 export type RebalanceRoundOptions = {
@@ -32,7 +33,7 @@ export class RebalanceOrchestrator {
         const startedAt = new Date().toISOString();
         const dryRun = options.dryRun ?? true;
         const includeLocked = options.includeLocked ?? false;
-        const minDepositUsd = options.minDepositUsd ?? 1;
+        const minDepositUsd = options.minDepositUsd ?? 5;
         const withdrawalDelayMs =
             options.withdrawalDelayMs ?? DEFAULT_WITHDRAWAL_DELAY_MS;
 
@@ -129,15 +130,41 @@ export class RebalanceOrchestrator {
             tpWithdrawals.push(result.action);
         }
 
-        // Full exit from non-recommended vaults (existing logic)
+        // Full exit from non-recommended vaults and inactive vaults
         const withdrawals: VaultTransferAction[] = [];
         for (const position of positions.positions) {
             const address = position.vaultAddress.toLowerCase();
+            const pnlUsd =
+                typeof position.pnlUsd === "number" ? position.pnlUsd : null;
+
+            // Check if vault is inactive (0 positions, no trades in 7 days)
+            // Withdraw from inactive vaults regardless of recommendation status or PnL
+            const isInactive = await checkVaultInactive(position.vaultAddress);
+
+            if (isInactive) {
+                logger.info("Withdrawing from inactive vault (0 positions, no recent trades)", {
+                    vaultAddress: position.vaultAddress,
+                    vaultName: position.vaultName,
+                    pnlUsd,
+                    inRecommendations: recommendedSet.has(address),
+                    reason: "inactive-vault",
+                });
+                const result = await RebalanceService.withdrawAllFromVault({
+                    vaultAddress: position.vaultAddress as `0x${string}`,
+                    dryRun,
+                    includeLocked,
+                    sweepDust: true,
+                });
+                withdrawals.push(result.action);
+                continue;
+            }
+
+            // Skip withdrawal if still in recommendations (handled by TP strategy)
             if (recommendedSet.has(address)) {
                 continue;
             }
-            const pnlUsd =
-                typeof position.pnlUsd === "number" ? position.pnlUsd : null;
+
+            // Normal withdrawal logic: only withdraw if positive PnL
             if (!Number.isFinite(pnlUsd) || pnlUsd <= 0) {
                 logger.info("Skipping withdrawal (non-positive PnL)", {
                     vaultAddress: position.vaultAddress,
@@ -229,6 +256,38 @@ function buildTargetAllocations(
     }
 
     return allocations;
+}
+
+async function checkVaultInactive(vaultAddress: string): Promise<boolean> {
+    try {
+        // Check current positions
+        const accountSummary = await HyperliquidConnector.getVaultAccountSummary(vaultAddress);
+        const currentPositions = Array.isArray(accountSummary?.assetPositions)
+            ? accountSummary.assetPositions.length
+            : 0;
+
+        if (currentPositions > 0) {
+            return false;
+        }
+
+        // Check trades in last 7 days
+        await sleep(200); // Rate limiting
+        const tradesLast7d = await HyperliquidConnector.getVaultTradesCount(vaultAddress, 7);
+
+        if (tradesLast7d === null || tradesLast7d > 0) {
+            return false;
+        }
+
+        // Vault has 0 positions and 0 trades in last 7 days
+        return true;
+    } catch (error: any) {
+        logger.warn("Failed to check vault activity", {
+            vaultAddress,
+            error: error?.message,
+        });
+        // If we can't check, assume it's active (don't withdraw on error)
+        return false;
+    }
 }
 
 function sleep(ms: number): Promise<void> {

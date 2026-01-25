@@ -45,32 +45,51 @@ src/
 
 ### Core Flow
 
-1. **Discover**: Filter candidate vaults via Hyperliquid API (TVL, age, followers, etc.)
+1. **Discover**: Filter candidate vaults via Hyperliquid API
+   - Filters: TVL, age, followers, trades in last 7 days, deposits open
+   - **Active positions check**: Vaults with 0 current positions are excluded (prevents dead vaults)
 2. **Rank** (two-stage):
    - **Stage 1**: Score vaults in parallel batches of 20 (`vault-scoring.md` prompt, returns 0-100 scores)
    - **Stage 2**: Take top candidates from all batches, run final ranking (`vault-ranking.md` prompt, returns barbell allocation)
-3. **Rebalance**: Every 2 days, withdraw from non-recommended vaults (positive PnL only), deposit into top vaults
+3. **Rebalance**: Every 2 days, execute take-profit withdrawals, exit non-recommended/inactive vaults, deposit into top vaults
 
 ### Rebalancing Logic
 
 The rebalancing cycle runs every 2 days and follows these rules:
 
-**Withdrawals:**
-- Only withdraw from vaults no longer in recommendations
-- Only withdraw if position has positive PnL (never realize losses)
+**Withdrawals (executed in priority order):**
+
+1. **Inactive Vault Exits** (highest priority):
+   - Withdraw ALL positions from vaults with 0 positions AND 0 trades in last 7 days
+   - Applied regardless of PnL (positive or negative) or recommendation status
+   - Prevents capital being locked in dead/abandoned vaults
+
+2. **Take-Profit Partial Withdrawals**:
+   - For vaults still in recommendations but over-allocated
+   - Only if position ROE ≥ 10%
+   - Withdraw excess to bring position back to target allocation
+   - Locks in gains while maintaining exposure
+
+3. **Full Exits from Non-Recommended Vaults**:
+   - Only withdraw from vaults no longer in recommendations
+   - Only withdraw if position has positive PnL (never realize losses on active vaults)
+   - Wait 60s after withdrawals before deposits (configurable via `REBALANCE_WITHDRAWAL_DELAY_MS`)
 
 **Deposits:**
+- **Minimum deposit**: $5 USD (deposits below this are skipped)
 - Only deposit to NEW vaults (no existing exposure) to avoid concentration risk
 - Available balance (perps wallet) is split between high/low confidence groups
 - Default split: 80% to high-confidence vaults, 20% to low-confidence
 - Each group's allocation is split evenly among vaults in that group
 - If one group is empty, its allocation goes to the other group
+- Deposits continue even if individual deposits fail (no cascading failures)
 
 **Example:**
 - Available balance: $10,000
 - High-confidence vaults (no exposure): 4 vaults → $8,000 / 4 = $2,000 each
 - Low-confidence vaults (no exposure): 2 vaults → $2,000 / 2 = $1,000 each
 - Vaults with existing exposure: skipped entirely
+- Any allocation < $5: skipped and logged
 
 ### Key Patterns
 
@@ -86,6 +105,23 @@ Required (no defaults):
 OPENAI_API_KEY=<key>
 WALLET=0x<user-address>
 WALLET_PK=0x<private-key>
+```
+
+Optional (vault filtering):
+```
+VAULT_MIN_TVL=10000                    # Minimum TVL in USD (default: 10,000)
+VAULT_MIN_AGE_DAYS=21                  # Minimum vault age in days (default: 21)
+VAULT_MIN_FOLLOWERS=10                 # Minimum follower count (default: 10)
+VAULT_MIN_TRADES_7D=5                  # Minimum trades in last 7 days (default: 5)
+VAULT_REQUIRE_POSITIVE_WEEKLY_PNL=false
+VAULT_REQUIRE_POSITIVE_MONTHLY_PNL=false
+```
+
+Optional (rebalancing):
+```
+DEPOSIT_HIGH_PCT=80                    # High-confidence allocation % (default: 80)
+DEPOSIT_LOW_PCT=20                     # Low-confidence allocation % (default: 20)
+REBALANCE_WITHDRAWAL_DELAY_MS=60000    # Wait time after withdrawals (default: 60s)
 ```
 
 ## Conventions
@@ -110,7 +146,10 @@ Add `?refresh=true` to bypass cache.
 
 - 30D performance uses `pnlChange30dPct` derived from PnL history, not TVL change
 - Warmup: `VaultService.warm()` runs at startup when `VAULT_WARM_RECOMMENDATIONS=true`
-- Withdrawals only from positive-PnL vaults no longer recommended
+- **Vault candidate filtering**: Excludes vaults with 0 active positions to prevent depositing into inactive vaults
+- **Inactive vault detection**: Vaults with 0 positions + 0 trades in 7 days trigger immediate withdrawal (even negative PnL)
+- **Take-profit strategy**: Over-allocated positions with ROE ≥ 10% trigger partial withdrawals to target allocation
+- **Error isolation**: Individual deposit failures don't stop subsequent deposits (logged and continued)
 
 ## ToDos
 - move from OpenAI to Claude API

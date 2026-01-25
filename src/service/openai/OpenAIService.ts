@@ -150,7 +150,13 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
             const parsed = parseJsonPayload(content);
 
             if (!parsed || !Array.isArray(parsed.scores)) {
-                logger.warn("Batch scoring response invalid", { batchIndex, raw: content.slice(0, 200) });
+                logger.warn("Batch scoring response invalid", {
+                    batchIndex,
+                    responsePreview: content.slice(0, 500),
+                    responseLength: content.length,
+                    parsedType: typeof parsed,
+                    hasScoresArray: parsed ? Array.isArray(parsed.scores) : false,
+                });
                 return [];
             }
 
@@ -247,7 +253,11 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
             const content = response.choices?.[0]?.message?.content?.trim() ?? "";
             const parsed = parseJsonPayload(content);
             if (!parsed) {
-                logger.warn("OpenAI response was not valid JSON");
+                logger.warn("OpenAI response was not valid JSON", {
+                    responsePreview: content.slice(0, 500),
+                    responseLength: content.length,
+                    model: DEFAULT_MODEL,
+                });
                 return null;
             }
             const top10 = normalizeTop10(parsed.top10 ?? parsed.top_10);

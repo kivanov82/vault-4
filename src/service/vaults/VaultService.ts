@@ -181,6 +181,15 @@ export class VaultService {
                       )
                     : null;
 
+            // Check for active positions
+            await new Promise((resolve) => setTimeout(resolve, 200));
+            const accountSummary = await HyperliquidConnector.getVaultAccountSummary(
+                entry.summary.vaultAddress
+            );
+            const currentPositions = Array.isArray(accountSummary?.assetPositions)
+                ? accountSummary.assetPositions.length
+                : 0;
+
             if (filters.requireDepositsOpen && allowDeposits === false) continue;
             if (
                 filters.minFollowers > 0 &&
@@ -194,6 +203,14 @@ export class VaultService {
                 tradesLast7d < filters.minTrades7d
             )
                 continue;
+            // Skip vaults with no active positions
+            if (currentPositions === 0) {
+                logger.info("Skipping vault candidate (no active positions)", {
+                    name: entry.summary.name,
+                    vaultAddress: entry.summary.vaultAddress,
+                });
+                continue;
+            }
 
             logger.info("Found vault candidate", { name: entry.summary.name });
             candidates.push({
