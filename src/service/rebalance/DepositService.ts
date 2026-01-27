@@ -312,7 +312,7 @@ function buildTargetFromAllocation(
         : 0;
     const depositUsd = roundUsd(
         Number.isFinite(rec.allocationPct) && rec.allocationPct > 0
-            ? groupAllocationUsd * (rec.allocationPct / 100) * groupCount // Use AI suggestion proportionally
+            ? groupAllocationUsd * (rec.allocationPct / 100) // Use AI-suggested allocation percentage
             : perVaultUsd
     );
     const targetPct = groupCount > 0 ? 100 / groupCount : 0;

@@ -33,7 +33,7 @@ const RESERVED_NAMES = new Set(
 
 const DEFAULT_FILTERS: VaultFilters = {
     minTvl: readNumberEnv(process.env.VAULT_MIN_TVL, 10000),
-    minAgeDays: readNumberEnv(process.env.VAULT_MIN_AGE_DAYS, 21),
+    minAgeDays: readNumberEnv(process.env.VAULT_MIN_AGE_DAYS, 50),
     minFollowers: readNumberEnv(process.env.VAULT_MIN_FOLLOWERS, 10),
     minTrades7d: readNumberEnv(process.env.VAULT_MIN_TRADES_7D, 5),
     requirePositiveWeeklyPnl:

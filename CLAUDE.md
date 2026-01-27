@@ -110,7 +110,7 @@ WALLET_PK=0x<private-key>
 Optional (vault filtering):
 ```
 VAULT_MIN_TVL=10000                    # Minimum TVL in USD (default: 10,000)
-VAULT_MIN_AGE_DAYS=21                  # Minimum vault age in days (default: 21)
+VAULT_MIN_AGE_DAYS=50                  # Minimum vault age in days (default: 21)
 VAULT_MIN_FOLLOWERS=10                 # Minimum follower count (default: 10)
 VAULT_MIN_TRADES_7D=5                  # Minimum trades in last 7 days (default: 5)
 VAULT_REQUIRE_POSITIVE_WEEKLY_PNL=false

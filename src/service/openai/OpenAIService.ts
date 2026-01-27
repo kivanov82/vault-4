@@ -432,15 +432,60 @@ async function buildVaultPayload(
 
 function parseJsonPayload(content: string): any | null {
     if (!content) return null;
+
+    // Strip markdown code blocks if present
+    let cleaned = content.trim();
+    if (cleaned.startsWith("```")) {
+        const firstNewline = cleaned.indexOf("\n");
+        if (firstNewline !== -1) {
+            cleaned = cleaned.slice(firstNewline + 1);
+        }
+        if (cleaned.endsWith("```")) {
+            cleaned = cleaned.slice(0, -3);
+        }
+        cleaned = cleaned.trim();
+    }
+
+    // Remove control characters except tab, newline, carriage return
+    cleaned = cleaned.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
+
     try {
-        return JSON.parse(content);
-    } catch {
-        const start = content.indexOf("{");
-        const end = content.lastIndexOf("}");
-        if (start === -1 || end === -1 || end <= start) return null;
+        return JSON.parse(cleaned);
+    } catch (err1) {
+        const start = cleaned.indexOf("{");
+        const end = cleaned.lastIndexOf("}");
+        if (start === -1 || end === -1 || end <= start) {
+            logger.warn("parseJsonPayload: no valid JSON boundaries", {
+                hasStart: start !== -1,
+                hasEnd: end !== -1,
+                startPos: start,
+                endPos: end,
+            });
+            return null;
+        }
         try {
-            return JSON.parse(content.slice(start, end + 1));
-        } catch {
+            const extracted = cleaned.slice(start, end + 1);
+            return JSON.parse(extracted);
+        } catch (err2) {
+            // Log the specific error location for debugging
+            const errMsg = (err2 as Error).message;
+            const posMatch = errMsg.match(/position (\d+)/);
+            if (posMatch) {
+                const pos = parseInt(posMatch[1], 10);
+                const extracted = cleaned.slice(start, end + 1);
+                const contextStart = Math.max(0, pos - 30);
+                const contextEnd = Math.min(extracted.length, pos + 30);
+                logger.warn("parseJsonPayload: JSON parse error at position", {
+                    position: pos,
+                    charCode: extracted.charCodeAt(pos),
+                    context: extracted.slice(contextStart, contextEnd),
+                    error: errMsg,
+                });
+            } else {
+                logger.warn("parseJsonPayload: JSON parse error", {
+                    error: errMsg,
+                });
+            }
             return null;
         }
     }
