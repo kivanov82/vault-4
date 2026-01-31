@@ -53,7 +53,7 @@ export type VaultRecommendation = {
 
 export type RecommendationSet = {
     generatedAt: string;
-    source: "openai" | "heuristic";
+    source: "claude" | "heuristic";
     model?: string;
     highConfidence: VaultRecommendation[];
     lowConfidence: VaultRecommendation[];

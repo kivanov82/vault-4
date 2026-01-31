@@ -33,7 +33,8 @@ and flags:
 - `bearFlag` (BTC 7d < 0),
 - `fundingPos` (BTC funding > 0),
 - `domHigh` (dominance elevated),
-- `fearHigh` (F&G <= ~30).
+- `fearHigh` (F&G <= ~30),
+- `riskOn` (BTC 7d > 0 AND fearGreed > 50).
 
 Feature engineering per vault
 
@@ -78,11 +79,12 @@ Apply additive overlay based on the regime flags:
 
 ```
 overlay =
-  0.15·bearFlag · robust_z(-net_rt)   # favor net-short when BTC down
-+ 0.10·fundingPos · robust_z(-net_rt) # funding>0: penalize net-long carry
-+ 0.10·domHigh · robust_z(-alts_rt)   # dominance high: favor short alts
-- 0.05·fearHigh · robust_z(pnl_sd_7d) # avoid noisy books in fear
-+ 0.05·robust_z(mm_proxy)            # small boost to MM/carry behavior
+  0.25·bearFlag · robust_z(-net_rt)   # strongly favor net-short when BTC down (was 0.15)
++ 0.20·fundingPos · robust_z(-net_rt) # penalize net-long when funding positive (was 0.10)
++ 0.15·domHigh · robust_z(-alts_rt)   # favor short alts when BTC dominance high (was 0.10)
+- 0.10·fearHigh · robust_z(pnl_sd_7d) # avoid volatile vaults in fear (was 0.05)
++ 0.05·robust_z(mm_proxy)             # MM boost unchanged
++ 0.15·riskOn · robust_z(net_rt)      # favor net-long in risk-on regimes (NEW)
 ```
 
 `score_market = base_score + overlay`

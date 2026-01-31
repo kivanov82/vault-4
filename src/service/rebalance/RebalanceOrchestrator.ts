@@ -164,11 +164,14 @@ export class RebalanceOrchestrator {
                 continue;
             }
 
-            // Normal withdrawal logic: only withdraw if positive PnL
-            if (!Number.isFinite(pnlUsd) || pnlUsd <= 0) {
-                logger.info("Skipping withdrawal (non-positive PnL)", {
+            // Normal withdrawal logic: only withdraw if ROE >= 2%
+            const EXIT_THRESHOLD_PCT = 2;
+            const roePct = position.roePct ?? 0;
+            if (roePct < EXIT_THRESHOLD_PCT) {
+                logger.info("Skipping withdrawal (ROE below threshold)", {
                     vaultAddress: position.vaultAddress,
-                    pnlUsd,
+                    roePct,
+                    threshold: EXIT_THRESHOLD_PCT,
                 });
                 continue;
             }

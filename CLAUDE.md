@@ -4,7 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Vault-4 is a fully automated, non-custodial trading platform for Hyperliquid vaults. It uses OpenAI to rank deposit-open vaults using market-aware algorithms, then executes automated 2-day rebalancing cycles to optimize capital allocation.
+Vault-4 is a fully automated, non-custodial trading platform for Hyperliquid vaults. It uses Claude AI to rank deposit-open vaults using market-aware algorithms, then executes automated 2-day rebalancing cycles to optimize capital allocation.
+
+## Related Projects
+
+| Project | Path | Purpose |
+|---------|------|---------|
+| **vault-4** (this repo) | `/Users/kirilivanov/DEV/vault-4` | Backend API service - vault discovery, ranking, and automated rebalancing |
+| **vault-4-App** | `/Users/kirilivanov/DEV/vault-4-App` | Frontend UI - displays portfolio, positions, metrics, and transaction history |
+
+The UI consumes the API endpoints defined in this backend service. When making API changes, ensure compatibility with the frontend.
 
 ## Commands
 
@@ -33,8 +42,8 @@ src/
 │   │   ├── RebalanceOrchestrator.ts   # Rebalancing orchestration
 │   │   ├── RebalanceService.ts        # Deposit/withdraw execution
 │   │   └── DepositService.ts          # Deposit plan building (barbell strategy)
-│   ├── openai/
-│   │   ├── OpenAIService.ts           # GPT integration for two-stage vault ranking
+│   ├── claude/
+│   │   ├── ClaudeService.ts           # Claude API integration for two-stage vault ranking
 │   │   ├── MarketDataService.ts       # Market overlay data fetching
 │   │   └── prompts/
 │   │       ├── vault-scoring.md       # Stage 1: Batch scoring prompt (0-100)
@@ -66,13 +75,13 @@ The rebalancing cycle runs every 2 days and follows these rules:
 
 2. **Take-Profit Partial Withdrawals**:
    - For vaults still in recommendations but over-allocated
-   - Only if position ROE ≥ 10%
+   - Only if position ROE >= 10%
    - Withdraw excess to bring position back to target allocation
    - Locks in gains while maintaining exposure
 
 3. **Full Exits from Non-Recommended Vaults**:
    - Only withdraw from vaults no longer in recommendations
-   - Only withdraw if position has positive PnL (never realize losses on active vaults)
+   - Only withdraw if position ROE >= 2% (prevents realizing small losses)
    - Wait 60s after withdrawals before deposits (configurable via `REBALANCE_WITHDRAWAL_DELAY_MS`)
 
 **Deposits:**
@@ -86,8 +95,8 @@ The rebalancing cycle runs every 2 days and follows these rules:
 
 **Example:**
 - Available balance: $10,000
-- High-confidence vaults (no exposure): 4 vaults → $8,000 / 4 = $2,000 each
-- Low-confidence vaults (no exposure): 2 vaults → $2,000 / 2 = $1,000 each
+- High-confidence vaults (no exposure): 4 vaults -> $8,000 / 4 = $2,000 each
+- Low-confidence vaults (no exposure): 2 vaults -> $2,000 / 2 = $1,000 each
 - Vaults with existing exposure: skipped entirely
 - Any allocation < $5: skipped and logged
 
@@ -96,15 +105,27 @@ The rebalancing cycle runs every 2 days and follows these rules:
 - **Services**: Static methods, singletons under `src/service/`
 - **Caching**: Multiple TTL configs (vault cache 5min, portfolio 2min, market data 60s)
 - **Barbell Strategy**: 70-80% to high-confidence vaults, 20-30% to low-confidence
-- **Two-Stage Ranking**: Batches of 20 vaults scored in parallel, then top candidates ranked for final allocation. Configurable via `OPENAI_BATCH_SIZE` (default 20), with richer data per vault (`OPENAI_MAX_TRADES_PER_VAULT=50`, `OPENAI_MAX_POSITIONS_PER_VAULT=30`, `OPENAI_MAX_PNL_POINTS=60`)
+- **Two-Stage Ranking**: Batches of 20 vaults scored in parallel, then top candidates ranked for final allocation. Configurable via `CLAUDE_BATCH_SIZE` (default 20), with richer data per vault (`CLAUDE_MAX_TRADES_PER_VAULT=50`, `CLAUDE_MAX_POSITIONS_PER_VAULT=30`, `CLAUDE_MAX_PNL_POINTS=60`)
 
 ## Environment Variables
 
 Required (no defaults):
 ```
-OPENAI_API_KEY=<key>
+ANTHROPIC_API_KEY=<key>
 WALLET=0x<user-address>
 WALLET_PK=0x<private-key>
+```
+
+Optional (Claude AI):
+```
+CLAUDE_MODEL=claude-3-5-haiku-20241022  # Claude model to use (default: claude-3-5-haiku-20241022)
+CLAUDE_TEMPERATURE=0.2                  # Temperature for AI responses (default: 0.2)
+CLAUDE_MAX_TOKENS=16384                 # Max tokens for AI responses (default: 16384)
+CLAUDE_BATCH_SIZE=10                    # Vaults per scoring batch (default: 10)
+CLAUDE_API_DELAY_MS=60000               # Delay between API calls in ms (default: 60s)
+CLAUDE_MAX_TRADES_PER_VAULT=50          # Max trades included per vault (default: 50)
+CLAUDE_MAX_POSITIONS_PER_VAULT=30       # Max positions included per vault (default: 30)
+CLAUDE_MAX_PNL_POINTS=60                # Max PnL data points per vault (default: 60)
 ```
 
 Optional (vault filtering):
@@ -128,7 +149,7 @@ REBALANCE_WITHDRAWAL_DELAY_MS=60000    # Wait time after withdrawals (default: 6
 
 - TypeScript services under `src/service/`; keep async Hyperliquid calls paced
 - Use the `logger` module with context: `logger.info("msg", { context: "data" })`
-- OpenAI payloads include `already_exposed` vaults and expect barbell allocation output
+- Claude payloads include `already_exposed` vaults and expect barbell allocation output
 - Types centralized in `src/service/vaults/types.ts` - key types: `RecommendationSet`, `DepositPlan`, `VaultCandidate`
 - Prefer ASCII in files unless the file already uses Unicode
 
@@ -148,8 +169,6 @@ Add `?refresh=true` to bypass cache.
 - Warmup: `VaultService.warm()` runs at startup when `VAULT_WARM_RECOMMENDATIONS=true`
 - **Vault candidate filtering**: Excludes vaults with 0 active positions to prevent depositing into inactive vaults
 - **Inactive vault detection**: Vaults with 0 positions + 0 trades in 7 days trigger immediate withdrawal (even negative PnL)
-- **Take-profit strategy**: Over-allocated positions with ROE ≥ 10% trigger partial withdrawals to target allocation
+- **Take-profit strategy**: Over-allocated positions with ROE >= 10% trigger partial withdrawals to target allocation
+- **Exit threshold**: Non-recommended vaults only exit when ROE >= 2% (prevents realizing small losses)
 - **Error isolation**: Individual deposit failures don't stop subsequent deposits (logged and continued)
-
-## ToDos
-- move from OpenAI to Claude API

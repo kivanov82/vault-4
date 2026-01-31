@@ -247,41 +247,37 @@ export class RebalanceService {
             };
         }
 
-        try {
-            await HyperliquidConnector.vaultTransfer(
-                options.vaultAddress,
-                false,
-                withdrawMicros
-            );
+        // Use progressive retry to handle margin requirements
+        const result = await attemptWithdrawalWithRetry(
+            options.vaultAddress,
+            withdrawMicros
+        );
+
+        if (result.status === "submitted") {
             return {
                 userAddress,
                 dryRun,
                 action: {
                     vaultAddress: options.vaultAddress,
                     equity: currentEquityUsd,
-                    usdMicros: withdrawMicros,
+                    usdMicros: result.actualUsdMicros ?? withdrawMicros,
                     status: "submitted",
                     reason: "take-profit",
                 },
             };
-        } catch (error: any) {
-            const message = error?.message ?? String(error);
-            logger.warn("Partial withdraw (TP) failed", {
-                vaultAddress: options.vaultAddress,
-                message,
-            });
-            return {
-                userAddress,
-                dryRun,
-                action: {
-                    vaultAddress: options.vaultAddress,
-                    equity: currentEquityUsd,
-                    usdMicros: withdrawMicros,
-                    status: "error",
-                    error: message,
-                },
-            };
         }
+
+        return {
+            userAddress,
+            dryRun,
+            action: {
+                vaultAddress: options.vaultAddress,
+                equity: currentEquityUsd,
+                usdMicros: withdrawMicros,
+                status: "error",
+                error: result.error,
+            },
+        };
     }
 
     static async depositToVault(
@@ -407,43 +403,15 @@ async function withdrawFromEquity(
         };
     }
 
-    const primary = await attemptWithdrawal(equity.vaultAddress, targetMicros);
-    if (primary.status === "submitted") {
+    // Use progressive retry to handle margin requirements
+    const result = await attemptWithdrawalWithRetry(equity.vaultAddress, targetMicros);
+    if (result.status === "submitted") {
         return {
             vaultAddress: equity.vaultAddress,
             equity: equity.equity,
             lockedUntilTimestamp: equity.lockedUntilTimestamp,
-            usdMicros: targetMicros,
+            usdMicros: result.actualUsdMicros ?? targetMicros,
             status: "submitted",
-        };
-    }
-
-    const shouldSweep =
-        options.sweepDust &&
-        options.usdBufferBps > 0 &&
-        fullMicros > 0 &&
-        fullMicros !== targetMicros &&
-        isInsufficientEquityError(primary.error);
-    if (!shouldSweep) {
-        return {
-            vaultAddress: equity.vaultAddress,
-            equity: equity.equity,
-            lockedUntilTimestamp: equity.lockedUntilTimestamp,
-            usdMicros: targetMicros,
-            status: "error",
-            error: primary.error,
-        };
-    }
-
-    const sweep = await attemptWithdrawal(equity.vaultAddress, fullMicros);
-    if (sweep.status === "submitted") {
-        return {
-            vaultAddress: equity.vaultAddress,
-            equity: equity.equity,
-            lockedUntilTimestamp: equity.lockedUntilTimestamp,
-            usdMicros: fullMicros,
-            status: "submitted",
-            reason: "sweep",
         };
     }
 
@@ -451,28 +419,98 @@ async function withdrawFromEquity(
         vaultAddress: equity.vaultAddress,
         equity: equity.equity,
         lockedUntilTimestamp: equity.lockedUntilTimestamp,
-        usdMicros: fullMicros,
+        usdMicros: targetMicros,
         status: "error",
-        error: sweep.error,
+        error: result.error,
     };
 }
 
 async function attemptWithdrawal(
     vaultAddress: string,
     usdMicros: number
-): Promise<{ status: "submitted" | "error"; error?: string }> {
+): Promise<{ status: "submitted" | "error"; error?: string; actualUsdMicros?: number }> {
     try {
         await HyperliquidConnector.vaultTransfer(
             vaultAddress as `0x${string}`,
             false,
             usdMicros
         );
-        return { status: "submitted" };
+        return { status: "submitted", actualUsdMicros: usdMicros };
     } catch (error: any) {
         const message = error?.message ?? String(error);
         logger.warn("Withdraw failed", { vaultAddress, message });
         return { status: "error", error: message };
     }
+}
+
+// Progressive retry percentages when withdrawal fails due to insufficient equity
+const WITHDRAWAL_RETRY_PERCENTAGES = [0.95, 0.90, 0.85, 0.80, 0.75, 0.70, 0.60, 0.50];
+const MIN_WITHDRAWAL_USD = 1; // Don't retry below $1
+
+async function attemptWithdrawalWithRetry(
+    vaultAddress: string,
+    initialUsdMicros: number
+): Promise<{ status: "submitted" | "error"; error?: string; actualUsdMicros?: number }> {
+    // First attempt with the requested amount
+    const initial = await attemptWithdrawal(vaultAddress, initialUsdMicros);
+    if (initial.status === "submitted") {
+        return initial;
+    }
+
+    // Only retry if it's an insufficient equity error
+    if (!isInsufficientEquityError(initial.error)) {
+        return initial;
+    }
+
+    logger.info("Withdrawal failed due to insufficient equity, starting progressive retry", {
+        vaultAddress,
+        initialUsdMicros,
+        initialUsd: initialUsdMicros / 1e6,
+    });
+
+    // Try progressively smaller amounts
+    for (const pct of WITHDRAWAL_RETRY_PERCENTAGES) {
+        const retryMicros = Math.floor(initialUsdMicros * pct);
+
+        // Don't retry if amount is too small
+        if (retryMicros < MIN_WITHDRAWAL_USD * 1e6) {
+            logger.warn("Progressive retry reached minimum threshold", {
+                vaultAddress,
+                pct,
+                retryUsd: retryMicros / 1e6,
+            });
+            break;
+        }
+
+        logger.info("Retrying withdrawal at reduced amount", {
+            vaultAddress,
+            pct: `${(pct * 100).toFixed(0)}%`,
+            retryUsd: retryMicros / 1e6,
+        });
+
+        const retry = await attemptWithdrawal(vaultAddress, retryMicros);
+        if (retry.status === "submitted") {
+            logger.info("Progressive withdrawal succeeded", {
+                vaultAddress,
+                originalUsd: initialUsdMicros / 1e6,
+                actualUsd: retryMicros / 1e6,
+                successPct: `${(pct * 100).toFixed(0)}%`,
+            });
+            return { status: "submitted", actualUsdMicros: retryMicros };
+        }
+
+        // If it's not an insufficient equity error, stop retrying
+        if (!isInsufficientEquityError(retry.error)) {
+            return retry;
+        }
+    }
+
+    // All retries failed
+    logger.warn("Progressive withdrawal failed at all retry levels", {
+        vaultAddress,
+        initialUsd: initialUsdMicros / 1e6,
+    });
+    return { status: "error", error: "Insufficient equity even at 50% of reported value" };
 }
 
 function isInsufficientEquityError(message?: string): boolean {

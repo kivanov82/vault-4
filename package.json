@@ -22,7 +22,7 @@
     "express": "^5.1.0",
     "moment": "^2.29.1",
     "node-schedule": "^2.1.1",
-    "openai": "^5.20.0",
+    "@anthropic-ai/sdk": "^0.39.0",
     "taapi": "^1.4.8",
     "viem": "^2.29.1"
   },

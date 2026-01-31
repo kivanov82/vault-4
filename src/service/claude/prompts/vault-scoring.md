@@ -23,6 +23,7 @@ Use the provided market data to infer regime flags:
 - `fundingPos` (BTC funding > 0)
 - `domHigh` (dominance elevated)
 - `fearHigh` (F&G <= ~30)
+- `riskOn` (BTC 7d > 0 AND fearGreed > 50)
 
 Feature engineering per vault
 
@@ -48,10 +49,11 @@ base_score =
 - 0.10*robust_z(pnl_sd_30d)
 
 overlay =
-  0.15*bearFlag*robust_z(-net_rt) +
-  0.10*fundingPos*robust_z(-net_rt) +
-  0.10*domHigh*robust_z(-alts_rt) -
-  0.05*fearHigh*robust_z(pnl_sd_7d)
+  0.25*bearFlag*robust_z(-net_rt) +
+  0.20*fundingPos*robust_z(-net_rt) +
+  0.15*domHigh*robust_z(-alts_rt) -
+  0.10*fearHigh*robust_z(pnl_sd_7d) +
+  0.15*riskOn*robust_z(net_rt)
 
 raw_score = base_score + overlay
 ```

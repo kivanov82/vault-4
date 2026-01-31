@@ -1,7 +1,7 @@
 import { HyperliquidConnector } from "../trade/HyperliquidConnector";
 import type { UserLedgerUpdate } from "../trade/HyperliquidConnector";
-import { OpenAIService } from "../openai/OpenAIService";
-import type { OpenAIRanking } from "../openai/OpenAIService";
+import { ClaudeService } from "../claude/ClaudeService";
+import type { ClaudeRanking } from "../claude/ClaudeService";
 import { logger } from "../utils/logger";
 import type {
     CandidatesResult,
@@ -255,15 +255,15 @@ export class VaultService {
         const totalCount = Math.min(RECOMMENDATION_COUNT, candidates.length);
         const highCount = Math.min(HIGH_CONF_COUNT, totalCount);
 
-        let source: "openai" | "heuristic" = "heuristic";
+        let source: "claude" | "heuristic" = "heuristic";
         let model: string | undefined;
         let highConfidence: VaultRecommendation[] = [];
         let lowConfidence: VaultRecommendation[] = [];
-        let aiRankingResult: OpenAIRanking | null = null;
+        let aiRankingResult: ClaudeRanking | null = null;
 
         if (totalCount > 0) {
-            logger.info("Ranking vault candidates with OpenAI");
-            aiRankingResult = await OpenAIService.rankVaults(
+            logger.info("Ranking vault candidates with Claude");
+            aiRankingResult = await ClaudeService.rankVaults(
                 candidates,
                 totalCount,
                 highCount
@@ -278,7 +278,7 @@ export class VaultService {
                     aiRankingResult.allocationMap
                 );
                 if (mapped) {
-                    source = "openai";
+                    source = "claude";
                     model = aiRankingResult.model;
                     highConfidence = mapped.highConfidence;
                     lowConfidence = mapped.lowConfidence;
@@ -293,7 +293,7 @@ export class VaultService {
         }
 
         const allocationBuckets =
-            source === "openai"
+            source === "claude"
                 ? {
                       highConfidence,
                       lowConfidence,

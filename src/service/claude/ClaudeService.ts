@@ -1,4 +1,4 @@
-import OpenAI from "openai";
+import Anthropic from "@anthropic-ai/sdk";
 import fs from "fs";
 import path from "path";
 import { logger } from "../utils/logger";
@@ -10,28 +10,30 @@ import type {
     VaultCandidate,
 } from "../vaults/types";
 
-type OpenAIRankedVault = {
+type ClaudeRankedVault = {
     vaultAddress: string;
     reason?: string;
     score?: number;
 };
 
-export type OpenAIRanking = {
+export type ClaudeRanking = {
     model: string;
-    highConfidence: OpenAIRankedVault[];
-    lowConfidence: OpenAIRankedVault[];
+    highConfidence: ClaudeRankedVault[];
+    lowConfidence: ClaudeRankedVault[];
     raw: string;
     suggestedAllocations?: SuggestedAllocations;
     allocationMap?: Record<string, number>;
 };
 
-const DEFAULT_MODEL = process.env.OPENAI_MODEL ?? "gpt-5.1";
-const RAW_TEMPERATURE = Number(process.env.OPENAI_TEMPERATURE ?? 0.2);
+const DEFAULT_MODEL = process.env.CLAUDE_MODEL ?? "claude-3-5-haiku-20241022";
+const RAW_TEMPERATURE = Number(process.env.CLAUDE_TEMPERATURE ?? 0.2);
 const DEFAULT_TEMPERATURE = Number.isFinite(RAW_TEMPERATURE) ? RAW_TEMPERATURE : 0.2;
-const MAX_TRADES = Number(process.env.OPENAI_MAX_TRADES_PER_VAULT ?? 50);
-const MAX_POSITIONS = Number(process.env.OPENAI_MAX_POSITIONS_PER_VAULT ?? 30);
-const MAX_PNL_POINTS = Number(process.env.OPENAI_MAX_PNL_POINTS ?? 60);
-const BATCH_SIZE = Number(process.env.OPENAI_BATCH_SIZE ?? 20);
+const MAX_TOKENS = Number(process.env.CLAUDE_MAX_TOKENS ?? 16384);
+const MAX_TRADES = Number(process.env.CLAUDE_MAX_TRADES_PER_VAULT ?? 50);
+const MAX_POSITIONS = Number(process.env.CLAUDE_MAX_POSITIONS_PER_VAULT ?? 30);
+const MAX_PNL_POINTS = Number(process.env.CLAUDE_MAX_PNL_POINTS ?? 60);
+const BATCH_SIZE = Number(process.env.CLAUDE_BATCH_SIZE ?? 10);
+const CLAUDE_API_DELAY_MS = Number(process.env.CLAUDE_API_DELAY_MS ?? 60000);
 
 const PROMPT_PATH = path.join(__dirname, "prompts", "vault-ranking.md");
 const SCORING_PROMPT_PATH = path.join(__dirname, "prompts", "vault-scoring.md");
@@ -45,22 +47,22 @@ type ScoredVault = {
     candidate: VaultCandidate;
 };
 
-export class OpenAIService {
-    private static client: OpenAI | null = null;
+export class ClaudeService {
+    private static client: Anthropic | null = null;
     private static promptCache: string | null = null;
     private static scoringPromptCache: string | null = null;
 
     static isConfigured(): boolean {
-        return Boolean(process.env.OPENAI_API_KEY);
+        return Boolean(process.env.ANTHROPIC_API_KEY);
     }
 
     static async rankVaults(
         candidates: VaultCandidate[],
         totalCount: number,
         highConfidenceCount: number
-    ): Promise<OpenAIRanking | null> {
+    ): Promise<ClaudeRanking | null> {
         if (!this.isConfigured()) {
-            logger.warn("OpenAI API key missing, skipping AI ranking");
+            logger.warn("Anthropic API key missing, skipping AI ranking");
             return null;
         }
         if (!candidates.length) return null;
@@ -76,11 +78,19 @@ export class OpenAIService {
             batchCount: batches.length,
         });
 
-        const batchResults = await Promise.all(
-            batches.map((batch, index) =>
-                this.scoreVaultBatch(batch, marketData, alreadyExposed, index)
-            )
-        );
+        // Process batches sequentially with delay to respect rate limits
+        const batchResults: ScoredVault[][] = [];
+        for (let i = 0; i < batches.length; i++) {
+            if (i > 0 && CLAUDE_API_DELAY_MS > 0) {
+                logger.info("Waiting between batches to respect rate limits", {
+                    delayMs: CLAUDE_API_DELAY_MS,
+                    batchIndex: i,
+                });
+                await new Promise((resolve) => setTimeout(resolve, CLAUDE_API_DELAY_MS));
+            }
+            const result = await this.scoreVaultBatch(batches[i], marketData, alreadyExposed, i);
+            batchResults.push(result);
+        }
 
         const allScored = batchResults
             .flat()
@@ -102,6 +112,14 @@ export class OpenAIService {
         const topCandidates = allScored.slice(0, Math.max(totalCount * 2, 20));
         const topVaultCandidates = topCandidates.map((s) => s.candidate);
 
+        // Wait before Stage 2 to respect rate limits
+        if (CLAUDE_API_DELAY_MS > 0) {
+            logger.info("Waiting before final ranking to respect rate limits", {
+                delayMs: CLAUDE_API_DELAY_MS,
+            });
+            await new Promise((resolve) => setTimeout(resolve, CLAUDE_API_DELAY_MS));
+        }
+
         return this.finalRanking(
             topVaultCandidates,
             marketData,
@@ -118,7 +136,7 @@ export class OpenAIService {
         batchIndex: number
     ): Promise<ScoredVault[]> {
         const client = this.getClient();
-        const prompt = this.getScoringPromptTemplate();
+        const systemPrompt = this.getScoringPromptTemplate();
 
         const vaultsPayload = await buildVaultPayload(batch, {
             maxTrades: MAX_TRADES,
@@ -137,16 +155,19 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
                 vaultCount: batch.length,
             });
 
-            const response = await client.chat.completions.create({
+            const response = await client.messages.create({
                 model: DEFAULT_MODEL,
+                max_tokens: MAX_TOKENS,
                 temperature: DEFAULT_TEMPERATURE,
+                system: systemPrompt,
                 messages: [
-                    { role: "system", content: prompt },
                     { role: "user", content: userPrompt },
                 ],
             });
 
-            const content = response.choices?.[0]?.message?.content?.trim() ?? "";
+            const content = response.content[0]?.type === "text"
+                ? response.content[0].text.trim()
+                : "";
             const parsed = parseJsonPayload(content);
 
             if (!parsed || !Array.isArray(parsed.scores)) {
@@ -221,9 +242,9 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
         alreadyExposed: string[],
         totalCount: number,
         highConfidenceCount: number
-    ): Promise<OpenAIRanking | null> {
+    ): Promise<ClaudeRanking | null> {
         const client = this.getClient();
-        const prompt = this.getPromptTemplate();
+        const systemPrompt = this.getPromptTemplate();
 
         const vaultsPayload = await buildVaultPayload(candidates, {
             maxTrades: MAX_TRADES,
@@ -241,19 +262,22 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
                 candidateCount: candidates.length,
             });
 
-            const response = await client.chat.completions.create({
+            const response = await client.messages.create({
                 model: DEFAULT_MODEL,
+                max_tokens: MAX_TOKENS,
                 temperature: DEFAULT_TEMPERATURE,
+                system: systemPrompt,
                 messages: [
-                    { role: "system", content: prompt },
                     { role: "user", content: userPrompt },
                 ],
             });
 
-            const content = response.choices?.[0]?.message?.content?.trim() ?? "";
+            const content = response.content[0]?.type === "text"
+                ? response.content[0].text.trim()
+                : "";
             const parsed = parseJsonPayload(content);
             if (!parsed) {
-                logger.warn("OpenAI response was not valid JSON", {
+                logger.warn("Claude response was not valid JSON", {
                     responsePreview: content.slice(0, 500),
                     responseLength: content.length,
                     model: DEFAULT_MODEL,
@@ -262,7 +286,7 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
             }
             const top10 = normalizeTop10(parsed.top10 ?? parsed.top_10);
             if (!top10.length) {
-                logger.warn("OpenAI response missing top10 array");
+                logger.warn("Claude response missing top10 array");
                 return null;
             }
             const suggestedAllocations = parseSuggestedAllocations(
@@ -270,7 +294,7 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
             );
 
             if (suggestedAllocations) {
-                logger.info("OpenAI barbell suggestion received", {
+                logger.info("Claude barbell suggestion received", {
                     note: suggestedAllocations.barbellNote,
                     totalPct: suggestedAllocations.totalPct,
                     highPct: suggestedAllocations.highPct,
@@ -298,7 +322,7 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
             const high = ordered.slice(0, highConfidenceCount);
             const low = ordered.slice(highConfidenceCount, totalCount);
             if (!high.length || high.length + low.length < totalCount) {
-                logger.warn("OpenAI response returned insufficient ranked vaults");
+                logger.warn("Claude response returned insufficient ranked vaults");
                 return null;
             }
 
@@ -306,7 +330,7 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
                 ? buildAllocationMap(suggestedAllocations.targets)
                 : undefined;
 
-            logger.info("OpenAI ranking parsed", {
+            logger.info("Claude ranking parsed", {
                 model: DEFAULT_MODEL,
                 total: ordered.length,
                 suggestedAllocations: {
@@ -325,14 +349,14 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
                 suggestedAllocations: suggestedAllocations ?? undefined,
             };
         } catch (error: any) {
-            logger.warn("OpenAI ranking failed", { message: error?.message });
+            logger.warn("Claude ranking failed", { message: error?.message });
             return null;
         }
     }
 
-    private static getClient(): OpenAI {
+    private static getClient(): Anthropic {
         if (!this.client) {
-            this.client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+            this.client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
         }
         return this.client;
     }
@@ -356,7 +380,7 @@ function normalizeTop10(entries: any): any[] {
     return Array.isArray(entries) ? entries : [];
 }
 
-function normalizeRankedVaults(entries: any[]): OpenAIRankedVault[] {
+function normalizeRankedVaults(entries: any[]): ClaudeRankedVault[] {
     return entries
         .map((entry) => ({
             vaultAddress: String(entry.vaultAddress ?? "").trim(),
