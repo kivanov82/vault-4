@@ -122,21 +122,36 @@ export class DepositService {
                 ? hints.lowPct
                 : lowPct;
 
+        // Get actual perps wallet balance (available for deposits)
         const perpsBalanceUsd =
-            (await getAccountEquity(sourceWalletAddress)) ?? 0;
+            (await HyperliquidConnector.getUserPerpsBalance(sourceWalletAddress)) ?? 0;
         const currentEquities =
             await HyperliquidConnector.getUserVaultEquities(sourceWalletAddress);
+
+        // Filter out dust positions (< $1) when counting active vaults
+        const DUST_THRESHOLD_USD = 1;
+        const significantEquities = currentEquities.filter(
+            (entry) => entry.equity >= DUST_THRESHOLD_USD
+        );
         const currentEquityMap = new Map(
-            currentEquities.map((entry) => [
+            significantEquities.map((entry) => [
                 entry.vaultAddress.toLowerCase(),
                 entry.equity,
             ])
         );
-        const currentInvestedUsd = currentEquities.reduce(
+        const currentVaultCount = significantEquities.length;
+        const currentInvestedUsd = significantEquities.reduce(
             (sum, entry) => sum + (Number.isFinite(entry.equity) ? entry.equity : 0),
             0
         );
         const totalCapitalUsd = perpsBalanceUsd + currentInvestedUsd;
+
+        logger.info("Current vault exposure", {
+            currentVaultCount,
+            maxActive,
+            availableSlots: Math.max(0, maxActive - currentVaultCount),
+            dustPositionsFiltered: currentEquities.length - significantEquities.length,
+        });
 
         // Filter out vaults we already have exposure to (avoid concentration risk)
         const highWithoutExposure = highSelected.filter(
@@ -145,6 +160,15 @@ export class DepositService {
         const lowWithoutExposure = lowSelected.filter(
             (rec) => !currentEquityMap.has(rec.vaultAddress.toLowerCase())
         );
+
+        // Limit new deposits to not exceed maxActive total vaults
+        const availableSlots = Math.max(0, maxActive - currentVaultCount);
+        if (availableSlots === 0) {
+            logger.info("Already at max vault count, skipping new deposits", {
+                currentVaultCount,
+                maxActive,
+            });
+        }
 
         const skippedCount =
             (highSelected.length - highWithoutExposure.length) +
@@ -157,8 +181,27 @@ export class DepositService {
             });
         }
 
-        const filteredHighCount = highWithoutExposure.length;
-        const filteredLowCount = lowWithoutExposure.length;
+        // Limit to available slots to not exceed maxActive vaults
+        // Prioritize high confidence vaults first
+        const highSlotsToUse = Math.min(highWithoutExposure.length, availableSlots);
+        const remainingSlots = availableSlots - highSlotsToUse;
+        const lowSlotsToUse = Math.min(lowWithoutExposure.length, remainingSlots);
+
+        const limitedHighWithoutExposure = highWithoutExposure.slice(0, highSlotsToUse);
+        const limitedLowWithoutExposure = lowWithoutExposure.slice(0, lowSlotsToUse);
+
+        if (highWithoutExposure.length > highSlotsToUse || lowWithoutExposure.length > lowSlotsToUse) {
+            logger.info("Limiting new deposits to available slots", {
+                availableSlots,
+                highRequested: highWithoutExposure.length,
+                highUsed: highSlotsToUse,
+                lowRequested: lowWithoutExposure.length,
+                lowUsed: lowSlotsToUse,
+            });
+        }
+
+        const filteredHighCount = limitedHighWithoutExposure.length;
+        const filteredLowCount = limitedLowWithoutExposure.length;
 
         // Calculate deposit amounts based on available balance only (not total capital)
         // Split available balance between high and low confidence groups
@@ -179,7 +222,7 @@ export class DepositService {
             : lowGroupAllocation;
 
         const targets: DepositTarget[] = [
-            ...highWithoutExposure.map((rec) =>
+            ...limitedHighWithoutExposure.map((rec) =>
                 buildTargetFromAllocation(
                     rec,
                     "high",
@@ -187,7 +230,7 @@ export class DepositService {
                     filteredHighCount
                 )
             ),
-            ...lowWithoutExposure.map((rec) =>
+            ...limitedLowWithoutExposure.map((rec) =>
                 buildTargetFromAllocation(
                     rec,
                     "low",
@@ -327,26 +370,6 @@ function buildTargetFromAllocation(
         desiredUsd: depositUsd,
         depositUsd,
     };
-}
-
-async function getAccountEquity(
-    sourceWalletAddress: `0x${string}`
-): Promise<number | null> {
-    const portfolio = await HyperliquidConnector.getUserPortfolioSummary(
-        sourceWalletAddress
-    );
-    const equity = portfolio?.metrics?.accountEquity;
-    if (!equity) return null;
-    return (
-        pickFirstNumber(equity.allTime) ??
-        pickFirstNumber(equity["30d"]) ??
-        pickFirstNumber(equity["7d"]) ??
-        pickFirstNumber(equity["24h"])
-    );
-}
-
-function pickFirstNumber(value: number | null | undefined): number | null {
-    return Number.isFinite(Number(value)) ? Number(value) : null;
 }
 
 function normalizeGroupPcts(

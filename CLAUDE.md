@@ -86,8 +86,12 @@ The rebalancing cycle runs every 2 days and follows these rules:
 
 **Deposits:**
 - **Minimum deposit**: $5 USD (deposits below this are skipped)
+- **Max active vaults**: 10 (configurable via `DEPOSIT_ACTIVE_COUNT`)
+- **Dust filtering**: Positions < $1 are excluded from vault count (prevents dust from blocking new deposits)
+- **Available balance**: Fetched from Hyperliquid clearinghouse `withdrawable` field (perps wallet balance)
 - Only deposit to NEW vaults (no existing exposure) to avoid concentration risk
-- Available balance (perps wallet) is split between high/low confidence groups
+- New deposits are limited by available slots: `maxActive - currentVaultCount`
+- Available balance is split between high/low confidence groups
 - Default split: 80% to high-confidence vaults, 20% to low-confidence
 - Each group's allocation is split evenly among vaults in that group
 - If one group is empty, its allocation goes to the other group
@@ -105,7 +109,7 @@ The rebalancing cycle runs every 2 days and follows these rules:
 - **Services**: Static methods, singletons under `src/service/`
 - **Caching**: Multiple TTL configs (vault cache 5min, portfolio 2min, market data 60s)
 - **Barbell Strategy**: 70-80% to high-confidence vaults, 20-30% to low-confidence
-- **Two-Stage Ranking**: Batches of 20 vaults scored in parallel, then top candidates ranked for final allocation. Configurable via `CLAUDE_BATCH_SIZE` (default 20), with richer data per vault (`CLAUDE_MAX_TRADES_PER_VAULT=50`, `CLAUDE_MAX_POSITIONS_PER_VAULT=30`, `CLAUDE_MAX_PNL_POINTS=60`)
+- **Two-Stage Ranking**: Batches of 10 vaults scored sequentially (with rate limit delays), then top 12 candidates ranked for final allocation. Configurable via `CLAUDE_BATCH_SIZE` (default 10), `CLAUDE_FINAL_RANKING_LIMIT` (default 12), with richer data per vault (`CLAUDE_MAX_TRADES_PER_VAULT=50`, `CLAUDE_MAX_POSITIONS_PER_VAULT=30`, `CLAUDE_MAX_PNL_POINTS=60`)
 
 ## Environment Variables
 
@@ -118,10 +122,14 @@ WALLET_PK=0x<private-key>
 
 Optional (Claude AI):
 ```
-CLAUDE_MODEL=claude-3-5-haiku-20241022  # Claude model to use (default: claude-3-5-haiku-20241022)
+CLAUDE_MODEL=claude-3-haiku-20240307    # Default model for both stages (default: claude-3-haiku-20240307)
+CLAUDE_SCORING_MODEL=                   # Model for Stage 1 batch scoring (default: uses CLAUDE_MODEL)
+CLAUDE_RANKING_MODEL=                   # Model for Stage 2 final ranking (default: uses CLAUDE_MODEL)
 CLAUDE_TEMPERATURE=0.2                  # Temperature for AI responses (default: 0.2)
-CLAUDE_MAX_TOKENS=16384                 # Max tokens for AI responses (default: 16384)
+CLAUDE_SCORING_MAX_TOKENS=4096          # Max tokens for batch scoring (default: 4096)
+CLAUDE_RANKING_MAX_TOKENS=4096          # Max tokens for final ranking (default: 4096)
 CLAUDE_BATCH_SIZE=10                    # Vaults per scoring batch (default: 10)
+CLAUDE_FINAL_RANKING_LIMIT=12           # Max vaults sent to final ranking (default: 12)
 CLAUDE_API_DELAY_MS=60000               # Delay between API calls in ms (default: 60s)
 CLAUDE_MAX_TRADES_PER_VAULT=50          # Max trades included per vault (default: 50)
 CLAUDE_MAX_POSITIONS_PER_VAULT=30       # Max positions included per vault (default: 30)
@@ -140,6 +148,7 @@ VAULT_REQUIRE_POSITIVE_MONTHLY_PNL=false
 
 Optional (rebalancing):
 ```
+DEPOSIT_ACTIVE_COUNT=10                # Max active vaults (default: 10)
 DEPOSIT_HIGH_PCT=80                    # High-confidence allocation % (default: 80)
 DEPOSIT_LOW_PCT=20                     # Low-confidence allocation % (default: 20)
 REBALANCE_WITHDRAWAL_DELAY_MS=60000    # Wait time after withdrawals (default: 60s)
@@ -172,3 +181,6 @@ Add `?refresh=true` to bypass cache.
 - **Take-profit strategy**: Over-allocated positions with ROE >= 10% trigger partial withdrawals to target allocation
 - **Exit threshold**: Non-recommended vaults only exit when ROE >= 2% (prevents realizing small losses)
 - **Error isolation**: Individual deposit failures don't stop subsequent deposits (logged and continued)
+- **Vault count enforcement**: System enforces max 10 active vaults; new deposits blocked until count drops below max
+- **Dust position filtering**: Positions < $1 USD are excluded when counting active vaults (prevents dust from inflating count)
+- **Perps balance**: Uses Hyperliquid `webData2` endpoint to get actual withdrawable balance from clearinghouse state

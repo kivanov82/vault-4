@@ -452,6 +452,39 @@ export class HyperliquidConnector {
         }
     }
 
+    static async getUserPerpsBalance(
+        userAddress: `0x${string}`
+    ): Promise<number | null> {
+        try {
+            const response = await axios.post(HYPERLIQUID_INFO_URL, {
+                type: "webData2",
+                user: userAddress,
+            });
+            const data = response?.data;
+            const clearinghouse = data?.clearinghouseState;
+            if (!clearinghouse) {
+                logger.warn("No clearinghouse state in webData2 response", {
+                    userAddress,
+                });
+                return null;
+            }
+            // withdrawable is the available balance in the perps account
+            const withdrawable = toNumberSafe(clearinghouse.withdrawable);
+            if (withdrawable !== null) {
+                return withdrawable;
+            }
+            // Fallback: try marginSummary.accountValue minus vault equity
+            const accountValue = toNumberSafe(clearinghouse.marginSummary?.accountValue);
+            return accountValue;
+        } catch (error: any) {
+            logger.warn("Failed to fetch user perps balance", {
+                userAddress,
+                message: error?.message,
+            });
+            return null;
+        }
+    }
+
     static getPublicClient(): hl.InfoClient {
         if (!this.publicClient) {
             const transport = new hl.HttpTransport({

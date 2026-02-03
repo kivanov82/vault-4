@@ -25,10 +25,12 @@ export type ClaudeRanking = {
     allocationMap?: Record<string, number>;
 };
 
-const DEFAULT_MODEL = process.env.CLAUDE_MODEL ?? "claude-3-5-haiku-20241022";
+const SCORING_MODEL = process.env.CLAUDE_SCORING_MODEL ?? process.env.CLAUDE_MODEL ?? "claude-3-haiku-20240307";
+const RANKING_MODEL = process.env.CLAUDE_RANKING_MODEL ?? process.env.CLAUDE_MODEL ?? "claude-3-haiku-20240307";
 const RAW_TEMPERATURE = Number(process.env.CLAUDE_TEMPERATURE ?? 0.2);
 const DEFAULT_TEMPERATURE = Number.isFinite(RAW_TEMPERATURE) ? RAW_TEMPERATURE : 0.2;
-const MAX_TOKENS = Number(process.env.CLAUDE_MAX_TOKENS ?? 16384);
+const SCORING_MAX_TOKENS = Number(process.env.CLAUDE_SCORING_MAX_TOKENS ?? 4096);
+const RANKING_MAX_TOKENS = Number(process.env.CLAUDE_RANKING_MAX_TOKENS ?? 4096);
 const MAX_TRADES = Number(process.env.CLAUDE_MAX_TRADES_PER_VAULT ?? 50);
 const MAX_POSITIONS = Number(process.env.CLAUDE_MAX_POSITIONS_PER_VAULT ?? 30);
 const MAX_PNL_POINTS = Number(process.env.CLAUDE_MAX_PNL_POINTS ?? 60);
@@ -109,7 +111,9 @@ export class ClaudeService {
         });
 
         // Stage 2: Final ranking of top candidates
-        const topCandidates = allScored.slice(0, Math.max(totalCount * 2, 20));
+        // Limit candidates for final ranking to fit within token limits (Haiku: 4096 tokens)
+        const FINAL_RANKING_LIMIT = Number(process.env.CLAUDE_FINAL_RANKING_LIMIT ?? 12);
+        const topCandidates = allScored.slice(0, Math.min(FINAL_RANKING_LIMIT, Math.max(totalCount * 2, 20)));
         const topVaultCandidates = topCandidates.map((s) => s.candidate);
 
         // Wait before Stage 2 to respect rate limits
@@ -156,8 +160,8 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
             });
 
             const response = await client.messages.create({
-                model: DEFAULT_MODEL,
-                max_tokens: MAX_TOKENS,
+                model: SCORING_MODEL,
+                max_tokens: SCORING_MAX_TOKENS,
                 temperature: DEFAULT_TEMPERATURE,
                 system: systemPrompt,
                 messages: [
@@ -175,6 +179,7 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
                     batchIndex,
                     responsePreview: content.slice(0, 500),
                     responseLength: content.length,
+                    model: SCORING_MODEL,
                     parsedType: typeof parsed,
                     hasScoresArray: parsed ? Array.isArray(parsed.scores) : false,
                 });
@@ -260,11 +265,12 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
         try {
             logger.info("Stage 2: Final ranking", {
                 candidateCount: candidates.length,
+                model: RANKING_MODEL,
             });
 
             const response = await client.messages.create({
-                model: DEFAULT_MODEL,
-                max_tokens: MAX_TOKENS,
+                model: RANKING_MODEL,
+                max_tokens: RANKING_MAX_TOKENS,
                 temperature: DEFAULT_TEMPERATURE,
                 system: systemPrompt,
                 messages: [
@@ -280,7 +286,7 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
                 logger.warn("Claude response was not valid JSON", {
                     responsePreview: content.slice(0, 500),
                     responseLength: content.length,
-                    model: DEFAULT_MODEL,
+                    model: RANKING_MODEL,
                 });
                 return null;
             }
@@ -331,7 +337,7 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
                 : undefined;
 
             logger.info("Claude ranking parsed", {
-                model: DEFAULT_MODEL,
+                model: RANKING_MODEL,
                 total: ordered.length,
                 suggestedAllocations: {
                     totalPct: suggestedAllocations?.totalPct,
@@ -341,7 +347,7 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
             });
 
             return {
-                model: DEFAULT_MODEL,
+                model: RANKING_MODEL,
                 highConfidence: normalizeRankedVaults(high),
                 lowConfidence: normalizeRankedVaults(low),
                 raw: content,
