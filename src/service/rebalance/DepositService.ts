@@ -154,12 +154,13 @@ export class DepositService {
         });
 
         // Filter out vaults we already have exposure to (avoid concentration risk)
-        const highWithoutExposure = highSelected.filter(
-            (rec) => !currentEquityMap.has(rec.vaultAddress.toLowerCase())
-        );
-        const lowWithoutExposure = lowSelected.filter(
-            (rec) => !currentEquityMap.has(rec.vaultAddress.toLowerCase())
-        );
+        // Then sort by score (descending) to prioritize highest confidence vaults
+        const highWithoutExposure = highSelected
+            .filter((rec) => !currentEquityMap.has(rec.vaultAddress.toLowerCase()))
+            .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+        const lowWithoutExposure = lowSelected
+            .filter((rec) => !currentEquityMap.has(rec.vaultAddress.toLowerCase()))
+            .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
 
         // Limit new deposits to not exceed maxActive total vaults
         const availableSlots = Math.max(0, maxActive - currentVaultCount);
@@ -191,35 +192,72 @@ export class DepositService {
         const limitedLowWithoutExposure = lowWithoutExposure.slice(0, lowSlotsToUse);
 
         if (highWithoutExposure.length > highSlotsToUse || lowWithoutExposure.length > lowSlotsToUse) {
-            logger.info("Limiting new deposits to available slots", {
+            logger.info("Limiting new deposits to available slots (sorted by score)", {
                 availableSlots,
                 highRequested: highWithoutExposure.length,
                 highUsed: highSlotsToUse,
                 lowRequested: lowWithoutExposure.length,
                 lowUsed: lowSlotsToUse,
+                selectedHighVaults: highWithoutExposure.slice(0, highSlotsToUse).map(v => ({
+                    name: v.name,
+                    score: v.score,
+                })),
+                selectedLowVaults: lowWithoutExposure.slice(0, lowSlotsToUse).map(v => ({
+                    name: v.name,
+                    score: v.score,
+                })),
             });
         }
 
         const filteredHighCount = limitedHighWithoutExposure.length;
         const filteredLowCount = limitedLowWithoutExposure.length;
 
-        // Calculate deposit amounts based on available balance only (not total capital)
-        // Split available balance between high and low confidence groups
-        const availableForDeposit = perpsBalanceUsd;
-        const highGroupAllocation = filteredHighCount > 0
-            ? availableForDeposit * (groupHighPct / 100)
+        // Calculate barbell-weighted target per vault based on FULL recommendation counts
+        // High confidence vaults get a larger share than low confidence vaults
+        const totalHighCount = recommendations.highConfidence.length;
+        const totalLowCount = recommendations.lowConfidence.length;
+
+        // Calculate per-vault targets using barbell weighting
+        // E.g., with 5 high / 5 low and 70/30 split:
+        //   High target: 70% / 5 = 14% each
+        //   Low target: 30% / 5 = 6% each
+        const highTargetPerVault = totalHighCount > 0
+            ? totalCapitalUsd * (groupHighPct / 100) / totalHighCount
             : 0;
-        const lowGroupAllocation = filteredLowCount > 0
-            ? availableForDeposit * (groupLowPct / 100)
+        const lowTargetPerVault = totalLowCount > 0
+            ? totalCapitalUsd * (groupLowPct / 100) / totalLowCount
             : 0;
 
-        // If one group is empty, give its allocation to the other
-        const adjustedHighAllocation = filteredLowCount === 0
-            ? availableForDeposit
-            : highGroupAllocation;
-        const adjustedLowAllocation = filteredHighCount === 0
-            ? availableForDeposit
-            : lowGroupAllocation;
+        // Calculate total allocation needed for new vaults based on their confidence levels
+        const highAllocationNeeded = highTargetPerVault * filteredHighCount;
+        const lowAllocationNeeded = lowTargetPerVault * filteredLowCount;
+        const totalAllocationNeeded = highAllocationNeeded + lowAllocationNeeded;
+
+        // Cap at available balance
+        const availableForDeposit = Math.min(perpsBalanceUsd, totalAllocationNeeded);
+
+        // Scale down proportionally if we don't have enough balance
+        const scaleFactor = totalAllocationNeeded > 0
+            ? availableForDeposit / totalAllocationNeeded
+            : 0;
+
+        const adjustedHighAllocation = highAllocationNeeded * scaleFactor;
+        const adjustedLowAllocation = lowAllocationNeeded * scaleFactor;
+
+        logger.info("Barbell allocation calculated", {
+            totalCapitalUsd,
+            barbellSplit: { highPct: groupHighPct, lowPct: groupLowPct },
+            recommendationCounts: { high: totalHighCount, low: totalLowCount },
+            targetPerVault: {
+                high: roundUsd(highTargetPerVault),
+                low: roundUsd(lowTargetPerVault),
+            },
+            newVaultCounts: { high: filteredHighCount, low: filteredLowCount },
+            allocationNeeded: roundUsd(totalAllocationNeeded),
+            perpsBalanceUsd,
+            availableForDeposit: roundUsd(availableForDeposit),
+            scaleFactor: roundPct(scaleFactor * 100) + "%",
+        });
 
         const targets: DepositTarget[] = [
             ...limitedHighWithoutExposure.map((rec) =>
@@ -349,15 +387,13 @@ function buildTargetFromAllocation(
     groupAllocationUsd: number,
     groupCount: number
 ): DepositTarget {
-    // Split group allocation evenly among vaults, or use AI-suggested allocation if available
+    // Split group allocation evenly among vaults in this group
+    // Note: AI's allocationPct is for total portfolio, not applicable here since
+    // we've already filtered to specific vaults based on available slots
     const perVaultUsd = groupCount > 0
         ? groupAllocationUsd / groupCount
         : 0;
-    const depositUsd = roundUsd(
-        Number.isFinite(rec.allocationPct) && rec.allocationPct > 0
-            ? groupAllocationUsd * (rec.allocationPct / 100) // Use AI-suggested allocation percentage
-            : perVaultUsd
-    );
+    const depositUsd = roundUsd(perVaultUsd);
     const targetPct = groupCount > 0 ? 100 / groupCount : 0;
 
     return {

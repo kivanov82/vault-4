@@ -6,8 +6,10 @@ be used to select top candidates for final ranking.
 
 Input
 
-- `market_data` -- object with the latest market overlay fields:
-  `{ btc_7d_change, btc_24h_change, trend, velocity, fearGreed, dominance, funding_btc, dvol }`
+- `market_data` -- object with market overlay fields:
+  - Core: `{ btc_7d_change, btc_24h_change, eth_7d_change, eth_24h_change, trend, velocity }`
+  - Sentiment: `{ fearGreed, dominance, funding_btc, funding_eth }`
+  - Enhanced: `{ total_market_cap_change_24h, btc_oi_change_24h, eth_oi_change_24h, btc_volume_24h, eth_volume_24h, long_short_ratio, dvol }`
 - `vaults_json` -- array of vault objects. Each object contains:
   - `vault.summary`: `{ name, vaultAddress, tvl }` (pre-filtered to deposit-open only).
   - `vault.pnls`: array of `[period, points]` where period in {`day`,`week`,`month`,`allTime`}
@@ -21,9 +23,12 @@ Market regime inference
 Use the provided market data to infer regime flags:
 - `bearFlag` (BTC 7d < 0)
 - `fundingPos` (BTC funding > 0)
-- `domHigh` (dominance elevated)
-- `fearHigh` (F&G <= ~30)
+- `domHigh` (dominance > 55%, elevated)
+- `fearHigh` (F&G <= 30)
 - `riskOn` (BTC 7d > 0 AND fearGreed > 50)
+- `altSeason` (ETH 7d > BTC 7d AND dominance < 50%)
+- `highOI` (long_short_ratio > 1.5, crowded longs)
+- `volumeSpike` (btc_volume_24h elevated vs typical, indicates momentum)
 
 Feature engineering per vault
 
@@ -49,11 +54,14 @@ base_score =
 - 0.10*robust_z(pnl_sd_30d)
 
 overlay =
-  0.25*bearFlag*robust_z(-net_rt) +
-  0.20*fundingPos*robust_z(-net_rt) +
+  0.20*bearFlag*robust_z(-net_rt) +
+  0.15*fundingPos*robust_z(-net_rt) +
   0.15*domHigh*robust_z(-alts_rt) -
   0.10*fearHigh*robust_z(pnl_sd_7d) +
-  0.15*riskOn*robust_z(net_rt)
+  0.15*riskOn*robust_z(net_rt) +
+  0.10*altSeason*robust_z(alts_rt) -
+  0.10*highOI*robust_z(gross_lev) +
+  0.05*volumeSpike*robust_z(trades_7d)
 
 raw_score = base_score + overlay
 ```

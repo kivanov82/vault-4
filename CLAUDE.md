@@ -91,16 +91,26 @@ The rebalancing cycle runs every 2 days and follows these rules:
 - **Available balance**: Fetched from Hyperliquid clearinghouse `withdrawable` field (perps wallet balance)
 - Only deposit to NEW vaults (no existing exposure) to avoid concentration risk
 - New deposits are limited by available slots: `maxActive - currentVaultCount`
-- Available balance is split between high/low confidence groups
-- Default split: 80% to high-confidence vaults, 20% to low-confidence
-- Each group's allocation is split evenly among vaults in that group
+- **Barbell-weighted allocation**: New vaults receive their barbell-weighted share based on confidence level
+  - High confidence target: `totalCapital * (highPct / 100) / highCount` (e.g., 70% / 5 = 14% each)
+  - Low confidence target: `totalCapital * (lowPct / 100) / lowCount` (e.g., 30% / 5 = 6% each)
+  - `availableForDeposit = min(perpsBalance, totalAllocationNeeded)`
+  - If balance is insufficient, allocations are scaled down proportionally
+- Each vault in a confidence group gets equal share within that group
 - If one group is empty, its allocation goes to the other group
 - Deposits continue even if individual deposits fail (no cascading failures)
 
-**Example:**
-- Available balance: $10,000
-- High-confidence vaults (no exposure): 4 vaults -> $8,000 / 4 = $2,000 each
-- Low-confidence vaults (no exposure): 2 vaults -> $2,000 / 2 = $1,000 each
+**Example 1 (barbell allocation):**
+- Total capital: $600, recommendations: 5 high / 5 low, barbell split: 70/30
+- High confidence target per vault: $600 * 70% / 5 = **$84** (14%)
+- Low confidence target per vault: $600 * 30% / 5 = **$36** (6%)
+- 1 new high-confidence vault: deposits $84 (not $60 as simple 1/10 would give)
+
+**Example 2 (multiple new vaults):**
+- Total capital: $10,000, recommendations: 5 high / 5 low
+- High target: $10,000 * 70% / 5 = $1,400 each (14%)
+- Low target: $10,000 * 30% / 5 = $600 each (6%)
+- 2 new high + 1 new low: deposits $1,400 + $1,400 + $600 = $3,400 total
 - Vaults with existing exposure: skipped entirely
 - Any allocation < $5: skipped and logged
 
@@ -110,6 +120,8 @@ The rebalancing cycle runs every 2 days and follows these rules:
 - **Caching**: Multiple TTL configs (vault cache 5min, portfolio 2min, market data 60s)
 - **Barbell Strategy**: 70-80% to high-confidence vaults, 20-30% to low-confidence
 - **Two-Stage Ranking**: Batches of 10 vaults scored sequentially (with rate limit delays), then top 12 candidates ranked for final allocation. Configurable via `CLAUDE_BATCH_SIZE` (default 10), `CLAUDE_FINAL_RANKING_LIMIT` (default 12), with richer data per vault (`CLAUDE_MAX_TRADES_PER_VAULT=50`, `CLAUDE_MAX_POSITIONS_PER_VAULT=30`, `CLAUDE_MAX_PNL_POINTS=60`)
+- **Score-based prioritization**: When more recommendations exist than available slots, vaults are sorted by score (descending) within each confidence group before selection
+- **Market data overlay**: Enhanced indicators include BTC/ETH price changes, funding rates, open interest, volume, and long/short ratio for regime detection
 
 ## Environment Variables
 

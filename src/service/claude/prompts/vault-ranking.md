@@ -12,8 +12,10 @@ construction (high/low confidence groups).
 
 Input
 
-- `market_data` -- object with the latest market overlay fields:
-  `{ btc_7d_change, btc_24h_change, trend, velocity, fearGreed, dominance, funding_btc, dvol }`
+- `market_data` -- object with market overlay fields:
+  - Core: `{ btc_7d_change, btc_24h_change, eth_7d_change, eth_24h_change, trend, velocity }`
+  - Sentiment: `{ fearGreed, dominance, funding_btc, funding_eth }`
+  - Enhanced: `{ total_market_cap_change_24h, btc_oi_change_24h, eth_oi_change_24h, btc_volume_24h, eth_volume_24h, long_short_ratio, dvol }`
 - `{{vaults_json}}` -- array of vault objects. Each object contains:
 
   - `vault.summary`: `{ name, vaultAddress, tvl }` (pre-filtered to deposit-open only).
@@ -25,10 +27,13 @@ Input
 
 Market overlay data (provided in input)
 
-- BTC 7-day % change and current trend/velocity.
+- BTC & ETH 7-day and 24-hour % changes with current trend/velocity.
 - Crypto Fear & Greed Index level.
 - BTC dominance (%).
-- Perp funding for BTC (prefer Hyperliquid; otherwise major venues).
+- Perp funding for BTC and ETH from Hyperliquid.
+- Open interest levels for BTC and ETH.
+- 24h trading volumes and total market cap change.
+- Long/short ratio (aggregate market positioning).
 - Optional: DVOL or comparable implied vol proxy.
 
 Use the provided market data to infer a regime label: {risk-on, neutral, risk-off},
@@ -36,9 +41,12 @@ and flags:
 
 - `bearFlag` (BTC 7d < 0),
 - `fundingPos` (BTC funding > 0),
-- `domHigh` (dominance elevated),
-- `fearHigh` (F&G <= ~30),
-- `riskOn` (BTC 7d > 0 AND fearGreed > 50).
+- `domHigh` (dominance > 55%),
+- `fearHigh` (F&G <= 30),
+- `riskOn` (BTC 7d > 0 AND fearGreed > 50),
+- `altSeason` (ETH 7d > BTC 7d AND dominance < 50%),
+- `highOI` (long_short_ratio > 1.5, crowded longs indicate reversal risk),
+- `volumeSpike` (significant 24h volume indicates momentum).
 
 Feature engineering per vault
 
@@ -83,12 +91,15 @@ Apply additive overlay based on the regime flags:
 
 ```
 overlay =
-  0.25·bearFlag · robust_z(-net_rt)   # strongly favor net-short when BTC down (was 0.15)
-+ 0.20·fundingPos · robust_z(-net_rt) # penalize net-long when funding positive (was 0.10)
-+ 0.15·domHigh · robust_z(-alts_rt)   # favor short alts when BTC dominance high (was 0.10)
-- 0.10·fearHigh · robust_z(pnl_sd_7d) # avoid volatile vaults in fear (was 0.05)
-+ 0.05·robust_z(mm_proxy)             # MM boost unchanged
-+ 0.15·riskOn · robust_z(net_rt)      # favor net-long in risk-on regimes (NEW)
+  0.20·bearFlag · robust_z(-net_rt)   # favor net-short when BTC down
++ 0.15·fundingPos · robust_z(-net_rt) # penalize net-long when funding positive
++ 0.15·domHigh · robust_z(-alts_rt)   # favor short alts when BTC dominance high
+- 0.10·fearHigh · robust_z(pnl_sd_7d) # avoid volatile vaults in fear
++ 0.05·robust_z(mm_proxy)             # MM boost
++ 0.15·riskOn · robust_z(net_rt)      # favor net-long in risk-on regimes
++ 0.10·altSeason · robust_z(alts_rt)  # favor alt exposure during alt season
+- 0.10·highOI · robust_z(gross_lev)   # penalize high leverage when OI crowded
++ 0.05·volumeSpike · robust_z(trades_7d) # favor active vaults during high volume
 ```
 
 `score_market = base_score + overlay`
