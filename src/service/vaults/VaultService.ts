@@ -18,6 +18,7 @@ import type {
     UserPortfolioSummary,
     UserPositionsResponse,
     UserVaultHistory,
+    UserVaultEntry,
     UserVaultsResponse,
 } from "./types";
 
@@ -549,19 +550,19 @@ export class VaultService {
         if (!wallet) {
             throw new Error("WALLET is not set");
         }
-        const [portfolio, positions, updates] = await Promise.all([
+        const [portfolio, positions, updates, vaults] = await Promise.all([
             this.getPlatformPortfolio({ refresh: options.refresh }),
             this.getPlatformPositions({ refresh: options.refresh }),
             HyperliquidConnector.getUserVaultLedgerUpdates(wallet),
+            this.getUserVaults(wallet, {
+                refresh: options.refresh,
+                includeHistory: true,
+            }),
         ]);
 
         const now = Date.now();
         const accountSeries = normalizeSeries(
             portfolio?.history?.accountValue?.points
-        );
-        const pnlSeries = normalizeSeries(portfolio?.history?.pnl?.points);
-        const filteredSeries = accountSeries.filter(
-            (point) => point.timestamp >= LAUNCH_DATE_MS
         );
         const currentAccountValue = latestSeriesValue(accountSeries);
         const tvlUsd =
@@ -577,26 +578,8 @@ export class VaultService {
             Number.isFinite(currentAccountValue) && Number.isFinite(value30d)
                 ? (currentAccountValue as number) - (value30d as number)
                 : null;
-        const pnlValue30d = findValueAtOrBefore(
-            pnlSeries,
-            now - 30 * MS_PER_DAY
-        );
-        const pnlLatest = latestSeriesValue(pnlSeries);
-        const pnlChange30dUsd =
-            Number.isFinite(pnlLatest) && Number.isFinite(pnlValue30d)
-                ? (pnlLatest as number) - (pnlValue30d as number)
-                : null;
-        const capital30d =
-            Number.isFinite(value30d) && Number.isFinite(pnlValue30d)
-                ? (value30d as number) - (pnlValue30d as number)
-                : null;
-        const pnlChange30dPct =
-            Number.isFinite(pnlChange30dUsd) &&
-            Number.isFinite(capital30d) &&
-            (capital30d as number) > 0
-                ? ((pnlChange30dUsd as number) / (capital30d as number)) * 100
-                : null;
-        const maxDrawdownPct = calcMaxDrawdownPct(filteredSeries);
+        const pnlChange30dPct = calc30dPnlPct(updates, MIN_POSITION_USD);
+        const maxDrawdownPct = await calcProRataMaxDrawdownPct(vaults.items, updates, MIN_POSITION_USD);
         const winRatePct = calcWinRatePct(updates, LAUNCH_DATE_MS, MIN_POSITION_USD);
 
         return {
@@ -1134,6 +1117,127 @@ function calcMaxDrawdownPct(points: TimeSeriesPoint[]): number | null {
     return maxDrawdown * 100;
 }
 
+
+function calcVaultMaxDrawdownPct(points: TimeSeriesPoint[]): number {
+    if (points.length < 2) return 0;
+    let peak = points[0].value;
+    let maxDd = 0;
+    for (const point of points) {
+        if (point.value > peak) peak = point.value;
+        if (peak <= 0) continue;
+        const dd = (peak - point.value) / peak;
+        if (dd > maxDd) maxDd = dd;
+    }
+    return maxDd;
+}
+
+async function calcProRataMaxDrawdownPct(
+    vaultEntries: UserVaultEntry[],
+    updates: UserLedgerUpdate[],
+    minUsd: number
+): Promise<number | null> {
+    let totalWeight = 0;
+    let weightedDrawdown = 0;
+    let count = 0;
+
+    // 1. Active vaults — use per-user account value history, weight by equity
+    const activeAddresses = new Set<string>();
+    for (const entry of vaultEntries) {
+        const equity = Number.isFinite(entry.equity) ? entry.equity : 0;
+        if (equity < minUsd) continue;
+        activeAddresses.add(entry.vaultAddress.toLowerCase());
+        const points = normalizeSeries(
+            entry.userHistory?.accountValue?.points
+        );
+        if (points.length < 2) continue;
+        const dd = calcVaultMaxDrawdownPct(points);
+        weightedDrawdown += dd * equity;
+        totalWeight += equity;
+        count++;
+    }
+
+    // 2. Closed vaults in last 30 days — fetch vault-level history,
+    //    filter to investment period, weight by basis
+    const cutoff = Date.now() - 30 * MS_PER_DAY;
+    const closedWithdraws = updates.filter((entry) => {
+        if (entry.type !== "vaultWithdraw") return false;
+        if (!Number.isFinite(entry.time) || entry.time < cutoff) return false;
+        if (Math.abs(entry.usdc) < minUsd) return false;
+        if (!Number.isFinite(entry.basisUsd) || (entry.basisUsd as number) <= 0) return false;
+        return !activeAddresses.has(entry.vault.toLowerCase());
+    });
+
+    // Find matching deposit time for each closed vault
+    const depositsByVault = new Map<string, number>();
+    for (const u of updates) {
+        if (u.type !== "vaultDeposit") continue;
+        const key = u.vault.toLowerCase();
+        const existing = depositsByVault.get(key);
+        if (!existing || u.time < existing) {
+            depositsByVault.set(key, u.time);
+        }
+    }
+
+    // Fetch vault details and compute drawdown for each closed vault
+    const closedResults = await mapWithConcurrency(
+        closedWithdraws,
+        3,
+        async (withdraw) => {
+            const vaultAddr = withdraw.vault;
+            const depositTime = depositsByVault.get(vaultAddr.toLowerCase());
+            if (!Number.isFinite(depositTime)) return null;
+            const history = await HyperliquidConnector.getVaultHistory(vaultAddr);
+            if (!history?.accountValue?.points) return null;
+            const allPoints = normalizeSeries(history.accountValue.points);
+            const filtered = allPoints.filter(
+                (p) => p.timestamp >= (depositTime as number) && p.timestamp <= withdraw.time
+            );
+            if (filtered.length < 2) return null;
+            return {
+                dd: calcVaultMaxDrawdownPct(filtered),
+                weight: withdraw.basisUsd as number,
+            };
+        }
+    );
+
+    for (const result of closedResults) {
+        if (!result) continue;
+        weightedDrawdown += result.dd * result.weight;
+        totalWeight += result.weight;
+        count++;
+    }
+
+    if (!count || totalWeight <= 0) return null;
+    return -((weightedDrawdown / totalWeight) * 100);
+}
+
+function calc30dPnlPct(
+    updates: UserLedgerUpdate[],
+    minUsd: number
+): number | null {
+    const cutoff = Date.now() - 30 * MS_PER_DAY;
+    const closures = updates.filter((entry) => {
+        if (entry.type !== "vaultWithdraw") return false;
+        if (!Number.isFinite(entry.time) || entry.time < cutoff) return false;
+        if (Math.abs(entry.usdc) < minUsd) return false;
+        return (
+            Number.isFinite(entry.netWithdrawnUsd) &&
+            Number.isFinite(entry.basisUsd) &&
+            (entry.basisUsd as number) > 0
+        );
+    });
+    if (!closures.length) return null;
+    let totalPnl = 0;
+    let totalBasis = 0;
+    for (const entry of closures) {
+        const basis = entry.basisUsd as number;
+        const pnl = (entry.netWithdrawnUsd as number) - basis;
+        totalPnl += pnl;
+        totalBasis += basis;
+    }
+    if (totalBasis <= 0) return null;
+    return (totalPnl / totalBasis) * 100;
+}
 
 function calcWinRatePct(
     updates: UserLedgerUpdate[],

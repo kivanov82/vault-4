@@ -25,6 +25,8 @@ npm run docker-build  # Build Docker image
 npm run docker-push   # Push to GCP container registry
 ```
 
+**Ports:** Dev server runs on `3000`, Docker exposes `8080`.
+
 ## Architecture
 
 ```
@@ -180,13 +182,16 @@ REBALANCE_WITHDRAWAL_DELAY_MS=60000    # Wait time after withdrawals (default: 6
 - `GET /api/positions` - User vault positions
 - `GET /api/history?page=1&pageSize=15` - Transaction history
 - `GET /api/portfolio` - Aggregated portfolio summary
-- `GET /api/metrics` - Platform metrics (TVL, 30d PnL %, win rate, max drawdown)
+- `GET /api/metrics` - Platform metrics (TVL, 30d PnL %, win rate, 30d max drawdown)
 
 Add `?refresh=true` to bypass cache.
 
 ## Notes
 
-- 30D performance uses `pnlChange30dPct` derived from PnL history, not TVL change
+- `.env.example` references `OPENAI_API_KEY` — this is stale; the project uses `ANTHROPIC_API_KEY`
+- TypeScript strict mode is disabled (`"strict": false` in tsconfig.json)
+- 30D PnL (`pnlChange30dPct`) is calculated pro rata from vault closure ledger entries (sum of realized PnL / sum of basis) over the last 30 days
+- 30D max drawdown (`maxDrawdownPct`) is calculated pro rata across all vaults: active vaults use per-user account value history weighted by equity; closed vaults (withdrawn in last 30 days) use vault-level history filtered to the investment period, weighted by basis
 - Warmup: `VaultService.warm()` runs at startup when `VAULT_WARM_RECOMMENDATIONS=true`
 - **Vault candidate filtering**: Excludes vaults with 0 active positions to prevent depositing into inactive vaults
 - **Inactive vault detection**: Vaults with 0 positions + 0 trades in 7 days trigger immediate withdrawal (even negative PnL)
