@@ -184,18 +184,34 @@ export class RebalanceOrchestrator {
             withdrawals.push(result.action);
         }
 
-        if (
-            withdrawalDelayMs > 0 &&
-            (withdrawals.some((action) => action.status === "submitted") ||
-                tpWithdrawals.some((action) => action.status === "submitted"))
-        ) {
+        const hasSubmittedWithdrawals =
+            withdrawals.some((action) => action.status === "submitted") ||
+            tpWithdrawals.some((action) => action.status === "submitted");
+
+        if (withdrawalDelayMs > 0 && hasSubmittedWithdrawals) {
             logger.info("Waiting for withdrawals to settle", {
                 withdrawalDelayMs,
             });
             await sleep(withdrawalDelayMs);
         }
 
-        const deposits = await DepositService.executeDepositPlan(plan, {
+        // Rebuild deposit plan after withdrawals to pick up freed slots
+        const depositPlan = hasSubmittedWithdrawals
+            ? await DepositService.buildDepositPlan({
+                  refreshCandidates: false,
+                  refreshRecommendations: false,
+                  maxActive: 10,
+              })
+            : plan;
+
+        if (hasSubmittedWithdrawals) {
+            logger.info("Rebuilt deposit plan after withdrawals", {
+                previousTargets: plan.targets.length,
+                newTargets: depositPlan.targets.length,
+            });
+        }
+
+        const deposits = await DepositService.executeDepositPlan(depositPlan, {
             dryRun,
             minDepositUsd,
         });
