@@ -9,6 +9,8 @@
     "build:api": "cd packages/api && npm run docker-build",
     "build:web": "cd packages/web && pnpm build",
     "start:api": "cd packages/api && npm start",
-    "start:web": "cd packages/web && pnpm start"
+    "start:web": "cd packages/web && pnpm start",
+    "build:contracts": "cd packages/contracts && forge build",
+    "test:contracts": "cd packages/contracts && forge test -vvv"
   }
 }

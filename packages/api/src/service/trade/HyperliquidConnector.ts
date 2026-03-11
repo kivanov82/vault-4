@@ -545,6 +545,35 @@ export class HyperliquidConnector {
         });
     }
 
+    /**
+     * Transfer USDC between Perp and Spot accounts on L1.
+     * @param amount Amount in USD (string, e.g. "790.00")
+     * @param toPerp true = Spot→Perp, false = Perp→Spot
+     */
+    static async usdClassTransfer(
+        amount: string,
+        toPerp: boolean
+    ): Promise<any> {
+        const client = this.getExchangeClient();
+        return client.usdClassTransfer({ amount, toPerp });
+    }
+
+    /**
+     * Send spot tokens to another address on L1.
+     * Used to bridge USDC from L1 Spot to HyperEVM (send to own address).
+     * @param destination Target address (same wallet for L1→EVM bridge)
+     * @param token Token identifier (e.g. "USDC:0xeb62eee3685fc4c43992febcd9e75443")
+     * @param amount Amount as string (e.g. "790.00")
+     */
+    static async spotSend(
+        destination: `0x${string}`,
+        token: string,
+        amount: string
+    ): Promise<any> {
+        const client = this.getExchangeClient();
+        return client.spotSend({ destination, token, amount });
+    }
+
     private static getExchangeAccount() {
         if (!EXCHANGE_PKEY) {
             throw new Error("WALLET_PK is not set");

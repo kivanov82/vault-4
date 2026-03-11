@@ -61,7 +61,7 @@ export function LiveDataTicker() {
   }, [])
 
   return (
-    <div className="flex items-center gap-3 text-[10px] overflow-x-auto scrollbar-hide">
+    <div className="flex items-center gap-3 text-[11px] sm:text-[10px] overflow-x-auto scrollbar-hide">
       <div className={`flex items-center gap-1 transition-all ${flash === "hype" ? "data-flash" : ""}`}>
         <span className="text-[color:var(--terminal-cyan-dim)]">$HYPE:</span>
         <span className="text-[color:var(--terminal-cyan)] glow-text-cyan">{formatPrice(data?.hypePrice)}</span>

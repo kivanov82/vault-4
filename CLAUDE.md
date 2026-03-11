@@ -11,13 +11,15 @@ Vault-4 is a fully automated, non-custodial trading platform for Hyperliquid vau
 ```
 vault-4/
   packages/
-    api/    <- Backend API (Express/TypeScript) -> Google Cloud Run
-    web/    <- Frontend UI (Next.js/React)      -> Vercel
+    api/          <- Backend API (Express/TypeScript) -> Google Cloud Run
+    web/          <- Frontend UI (Next.js/React)      -> Vercel
+    contracts/    <- Solidity smart contracts (Foundry) -> HyperEVM
 ```
 
 Each package has its own `CLAUDE.md` with detailed instructions:
 - `packages/api/CLAUDE.md` — backend architecture, rebalancing logic, env vars
 - `packages/web/CLAUDE.md` — frontend components, design system, conventions
+- `packages/contracts/CLAUDE.md` — ERC-4626 investment vault, Foundry toolchain
 
 ## Commands
 
@@ -26,13 +28,16 @@ Each package has its own `CLAUDE.md` with detailed instructions:
 npm run dev:api       # Backend dev server (port 3000, Docker: 8080)
 npm run dev:web       # Frontend Next.js dev server
 npm run build:api     # Docker build for API
-npm run build:web     # Next.js production build
-npm run start:api     # Start API
-npm run start:web     # Start frontend
+npm run build:web         # Next.js production build
+npm run build:contracts   # Compile Solidity contracts
+npm run test:contracts    # Run Foundry tests
+npm run start:api         # Start API
+npm run start:web         # Start frontend
 
 # Or run directly in each package
 cd packages/api && npm run dev
 cd packages/web && npx next dev
+cd packages/contracts && forge test -vvv
 ```
 
 ## API Endpoints

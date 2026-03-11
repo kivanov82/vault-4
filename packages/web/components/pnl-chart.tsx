@@ -4,6 +4,8 @@ import { useMemo, useState, useEffect, useRef } from "react"
 import { Area, AreaChart, ResponsiveContainer, XAxis, YAxis, Tooltip } from "recharts"
 import { BlinkingLabel } from "./blinking-label"
 import { LiveDataTicker } from "./live-data-ticker"
+import { TerminalSkeletonBlock } from "./terminal-skeleton"
+import { ConnectionError } from "./connection-error"
 import { LAUNCH_DATE_MS } from "@/lib/constants"
 
 type SeriesPoint = { timestamp: number; value: number }
@@ -39,11 +41,26 @@ function AnimatedDot(props: { cx?: number; cy?: number; stroke?: string }) {
   )
 }
 
+function useIsMobile() {
+  const [isMobile, setIsMobile] = useState(false)
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 640px)")
+    setIsMobile(mq.matches)
+    const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches)
+    mq.addEventListener("change", handler)
+    return () => mq.removeEventListener("change", handler)
+  }, [])
+  return isMobile
+}
+
 export function PnlChart() {
   const [chartMode, setChartMode] = useState<"PNL" | "ACC_VALUE">("PNL")
   const [timePeriod, setTimePeriod] = useState<"1M" | "7D" | "30D" | "ALL">("30D")
   const [animationKey, setAnimationKey] = useState(0)
   const [portfolio, setPortfolio] = useState<PortfolioResponse | null>(null)
+  const [chartError, setChartError] = useState(false)
+  const [retryKey, setRetryKey] = useState(0)
+  const isMobile = useIsMobile()
   const [liveSeries, setLiveSeries] = useState<{ pnl: (number | null)[]; acc: (number | null)[] }>({
     pnl: [],
     acc: [],
@@ -53,18 +70,19 @@ export function PnlChart() {
   useEffect(() => {
     let active = true
     const load = async () => {
+      setChartError(false)
       try {
         const response = await fetch(`${API_BASE}/api/portfolio`)
-        if (!response.ok) return
+        if (!response.ok) throw new Error("API error")
         const payload = (await response.json()) as PortfolioResponse
         if (active) setPortfolio(payload)
       } catch {
-        // ignore
+        if (active) setChartError(true)
       }
     }
     load()
     return () => { active = false }
-  }, [])
+  }, [retryKey])
 
   useEffect(() => {
     if (timePeriod !== "1M") return
@@ -139,7 +157,7 @@ export function PnlChart() {
         <LiveDataTicker />
       </div>
 
-      <div className="flex items-center justify-between mb-3">
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-y-2">
         <div className="flex items-center gap-1 text-xs">
           <button
             onClick={() => setChartMode("PNL")}
@@ -187,8 +205,20 @@ export function PnlChart() {
       </div>
 
       <div className="h-48 md:h-56 chart-glow">
+        {chartError && !portfolio ? (
+          <div className="w-full h-full flex items-center justify-center">
+            <ConnectionError onRetry={() => setRetryKey((k) => k + 1)} />
+          </div>
+        ) : !portfolio && timePeriod !== "1M" ? (
+          <TerminalSkeletonBlock className="w-full h-full flex items-center justify-center">
+            <div className="flex items-center gap-3">
+              <div className="terminal-loader-bar" />
+              <span className="text-xs text-muted-foreground">LOADING_CHART_DATA</span>
+            </div>
+          </TerminalSkeletonBlock>
+        ) : (
         <ResponsiveContainer width="100%" height="100%">
-          <AreaChart key={animationKey} data={data} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+          <AreaChart key={animationKey} data={data} margin={{ top: 5, right: 5, left: isMobile ? -30 : -20, bottom: 0 }}>
             <defs>
               <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
                 <stop offset="5%" stopColor={strokeColor} stopOpacity={0.4} />
@@ -212,8 +242,8 @@ export function PnlChart() {
             />
             <YAxis
               domain={[axisDomain.min, axisDomain.max]}
-              width={72}
-              tick={{ fill: strokeColor, fontSize: 10 }}
+              width={isMobile ? 52 : 72}
+              tick={{ fill: strokeColor, fontSize: isMobile ? 9 : 10 }}
               axisLine={{ stroke: `${strokeColor}40` }}
               tickLine={{ stroke: `${strokeColor}40` }}
               tickFormatter={(val) => formatAxisValue(val, chartMode === "PNL")}
@@ -246,6 +276,7 @@ export function PnlChart() {
             />
           </AreaChart>
         </ResponsiveContainer>
+        )}
       </div>
 
       <div className="chart-grid-overlay" />

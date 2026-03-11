@@ -6,14 +6,19 @@ import { TerminalHeader } from "./terminal-header"
 import { AccountStats } from "./account-stats"
 import { PnlChart } from "./pnl-chart"
 import { PositionsTable } from "./positions-table"
-import { ActionButtons } from "./action-buttons"
 import { PerformanceMetrics } from "./performance-metrics"
+import { FundMetrics } from "./fund-metrics"
+import { InvestPanel } from "./invest-panel"
+import { QueueStatus } from "./queue-status"
 import { CyclingTextPanel } from "./cycling-text-panel"
 import { MatrixRain } from "./matrix-rain"
 import { CornerDecorations } from "./corner-decorations"
 
+type Tab = "DASHBOARD" | "INVEST"
+
 export function TerminalPortfolio() {
   const { isConnected } = useAccount()
+  const [activeTab, setActiveTab] = useState<Tab>("DASHBOARD")
   const [lastRefresh, setLastRefresh] = useState("")
 
   useEffect(() => {
@@ -33,26 +38,61 @@ export function TerminalPortfolio() {
           <TerminalHeader />
         </div>
 
-        <div className="space-y-3 mt-4">
-          {isConnected && (
-            <div className="boot-section boot-delay-1">
-              <AccountStats />
+        {/* Tab navigation */}
+        <div className="boot-section boot-delay-1 mt-4">
+          <div className="flex gap-1 terminal-border p-1">
+            {(["DASHBOARD", "INVEST"] as Tab[]).map((tab) => (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                className={`flex-1 py-2 text-xs font-semibold tracking-wider transition-all ${
+                  activeTab === tab
+                    ? "terminal-button bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-primary"
+                }`}
+              >
+                [{tab}]
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Tab content */}
+        <div className="space-y-3 mt-3">
+          {activeTab === "DASHBOARD" && (
+            <div className="space-y-3 terminal-tab-content">
+              <div className="boot-section boot-delay-2">
+                <PerformanceMetrics />
+              </div>
+              <div className="boot-section boot-delay-3">
+                <PnlChart />
+              </div>
+              <div className="boot-section boot-delay-4">
+                <PositionsTable />
+              </div>
             </div>
           )}
-          {isConnected && (
-            <div className="boot-section boot-delay-2">
-              <ActionButtons />
+
+          {activeTab === "INVEST" && (
+            <div className="space-y-3 terminal-tab-content">
+              <div className="boot-section boot-delay-2">
+                <FundMetrics />
+              </div>
+              {isConnected && (
+                <div className="boot-section boot-delay-3">
+                  <AccountStats />
+                </div>
+              )}
+              <div className="boot-section boot-delay-4">
+                <InvestPanel />
+              </div>
+              <div className="boot-section boot-delay-5">
+                <QueueStatus />
+              </div>
             </div>
           )}
-          <div className="boot-section boot-delay-3">
-            <PerformanceMetrics />
-          </div>
-          <div className="boot-section boot-delay-4">
-            <PnlChart />
-          </div>
-          <div className="boot-section boot-delay-5">
-            <PositionsTable />
-          </div>
+
+          {/* Shared footer: disclaimers */}
           <div className="boot-section boot-delay-6">
             <CyclingTextPanel />
           </div>

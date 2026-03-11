@@ -59,34 +59,27 @@ export function TerminalHeader() {
             <button
               onClick={() => switchChain({ chainId: hyperliquidChain.id })}
               disabled={isSwitching}
-              className="terminal-button px-3 py-1.5 text-xs"
+              className="terminal-button px-3 py-2 text-xs min-h-[44px] flex items-center"
             >
               {isSwitching ? "[ SWITCHING ]" : "[ SWITCH ]"}
             </button>
           )}
-          <div className="relative flex flex-col items-center group">
-            <button
-              onClick={() => {
-                if (isConnected) {
-                  disconnect()
-                  return
-                }
-                const connector = connectors[0]
-                if (connector) {
-                  connect({ connector })
-                }
-              }}
-              disabled={!isConnected}
-              className={`terminal-button px-3 py-1.5 text-xs ${!isConnected ? "cursor-not-allowed" : ""}`}
-            >
-              {isConnected ? "[ DISCONNECT ]" : "[ CONNECT ]"}
-            </button>
-            {!isConnected && (
-              <span className="mt-1 px-2 py-1 text-[10px] uppercase tracking-[0.2em] font-mono bg-black/90 border border-[color:var(--terminal-amber)] text-[color:var(--terminal-amber)] rounded-sm shadow-[0_0_12px_rgba(255,191,0,0.3)] absolute -bottom-14 left-1/2 -translate-x-1/2 whitespace-nowrap pointer-events-none opacity-0 translate-y-1 transition duration-150 ease-out group-hover:opacity-100 group-hover:translate-y-0">
-                Beta mode - deposits enable once model proves itself
-              </span>
-            )}
-          </div>
+          <button
+            onClick={() => {
+              if (isConnected) {
+                disconnect()
+                return
+              }
+              const connector = connectors[0]
+              if (connector) {
+                connect({ connector })
+              }
+            }}
+            disabled={isPending}
+            className="terminal-button px-3 py-2 text-xs min-h-[44px] flex items-center"
+          >
+            {isPending ? "[ CONNECTING... ]" : isConnected ? "[ DISCONNECT ]" : "[ CONNECT ]"}
+          </button>
         </div>
       </div>
 

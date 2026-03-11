@@ -307,6 +307,8 @@
 .boot-delay-5 { animation-delay: 600ms; }
 .boot-delay-6 { animation-delay: 720ms; }
 .boot-delay-7 { animation-delay: 840ms; }
+.boot-delay-8 { animation-delay: 960ms; }
+.boot-delay-9 { animation-delay: 1080ms; }
 
 /* ========================================
    Chart & Oscilloscope
@@ -432,6 +434,92 @@
   background: var(--terminal-green);
   box-shadow: 0 0 6px var(--terminal-green-glow);
   animation: terminal-loader-bar 2s ease-in-out infinite;
+}
+
+/* ========================================
+   Terminal Skeleton Loading
+   ======================================== */
+
+@keyframes terminal-skeleton-scan {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes terminal-skeleton-blink {
+  0%, 100% { opacity: 0.15; }
+  50% { opacity: 0.35; }
+}
+
+.terminal-skeleton {
+  display: inline-block;
+  background: linear-gradient(
+    90deg,
+    var(--terminal-green-dim) 0%,
+    oklch(0.45 0.12 142 / 0.4) 40%,
+    var(--terminal-green-dim) 80%
+  );
+  background-size: 200% 100%;
+  animation: terminal-skeleton-scan 2s ease-in-out infinite;
+  border: 1px solid oklch(0.45 0.12 142 / 0.2);
+}
+
+.terminal-skeleton-cyan {
+  display: inline-block;
+  background: linear-gradient(
+    90deg,
+    oklch(0.45 0.1 195 / 0.15) 0%,
+    oklch(0.55 0.12 195 / 0.3) 40%,
+    oklch(0.45 0.1 195 / 0.15) 80%
+  );
+  background-size: 200% 100%;
+  animation: terminal-skeleton-scan 2s ease-in-out infinite;
+  border: 1px solid oklch(0.45 0.1 195 / 0.15);
+}
+
+.terminal-skeleton-line {
+  height: 0.75rem;
+  border-radius: 0;
+}
+
+.terminal-skeleton-text-lg {
+  height: 1.75rem;
+  border-radius: 0;
+}
+
+.terminal-skeleton-text-sm {
+  height: 0.625rem;
+  border-radius: 0;
+}
+
+.terminal-skeleton-chart {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid oklch(0.45 0.12 142 / 0.2);
+}
+
+.terminal-skeleton-chart::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background:
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 23px,
+      oklch(0.45 0.12 142 / 0.08) 23px,
+      oklch(0.45 0.12 142 / 0.08) 24px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      transparent,
+      transparent 59px,
+      oklch(0.45 0.12 142 / 0.06) 59px,
+      oklch(0.45 0.12 142 / 0.06) 60px
+    );
+  animation: terminal-skeleton-blink 2.5s ease-in-out infinite;
 }
 
 /* ========================================
@@ -591,6 +679,46 @@
   background: linear-gradient(180deg, transparent 0%, rgba(0, 255, 65, 0.03) 50%, transparent 100%);
   background-size: 100% 200%;
   animation: data-stream 3s linear infinite;
+}
+
+/* ========================================
+   Data State Transitions
+   ======================================== */
+
+@keyframes terminal-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes terminal-value-flash {
+  0% { color: var(--terminal-green-bright); text-shadow: 0 0 8px var(--terminal-green-glow); }
+  100% { text-shadow: none; }
+}
+
+.terminal-fade-in {
+  animation: terminal-fade-in 0.3s ease-out;
+}
+
+.terminal-value-update {
+  animation: terminal-value-flash 0.6s ease-out;
+}
+
+/* Smooth transitions for metric values and data cells */
+.metric-card .text-sm,
+.terminal-border-inset .text-sm,
+.terminal-border-cyan .text-2xl,
+.terminal-border-cyan .text-sm {
+  transition: opacity 0.2s ease, color 0.15s ease;
+}
+
+/* Tab content crossfade */
+.terminal-tab-content {
+  animation: terminal-fade-in 0.25s ease-out;
+}
+
+/* Chart mode transition */
+.chart-glow {
+  transition: opacity 0.3s ease;
 }
 
 /* ========================================

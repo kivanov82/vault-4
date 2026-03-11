@@ -1,0 +1,13 @@
+{
+  "name": "@vault-4/contracts",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Vault-4 EVM investment vault contracts (Foundry + OpenZeppelin)",
+  "scripts": {
+    "build": "forge build",
+    "test": "forge test -vvv",
+    "test:gas": "forge test -vvv --gas-report",
+    "fmt": "forge fmt",
+    "deploy:hyperevm": "forge script script/Deploy.s.sol --rpc-url hyperevm --broadcast --verify"
+  }
+}

@@ -2,21 +2,24 @@ import { createConfig, http } from "wagmi"
 import { injected } from "wagmi/connectors"
 import { defineChain } from "viem"
 
-const rpcUrl = process.env.NEXT_PUBLIC_HYPERLIQUID_RPC ?? "https://rpc.hyperlend.finance"
+const rpcUrl = process.env.NEXT_PUBLIC_HYPERLIQUID_RPC ?? "https://rpc.hyperliquid.xyz/evm"
 
 export const hyperliquidChain = defineChain({
-  id: 1337,
+  id: 999,
   name: "Hyperliquid",
   nativeCurrency: {
-    name: "USDC",
-    symbol: "USDC",
-    decimals: 6,
+    name: "HYPE",
+    symbol: "HYPE",
+    decimals: 18,
   },
   rpcUrls: {
     default: { http: [rpcUrl] },
   },
   blockExplorers: {
-    default: { name: "Hyperliquid", url: "https://app.hyperliquid.xyz" },
+    default: {
+      name: "Hyperliquid Explorer",
+      url: "https://app.hyperliquid.xyz/explorer",
+    },
   },
 })
 

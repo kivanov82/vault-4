@@ -76,7 +76,7 @@ export function CyclingTextPanel({ className = "" }: { className?: string }) {
           [{String(messageIndex + 1).padStart(2, "0")}/{String(MESSAGES.length).padStart(2, "0")}]
         </button>
       </div>
-      <div className="min-h-[4rem] md:min-h-[3rem]">
+      <div className="min-h-[3rem] md:min-h-[4rem]">
         <p className={`text-xs ${textColor} leading-relaxed`}>
           {displayedText}
           <span

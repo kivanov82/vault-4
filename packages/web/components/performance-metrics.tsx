@@ -2,6 +2,8 @@
 
 import { useEffect, useState, useRef } from "react"
 import { BlinkingLabel } from "./blinking-label"
+import { TerminalSkeletonLine } from "./terminal-skeleton"
+import { ConnectionError } from "./connection-error"
 
 type MetricsResponse = {
   tvlUsd: number | null
@@ -41,24 +43,29 @@ type PnlMode = "ANNUALIZED" | "30D"
 export function PerformanceMetrics() {
   const [metrics, setMetrics] = useState<MetricsResponse | null>(null)
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(false)
+  const [retryKey, setRetryKey] = useState(0)
   const [pnlMode, setPnlMode] = useState<PnlMode>("ANNUALIZED")
 
   useEffect(() => {
     let active = true
     const load = async () => {
       setLoading(true)
+      setError(false)
       try {
         const response = await fetch(`${API_BASE}/api/metrics`)
-        if (!response.ok) return
+        if (!response.ok) throw new Error("API error")
         const payload = (await response.json()) as MetricsResponse
         if (active) setMetrics(payload)
+      } catch {
+        if (active) setError(true)
       } finally {
         if (active) setLoading(false)
       }
     }
     load()
     return () => { active = false }
-  }, [])
+  }, [retryKey])
 
   const tvl = useCountUp(metrics?.tvlUsd ?? null)
   const annualizedRaw = metrics?.pnlChange60dPct != null ? metrics.pnlChange60dPct * 6 : null
@@ -102,11 +109,15 @@ export function PerformanceMetrics() {
     },
   ]
 
+  if (error && !metrics) {
+    return <ConnectionError onRetry={() => setRetryKey((k) => k + 1)} />
+  }
+
   return (
     <div className="terminal-border p-3">
       <BlinkingLabel text="PERFORMANCE_METRICS" prefix="$" color="cyan" />
 
-      <div className="grid grid-cols-2 gap-2 mt-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-3">
         {items.map((metric) => (
           <div
             key={metric.label}
@@ -142,9 +153,13 @@ export function PerformanceMetrics() {
               </span>
             )}
             <div className="flex items-baseline gap-2 mt-1">
+              {loading && !metric.value ? (
+                <TerminalSkeletonLine className="w-16 h-4" />
+              ) : (
               <span className="text-sm font-semibold text-primary">
-                {metric.value ?? (loading ? "..." : "--")}
+                {metric.value ?? "--"}
               </span>
+              )}
               {metric.change && (
                 <span className={`text-xs ${formatSignedClass(metric.changeValue)}`}>
                   {metric.change}

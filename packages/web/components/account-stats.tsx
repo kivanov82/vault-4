@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react"
 import { BlinkingLabel } from "./blinking-label"
+import { TerminalSkeletonLine } from "./terminal-skeleton"
+import { ConnectionError } from "./connection-error"
 
 type PositionsResponse = {
   totalPositions: number
@@ -16,54 +18,80 @@ const API_BASE = process.env.NEXT_PUBLIC_VAULT_API_BASE_URL ?? "http://localhost
 export function AccountStats() {
   const [data, setData] = useState<PositionsResponse | null>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(false)
+  const [retryKey, setRetryKey] = useState(0)
 
   useEffect(() => {
     let active = true
     const load = async () => {
+      setLoading(true)
+      setError(false)
       try {
         const res = await fetch(`${API_BASE}/api/positions`)
-        if (!res.ok) return
+        if (!res.ok) throw new Error("API error")
         const payload = (await res.json()) as PositionsResponse
         if (active) setData(payload)
+      } catch {
+        if (active) setError(true)
       } finally {
         if (active) setLoading(false)
       }
     }
     load()
     return () => { active = false }
-  }, [])
+  }, [retryKey])
 
   const totalInvested = data?.totalInvestedUsd ?? 0
   const netPnl = data?.netPnlUsd ?? 0
   const totalEquity = totalInvested + netPnl
   const roePct = totalInvested > 0 ? (netPnl / totalInvested) * 100 : 0
 
+  if (error && !data) {
+    return <ConnectionError onRetry={() => setRetryKey((k) => k + 1)} />
+  }
+
   return (
     <div className="terminal-border-cyan p-3">
       <BlinkingLabel text="ACCOUNT_OVERVIEW" prefix="//" color="cyan" />
 
       <div className="mt-3 space-y-3">
-        <div className="flex items-baseline justify-between">
-          <span className="text-2xl md:text-3xl font-bold glow-text-cyan text-[color:var(--terminal-cyan)]">
-            {loading ? "..." : formatUsd(totalEquity)}
-          </span>
-          <span className={`text-sm ${netPnl >= 0 ? "text-[color:var(--terminal-green-bright)]" : "text-destructive"}`}>
-            {loading ? "" : `${formatUsdSigned(netPnl)} (${formatPercentSigned(roePct)})`}
-          </span>
+        <div className="flex flex-col sm:flex-row sm:items-baseline sm:justify-between gap-1">
+          {loading ? (
+            <TerminalSkeletonLine variant="cyan" className="w-40 h-8" />
+          ) : (
+            <span className="text-2xl md:text-3xl font-bold glow-text-cyan text-[color:var(--terminal-cyan)]">
+              {formatUsd(totalEquity)}
+            </span>
+          )}
+          {loading ? (
+            <TerminalSkeletonLine variant="cyan" className="w-32 h-4" />
+          ) : (
+            <span className={`text-sm ${netPnl >= 0 ? "text-[color:var(--terminal-green-bright)]" : "text-destructive"}`}>
+              {`${formatUsdSigned(netPnl)} (${formatPercentSigned(roePct)})`}
+            </span>
+          )}
         </div>
 
-        <div className="grid grid-cols-2 gap-3 text-xs">
+        <div className="grid grid-cols-2 gap-2 sm:gap-3 text-xs">
           <div className="terminal-border-inset p-2">
             <span className="text-[color:var(--terminal-cyan-dim)] block text-[10px]">INVESTED</span>
-            <span className="text-[color:var(--terminal-cyan)] font-semibold">
-              {loading ? "..." : formatUsd(totalInvested)}
-            </span>
+            {loading ? (
+              <TerminalSkeletonLine variant="cyan" className="w-20 h-4 mt-1" />
+            ) : (
+              <span className="text-[color:var(--terminal-cyan)] font-semibold">
+                {formatUsd(totalInvested)}
+              </span>
+            )}
           </div>
           <div className="terminal-border-inset p-2">
-            <span className="text-[color:var(--terminal-cyan-dim)] block text-[10px]">ACTIVE_VAULTS</span>
-            <span className="text-[color:var(--terminal-cyan)] font-semibold">
-              {loading ? "..." : String(data?.totalPositions ?? 0)}
-            </span>
+            <span className="text-[color:var(--terminal-cyan-dim)] block text-[10px]">NET_PNL</span>
+            {loading ? (
+              <TerminalSkeletonLine variant="cyan" className="w-16 h-4 mt-1" />
+            ) : (
+              <span className={`font-semibold ${netPnl >= 0 ? "text-[color:var(--terminal-green-bright)]" : "text-destructive"}`}>
+                {formatUsdSigned(netPnl)}
+              </span>
+            )}
           </div>
         </div>
       </div>

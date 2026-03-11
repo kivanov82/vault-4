@@ -9,16 +9,16 @@ export function ActionButtons() {
   ]
 
   return (
-    <div className="grid grid-cols-4 gap-2">
+    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
       {actions.map((action) => (
         <button
           key={action.label}
-          className="terminal-button-locked py-2 px-1 text-xs flex flex-col items-center gap-1"
+          className="terminal-button-locked py-3 sm:py-2 px-2 sm:px-1 text-xs flex flex-col items-center gap-1"
           disabled
         >
           <span className="text-xs font-bold">{action.icon}</span>
-          <span className="hidden sm:inline text-[10px]">{action.label}</span>
-          <span className="text-[8px] opacity-50 hidden sm:inline">LOCKED</span>
+          <span className="text-[10px]">{action.label}</span>
+          <span className="text-[8px] opacity-50">LOCKED</span>
         </button>
       ))}
     </div>

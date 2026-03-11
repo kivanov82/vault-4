@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react"
 import { BlinkingLabel } from "./blinking-label"
+import { TerminalSkeletonLine } from "./terminal-skeleton"
 
 type PositionEntry = {
   vaultAddress: string
@@ -206,7 +207,7 @@ export function PositionsTable() {
 
       <div className="overflow-x-auto">
         {activeTab === "positions" && (
-          <table className="w-full text-xs">
+          <table className="w-full text-xs terminal-tab-content">
             <thead>
               <tr className="border-b border-border text-muted-foreground">
                 <th className="text-left py-2 pr-2 cursor-pointer select-none" onClick={() => toggleSort("asset")}>
@@ -255,10 +256,21 @@ export function PositionsTable() {
                   </tr>
                 )
               })}
-              {!positions.length && (
+              {!positions.length && loadingPositions && (
+                Array.from({ length: 5 }).map((_, i) => (
+                  <tr key={`skel-${i}`} className="border-b border-border/30">
+                    <td className="py-2 pr-2"><TerminalSkeletonLine className="w-24 h-3" /></td>
+                    <td className="py-2 px-2"><TerminalSkeletonLine className="w-12 h-3 ml-auto" /></td>
+                    <td className="py-2 px-2 hidden sm:table-cell"><TerminalSkeletonLine className="w-14 h-3 ml-auto" /></td>
+                    <td className="py-2 px-2"><TerminalSkeletonLine className="w-14 h-3 ml-auto" /></td>
+                    <td className="py-2 pl-2"><TerminalSkeletonLine className="w-12 h-3 ml-auto" /></td>
+                  </tr>
+                ))
+              )}
+              {!positions.length && !loadingPositions && (
                 <tr className="border-b border-border/30">
                   <td className="py-3 text-center text-muted-foreground" colSpan={5}>
-                    {loadingPositions ? <TerminalLoader text="LOADING_POSITIONS" /> : "NO_POSITIONS"}
+                    NO_POSITIONS
                   </td>
                 </tr>
               )}
@@ -266,7 +278,7 @@ export function PositionsTable() {
           </table>
         )}
         {activeTab === "history" && (
-          <table className="w-full text-xs">
+          <table className="w-full text-xs terminal-tab-content">
             <thead>
               <tr className="border-b border-border text-muted-foreground">
                 <th className="text-left py-2 pr-2">TIME</th>
@@ -292,10 +304,21 @@ export function PositionsTable() {
                   </td>
                 </tr>
               ))}
-              {!history.length && (
+              {!history.length && loadingHistory && (
+                Array.from({ length: 5 }).map((_, i) => (
+                  <tr key={`skel-h-${i}`} className="border-b border-border/30">
+                    <td className="py-2 pr-2"><TerminalSkeletonLine className="w-16 h-3" /></td>
+                    <td className="py-2 px-2"><TerminalSkeletonLine className="w-16 h-3" /></td>
+                    <td className="py-2 px-2"><TerminalSkeletonLine className="w-24 h-3" /></td>
+                    <td className="py-2 px-2"><TerminalSkeletonLine className="w-14 h-3 ml-auto" /></td>
+                    <td className="py-2 pl-2"><TerminalSkeletonLine className="w-14 h-3 ml-auto" /></td>
+                  </tr>
+                ))
+              )}
+              {!history.length && !loadingHistory && (
                 <tr className="border-b border-border/30">
                   <td className="py-3 text-center text-muted-foreground" colSpan={5}>
-                    {loadingHistory ? <TerminalLoader text="LOADING_HISTORY" /> : "NO_HISTORY"}
+                    NO_HISTORY
                   </td>
                 </tr>
               )}
