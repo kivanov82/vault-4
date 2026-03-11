@@ -578,7 +578,8 @@ export class VaultService {
             Number.isFinite(currentAccountValue) && Number.isFinite(value30d)
                 ? (currentAccountValue as number) - (value30d as number)
                 : null;
-        const pnlChange30dPct = calc30dPnlPct(updates, MIN_POSITION_USD);
+        const pnlChange30dPct = calcPnlPct(updates, MIN_POSITION_USD, 30);
+        const pnlChange60dPct = calcPnlPct(updates, MIN_POSITION_USD, 60);
         const maxDrawdownPct = await calcProRataMaxDrawdownPct(vaults.items, updates, MIN_POSITION_USD);
         const winRatePct = calcWinRatePct(updates, LAUNCH_DATE_MS, MIN_POSITION_USD);
 
@@ -589,6 +590,8 @@ export class VaultService {
                 tvlChange30dUsd !== null ? round(tvlChange30dUsd, 6) : null,
             pnlChange30dPct:
                 pnlChange30dPct !== null ? round(pnlChange30dPct, 4) : null,
+            pnlChange60dPct:
+                pnlChange60dPct !== null ? round(pnlChange60dPct, 4) : null,
             winRatePct: winRatePct !== null ? round(winRatePct, 4) : null,
             maxDrawdownPct:
                 maxDrawdownPct !== null ? round(maxDrawdownPct, 4) : null,
@@ -1211,11 +1214,12 @@ async function calcProRataMaxDrawdownPct(
     return -((weightedDrawdown / totalWeight) * 100);
 }
 
-function calc30dPnlPct(
+function calcPnlPct(
     updates: UserLedgerUpdate[],
-    minUsd: number
+    minUsd: number,
+    days: number = 30
 ): number | null {
-    const cutoff = Date.now() - 30 * MS_PER_DAY;
+    const cutoff = Date.now() - days * MS_PER_DAY;
     const closures = updates.filter((entry) => {
         if (entry.type !== "vaultWithdraw") return false;
         if (!Number.isFinite(entry.time) || entry.time < cutoff) return false;

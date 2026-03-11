@@ -1,0 +1,607 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/* Cyberpunk Terminal Theme */
+:root {
+  /* Main terminal green */
+  --terminal-green: oklch(0.75 0.18 142);
+  --terminal-green-bright: oklch(0.85 0.22 142);
+  --terminal-green-dim: oklch(0.45 0.12 142);
+  --terminal-green-glow: oklch(0.65 0.15 142 / 0.5);
+
+  /* Background blacks */
+  --terminal-black: oklch(0.05 0 0);
+  --terminal-dark: oklch(0.08 0.01 142);
+  --terminal-surface: oklch(0.12 0.015 142);
+
+  /* Accent colors */
+  --terminal-red: oklch(0.65 0.2 25);
+  --terminal-red-glow: oklch(0.55 0.18 25 / 0.5);
+  --terminal-cyan: oklch(0.75 0.15 195);
+  --terminal-cyan-bright: oklch(0.85 0.18 195);
+  --terminal-cyan-dim: oklch(0.5 0.1 195);
+  --terminal-cyan-glow: oklch(0.65 0.12 195 / 0.5);
+  --terminal-amber: oklch(0.78 0.16 75);
+  --terminal-amber-dim: oklch(0.55 0.12 75);
+  --terminal-amber-glow: oklch(0.65 0.14 75 / 0.5);
+
+  --background: var(--terminal-black);
+  --foreground: var(--terminal-green);
+  --card: var(--terminal-surface);
+  --card-foreground: var(--terminal-green);
+  --popover: var(--terminal-dark);
+  --popover-foreground: var(--terminal-green);
+  --primary: var(--terminal-green);
+  --primary-foreground: var(--terminal-black);
+  --secondary: var(--terminal-dark);
+  --secondary-foreground: var(--terminal-green);
+  --muted: var(--terminal-dark);
+  --muted-foreground: var(--terminal-green-dim);
+  --accent: var(--terminal-green);
+  --accent-foreground: var(--terminal-black);
+  --destructive: var(--terminal-red);
+  --destructive-foreground: var(--terminal-black);
+  --border: var(--terminal-green-dim);
+  --input: var(--terminal-dark);
+  --ring: var(--terminal-green);
+  --chart-1: var(--terminal-green);
+  --chart-2: var(--terminal-green-bright);
+  --chart-3: var(--terminal-cyan);
+  --chart-4: var(--terminal-green-dim);
+  --chart-5: var(--terminal-red);
+  --radius: 0rem;
+  --sidebar: var(--terminal-surface);
+  --sidebar-foreground: var(--terminal-green);
+  --sidebar-primary: var(--terminal-green);
+  --sidebar-primary-foreground: var(--terminal-black);
+  --sidebar-accent: var(--terminal-dark);
+  --sidebar-accent-foreground: var(--terminal-green);
+  --sidebar-border: var(--terminal-green-dim);
+  --sidebar-ring: var(--terminal-green);
+}
+
+@theme inline {
+  --font-sans: "Fira Code", "JetBrains Mono", monospace;
+  --font-mono: "Fira Code", "JetBrains Mono", monospace;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: 0;
+  --radius-md: 0;
+  --radius-lg: 0;
+  --radius-xl: 0;
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* ========================================
+   CRT / Scanline Effects
+   ======================================== */
+
+@keyframes scanline {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100vh); }
+}
+
+@keyframes flicker {
+  0%, 100% { opacity: 1; }
+  92% { opacity: 1; }
+  93% { opacity: 0.97; }
+  94% { opacity: 1; }
+  96% { opacity: 0.985; }
+  97% { opacity: 1; }
+}
+
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+@keyframes glow-pulse {
+  0%, 100% {
+    text-shadow: 0 0 5px var(--terminal-green-glow), 0 0 10px var(--terminal-green-glow);
+  }
+  50% {
+    text-shadow: 0 0 10px var(--terminal-green-glow), 0 0 20px var(--terminal-green-glow),
+      0 0 30px var(--terminal-green-glow);
+  }
+}
+
+.scanline-overlay {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    rgba(0, 0, 0, 0.2),
+    rgba(0, 0, 0, 0.2) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+  z-index: 100;
+}
+
+.scanline-overlay::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background: radial-gradient(ellipse at center, transparent 55%, rgba(0, 0, 0, 0.5) 100%);
+  pointer-events: none;
+}
+
+.crt-effect {
+  animation: flicker 8s ease-in-out infinite;
+}
+
+.blink-cursor::after {
+  content: "\2588";
+  animation: blink 1s infinite;
+}
+
+.glow-text {
+  text-shadow: 0 0 5px var(--terminal-green-glow), 0 0 10px var(--terminal-green-glow);
+}
+
+.glow-text-cyan {
+  text-shadow: 0 0 5px var(--terminal-cyan-glow), 0 0 10px var(--terminal-cyan-glow);
+}
+
+.glow-text-amber {
+  text-shadow: 0 0 5px var(--terminal-amber-glow), 0 0 10px var(--terminal-amber-glow);
+}
+
+.glow-pulse {
+  animation: glow-pulse 2s ease-in-out infinite;
+}
+
+/* ========================================
+   Terminal Borders & Depth Levels
+   ======================================== */
+
+.terminal-border {
+  border: 1px solid var(--terminal-green-dim);
+  box-shadow: 0 0 5px var(--terminal-green-glow), inset 0 0 5px rgba(0, 255, 65, 0.05);
+}
+
+.terminal-border-inset {
+  border: 1px solid var(--terminal-green-dim);
+  box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.6), inset 0 0 8px rgba(0, 255, 65, 0.03);
+  background: var(--terminal-dark);
+}
+
+.terminal-border-hero {
+  border: 1px solid var(--terminal-green);
+  box-shadow: 0 0 10px var(--terminal-green-glow), 0 0 25px var(--terminal-green-glow),
+    inset 0 0 10px rgba(0, 255, 65, 0.06);
+}
+
+.terminal-border-cyan {
+  border: 1px solid var(--terminal-cyan-dim);
+  box-shadow: 0 0 5px var(--terminal-cyan-glow), inset 0 0 5px rgba(0, 212, 255, 0.04);
+}
+
+.terminal-border-amber {
+  border: 1px solid var(--terminal-amber-dim);
+  box-shadow: 0 0 5px var(--terminal-amber-glow), inset 0 0 5px rgba(255, 191, 0, 0.04);
+}
+
+.terminal-button {
+  border: 1px solid var(--terminal-green);
+  background: transparent;
+  color: var(--terminal-green);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  transition: all 0.15s ease;
+}
+
+.terminal-button:hover {
+  background: var(--terminal-green);
+  color: var(--terminal-black);
+  box-shadow: 0 0 10px var(--terminal-green-glow), 0 0 20px var(--terminal-green-glow);
+}
+
+.terminal-button:active {
+  transform: scale(0.98);
+}
+
+.terminal-button-locked {
+  border: 1px solid var(--terminal-green-dim);
+  background: repeating-linear-gradient(
+    -45deg,
+    transparent,
+    transparent 3px,
+    rgba(0, 255, 65, 0.03) 3px,
+    rgba(0, 255, 65, 0.03) 6px
+  );
+  color: var(--terminal-green-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  cursor: not-allowed;
+  position: relative;
+  overflow: hidden;
+}
+
+.terminal-button-locked::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    rgba(0, 0, 0, 0.08),
+    rgba(0, 0, 0, 0.08) 1px,
+    transparent 1px,
+    transparent 2px
+  );
+  pointer-events: none;
+}
+
+/* ========================================
+   Boot Sequence
+   ======================================== */
+
+@keyframes boot-in {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+    filter: blur(2px);
+  }
+  60% {
+    opacity: 1;
+    filter: blur(0);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+
+.boot-section {
+  opacity: 0;
+  animation: boot-in 0.5s ease-out forwards;
+}
+
+.boot-delay-0 { animation-delay: 0ms; }
+.boot-delay-1 { animation-delay: 120ms; }
+.boot-delay-2 { animation-delay: 240ms; }
+.boot-delay-3 { animation-delay: 360ms; }
+.boot-delay-4 { animation-delay: 480ms; }
+.boot-delay-5 { animation-delay: 600ms; }
+.boot-delay-6 { animation-delay: 720ms; }
+.boot-delay-7 { animation-delay: 840ms; }
+
+/* ========================================
+   Chart & Oscilloscope
+   ======================================== */
+
+@keyframes oscilloscope-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.4; }
+  50% { transform: scale(1.5); opacity: 0.1; }
+}
+
+@keyframes oscilloscope-pulse-delay {
+  0%, 100% { transform: scale(1); opacity: 0.3; }
+  50% { transform: scale(1.3); opacity: 0.15; }
+}
+
+@keyframes signal-blink {
+  0%, 100% {
+    opacity: 1;
+    box-shadow: 0 0 4px var(--terminal-green), 0 0 8px var(--terminal-green);
+  }
+  50% {
+    opacity: 0.3;
+    box-shadow: 0 0 2px var(--terminal-green);
+  }
+}
+
+@keyframes data-flash {
+  0% { background: var(--terminal-cyan); color: var(--terminal-black); }
+  100% { background: transparent; color: var(--terminal-cyan); }
+}
+
+@keyframes grid-scan {
+  0% { opacity: 0.03; }
+  50% { opacity: 0.06; }
+  100% { opacity: 0.03; }
+}
+
+.oscilloscope-pulse {
+  animation: oscilloscope-pulse 1.5s ease-in-out infinite;
+  transform-origin: center;
+}
+
+.oscilloscope-pulse-delay {
+  animation: oscilloscope-pulse-delay 1.5s ease-in-out infinite 0.2s;
+  transform-origin: center;
+}
+
+.signal-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--terminal-green);
+  animation: signal-blink 1s ease-in-out infinite;
+}
+
+.signal-text {
+  animation: blink 1.5s ease-in-out infinite;
+}
+
+.data-flash {
+  animation: data-flash 0.3s ease-out;
+}
+
+.chart-container {
+  position: relative;
+  overflow: hidden;
+}
+
+.chart-glow {
+  position: relative;
+}
+
+.chart-glow::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at center, var(--terminal-green-glow) 0%, transparent 70%);
+  opacity: 0.1;
+  pointer-events: none;
+  animation: glow-pulse 3s ease-in-out infinite;
+}
+
+.chart-grid-overlay {
+  position: absolute;
+  inset: 0;
+  background-image: linear-gradient(var(--terminal-green-dim) 1px, transparent 1px),
+    linear-gradient(90deg, var(--terminal-green-dim) 1px, transparent 1px);
+  background-size: 20px 20px;
+  opacity: 0.05;
+  pointer-events: none;
+  animation: grid-scan 4s ease-in-out infinite;
+}
+
+/* ========================================
+   Terminal Loading Animation
+   ======================================== */
+
+@keyframes terminal-loader-bar {
+  0% { width: 5%; }
+  15% { width: 20%; }
+  30% { width: 35%; }
+  50% { width: 55%; }
+  70% { width: 75%; }
+  85% { width: 90%; }
+  100% { width: 5%; }
+}
+
+.terminal-loader-bar {
+  display: inline-block;
+  width: 80px;
+  height: 8px;
+  border: 1px solid var(--terminal-green-dim);
+  position: relative;
+  overflow: hidden;
+}
+
+.terminal-loader-bar::after {
+  content: "";
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  bottom: 1px;
+  background: var(--terminal-green);
+  box-shadow: 0 0 6px var(--terminal-green-glow);
+  animation: terminal-loader-bar 2s ease-in-out infinite;
+}
+
+/* ========================================
+   Metric Cards
+   ======================================== */
+
+@keyframes metric-negative-flash {
+  0% { border-color: var(--terminal-red); box-shadow: 0 0 8px var(--terminal-red-glow); }
+  100% { border-color: var(--terminal-green-dim); box-shadow: 0 0 5px var(--terminal-green-glow); }
+}
+
+.metric-card {
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.metric-card:hover {
+  border-color: var(--terminal-green);
+  box-shadow: 0 0 10px var(--terminal-green-glow), 0 0 20px var(--terminal-green-glow),
+    inset 0 0 8px rgba(0, 255, 65, 0.05);
+}
+
+.metric-card-negative {
+  animation: metric-negative-flash 1.5s ease-out forwards;
+}
+
+/* ========================================
+   Position Bars
+   ======================================== */
+
+.position-bar-cell {
+  position: relative;
+}
+
+.position-bar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--terminal-green);
+  opacity: 0.08;
+  pointer-events: none;
+}
+
+.roe-deep-red { color: oklch(0.55 0.22 25); }
+.roe-red { color: var(--terminal-red); }
+.roe-neutral { color: var(--terminal-green-dim); }
+.roe-green { color: var(--terminal-green); }
+.roe-bright-green { color: var(--terminal-green-bright); text-shadow: 0 0 4px var(--terminal-green-glow); }
+
+/* ========================================
+   Status Bar (Footer)
+   ======================================== */
+
+@keyframes status-pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+.status-bar {
+  border-top: 1px solid var(--terminal-green-dim);
+  background: var(--terminal-dark);
+  padding: 0.375rem 0.5rem;
+}
+
+.status-indicator {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  animation: status-pulse 2s ease-in-out infinite;
+}
+
+.status-indicator-active {
+  background: var(--terminal-green);
+  box-shadow: 0 0 4px var(--terminal-green-glow);
+}
+
+/* ========================================
+   Glitch Effect
+   ======================================== */
+
+@keyframes glitch {
+  0% { transform: translate(0); }
+  20% { transform: translate(-2px, 2px); }
+  40% { transform: translate(-2px, -2px); }
+  60% { transform: translate(2px, 2px); }
+  80% { transform: translate(2px, -2px); }
+  100% { transform: translate(0); }
+}
+
+.glitch-hover {
+  position: relative;
+}
+
+.glitch-hover:hover {
+  animation: glitch 0.3s ease-in-out;
+}
+
+.glitch-hover::before,
+.glitch-hover::after {
+  content: attr(data-text);
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+}
+
+.glitch-hover:hover::before {
+  animation: glitch 0.3s ease-in-out;
+  color: var(--terminal-cyan);
+  left: 2px;
+  opacity: 0.8;
+  clip-path: polygon(0 0, 100% 0, 100% 45%, 0 45%);
+}
+
+.glitch-hover:hover::after {
+  animation: glitch 0.3s ease-in-out reverse;
+  color: var(--terminal-red);
+  left: -2px;
+  opacity: 0.8;
+  clip-path: polygon(0 55%, 100% 55%, 100% 100%, 0 100%);
+}
+
+/* ========================================
+   Scan Sweep & Misc Effects
+   ======================================== */
+
+.scan-sweep {
+  position: relative;
+  overflow: hidden;
+}
+
+.scan-sweep::after {
+  content: '';
+  position: absolute;
+  top: -100%;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(to bottom, transparent, rgba(0, 255, 65, 0.1), transparent);
+  transition: top 0.4s ease;
+  pointer-events: none;
+}
+
+.scan-sweep:hover::after {
+  top: 100%;
+}
+
+@keyframes data-stream {
+  0% { background-position: 0% 0%; }
+  100% { background-position: 0% 100%; }
+}
+
+.data-stream-bg {
+  background: linear-gradient(180deg, transparent 0%, rgba(0, 255, 65, 0.03) 50%, transparent 100%);
+  background-size: 100% 200%;
+  animation: data-stream 3s linear infinite;
+}
+
+/* ========================================
+   Scrollbar
+   ======================================== */
+
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}

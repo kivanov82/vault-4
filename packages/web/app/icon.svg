@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Vault 4">
+  <!-- Background -->
+  <rect width="512" height="512" fill="#0a0a0a"/>
+  
+  <!-- Outer glow border -->
+  <rect x="16" y="16" width="480" height="480" fill="none" stroke="#00ff41" stroke-opacity="0.3" stroke-width="8"/>
+  <rect x="24" y="24" width="464" height="464" fill="none" stroke="#00ff41" stroke-opacity="0.6" stroke-width="4"/>
+  
+  <!-- V letter - bold and clear -->
+  <polygon 
+    points="80,100 180,100 256,320 332,100 432,100 310,412 202,412" 
+    fill="#00ff41"
+    filter="url(#glow)"
+  />
+  
+  <!-- 4 number - positioned in bottom right -->
+  <path 
+    d="M340,200 L340,300 L400,300 L400,200 L440,200 L440,340 L400,340 L400,400 L360,400 L360,340 L300,340 L300,300 L340,200 Z" 
+    fill="#00ff41"
+    filter="url(#glow)"
+  />
+  
+  <!-- Glow filter -->
+  <defs>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="8" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+</svg>
