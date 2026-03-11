@@ -136,11 +136,14 @@ REBALANCE_WITHDRAWAL_DELAY_MS=60000
 
 Google Cloud Run. Dockerfile in this package root. Exposes port 8080.
 
+**IMPORTANT:** Cloud Run requires a single-platform `linux/amd64` image. Use `--provenance=false` to avoid OCI index wrapper that Cloud Run rejects.
+
 ```bash
-npm run docker-build
-docker tag vault-4 gcr.io/bright-union/vault-4
-docker push gcr.io/bright-union/vault-4
+docker buildx build --platform=linux/amd64 --provenance=false --output type=docker -t gcr.io/bright-union/vault-4:latest .
+docker push gcr.io/bright-union/vault-4:latest
 ```
+
+Then deploy the new revision via Cloud Console or `gcloud run deploy`.
 
 ## Conventions
 
