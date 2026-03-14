@@ -2,6 +2,7 @@ import express from "express";
 import { Vault4 } from "./service/Vault4";
 import { VaultService } from "./service/vaults/VaultService";
 import { VaultContractService } from "./service/settlement/VaultContractService";
+import { SettlementScheduler } from "./service/settlement/SettlementScheduler";
 import { logger } from "./service/utils/logger";
 
 const app = express();
@@ -118,6 +119,7 @@ app.get("/api/contract", async (req, res) => {
 
 app.listen(port, () => {
     Vault4.init();
+    SettlementScheduler.start();
 });
 
 export default app;
