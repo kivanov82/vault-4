@@ -60,11 +60,20 @@ export function InvestPanel() {
     fund.paused ||
     isProcessing
 
+  // Refetch investor state after approval so needsApproval recalculates
+  useEffect(() => {
+    if (approve.isSuccess) {
+      investor.refetch()
+      approve.reset()
+    }
+  }, [approve.isSuccess])
+
   // Reset on success
   useEffect(() => {
     if (deposit.isSuccess || withdraw.isSuccess || instant.isSuccess) {
       setAmount("")
       fund.refetch()
+      investor.refetch()
     }
   }, [deposit.isSuccess, withdraw.isSuccess, instant.isSuccess])
 

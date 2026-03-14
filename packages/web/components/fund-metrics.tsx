@@ -9,11 +9,12 @@ export function FundMetrics() {
 
   if (!fund.configured) return null
 
+  const tvlTotal = fund.tvl + fund.pendingDepositsUsdc
   const items = [
-    { label: "TVL", value: fund.tvl, format: formatUsd },
-    { label: "SHARE_PRICE", value: fund.sharePrice, format: formatSharePrice },
-    { label: "INSTANT_LIQ", value: fund.instantLiquidity, format: formatUsd },
-    { label: "EPOCH", value: fund.epoch, format: (v: number) => `#${v}` },
+    { label: "TVL", value: tvlTotal, format: formatUsd, sub: fund.pendingDepositsUsdc > 0 ? `+${formatUsd(fund.pendingDepositsUsdc)} pending` : null },
+    { label: "SHARE_PRICE", value: fund.sharePrice, format: formatSharePrice, sub: null },
+    { label: "INSTANT_LIQ", value: fund.instantLiquidity, format: formatUsd, sub: null },
+    { label: "EPOCH", value: fund.epoch, format: (v: number) => `#${v}`, sub: null },
   ]
 
   return (
@@ -36,9 +37,16 @@ export function FundMetrics() {
             {fund.isLoading ? (
               <TerminalSkeletonLine variant="cyan" className="w-16 h-4 mt-1" />
             ) : (
-              <span className="text-sm font-semibold text-[color:var(--terminal-cyan)] mt-0.5 block">
-                {item.format(item.value)}
-              </span>
+              <>
+                <span className="text-sm font-semibold text-[color:var(--terminal-cyan)] mt-0.5 block">
+                  {item.format(item.value)}
+                </span>
+                {item.sub && (
+                  <span className="text-[9px] text-[color:var(--terminal-amber-dim)] block">
+                    {item.sub}
+                  </span>
+                )}
+              </>
             )}
           </div>
         ))}

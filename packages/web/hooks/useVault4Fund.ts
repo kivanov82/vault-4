@@ -68,7 +68,7 @@ export function useFundState() {
 export function useInvestorState() {
   const { address } = useAccount()
 
-  const { data: sharesRaw, isLoading: loadingShares } = useReadContract({
+  const { data: sharesRaw, isLoading: loadingShares, refetch: refetchShares } = useReadContract({
     address: VAULT_ADDRESS!,
     abi: vault4FundAbi,
     functionName: "balanceOf",
@@ -76,7 +76,7 @@ export function useInvestorState() {
     query: { enabled: !!VAULT_ADDRESS && !!address, refetchInterval: 15_000 },
   })
 
-  const { data: usdcBalanceRaw, isLoading: loadingUsdc } = useReadContract({
+  const { data: usdcBalanceRaw, isLoading: loadingUsdc, refetch: refetchUsdc } = useReadContract({
     address: USDC_ADDRESS,
     abi: erc20Abi,
     functionName: "balanceOf",
@@ -84,7 +84,7 @@ export function useInvestorState() {
     query: { enabled: !!address, refetchInterval: 15_000 },
   })
 
-  const { data: allowanceRaw, isLoading: loadingAllowance } = useReadContract({
+  const { data: allowanceRaw, isLoading: loadingAllowance, refetch: refetchAllowance } = useReadContract({
     address: USDC_ADDRESS,
     abi: erc20Abi,
     functionName: "allowance",
@@ -92,8 +92,11 @@ export function useInvestorState() {
     query: { enabled: !!address && !!VAULT_ADDRESS, refetchInterval: 15_000 },
   })
 
+  const refetch = () => { refetchShares(); refetchUsdc(); refetchAllowance() }
+
   return {
     isLoading: loadingShares || loadingUsdc || loadingAllowance,
+    refetch,
     shares: to6Dec(sharesRaw as bigint | undefined),
     usdcBalance: to6Dec(usdcBalanceRaw as bigint | undefined),
     allowance: to6Dec(allowanceRaw as bigint | undefined),
