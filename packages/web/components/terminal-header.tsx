@@ -72,7 +72,7 @@ export function TerminalHeader() {
               }
               const connector = connectors[0]
               if (connector) {
-                connect({ connector })
+                connect({ connector, chainId: hyperliquidChain.id })
               }
             }}
             disabled={isPending}

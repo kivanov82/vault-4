@@ -47,10 +47,10 @@ export function InvestPanel() {
   const canInstant =
     mode === "WITHDRAW" && usdcEquivalent <= fund.instantLiquidity && fund.instantLiquidity > 0
   const isProcessing =
-    approve.isPending || approve.isConfirming ||
-    deposit.isPending || deposit.isConfirming ||
-    withdraw.isPending || withdraw.isConfirming ||
-    instant.isPending || instant.isConfirming
+    approve.isPending || (approve.isConfirming && !approve.error) ||
+    deposit.isPending || (deposit.isConfirming && !deposit.error) ||
+    withdraw.isPending || (withdraw.isConfirming && !withdraw.error) ||
+    instant.isPending || (instant.isConfirming && !instant.error)
 
   const isDisabled =
     parsedAmount <= 0 ||
@@ -72,7 +72,7 @@ export function InvestPanel() {
     if (isDisabled) return
     if (mode === "DEPOSIT") {
       if (needsApproval) {
-        approve.approve()
+        approve.approve(parsedAmount)
       } else {
         deposit.deposit(parsedAmount)
       }

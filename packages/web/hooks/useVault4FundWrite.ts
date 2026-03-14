@@ -5,27 +5,26 @@ import { parseUnits } from "viem"
 import { vault4FundAbi, USDC_ADDRESS, erc20Abi } from "@/lib/vault4fund-abi"
 
 const VAULT_ADDRESS = process.env.NEXT_PUBLIC_VAULT4FUND_ADDRESS as `0x${string}` | undefined
-const MAX_UINT256 = 2n ** 256n - 1n
-
 export function useApproveUsdc() {
-  const { writeContract, data: hash, isPending, error } = useWriteContract()
+  const { writeContract, data: hash, isPending, error, reset } = useWriteContract()
   const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash })
 
-  const approve = () => {
+  const approve = (usdcAmount: number) => {
     if (!VAULT_ADDRESS) return
+    const amount = parseUnits(usdcAmount.toString(), 6)
     writeContract({
       address: USDC_ADDRESS,
       abi: erc20Abi,
       functionName: "approve",
-      args: [VAULT_ADDRESS, MAX_UINT256],
+      args: [VAULT_ADDRESS, amount],
     })
   }
 
-  return { approve, isPending, isConfirming, isSuccess, error }
+  return { approve, isPending, isConfirming, isSuccess, error, reset }
 }
 
 export function useRequestDeposit() {
-  const { writeContract, data: hash, isPending, error } = useWriteContract()
+  const { writeContract, data: hash, isPending, error, reset } = useWriteContract()
   const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash })
 
   const deposit = (usdcAmount: number) => {
@@ -39,11 +38,11 @@ export function useRequestDeposit() {
     })
   }
 
-  return { deposit, isPending, isConfirming, isSuccess, error, hash }
+  return { deposit, isPending, isConfirming, isSuccess, error, hash, reset }
 }
 
 export function useRequestWithdraw() {
-  const { writeContract, data: hash, isPending, error } = useWriteContract()
+  const { writeContract, data: hash, isPending, error, reset } = useWriteContract()
   const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash })
 
   const withdraw = (shareAmount: number) => {
@@ -57,11 +56,11 @@ export function useRequestWithdraw() {
     })
   }
 
-  return { withdraw, isPending, isConfirming, isSuccess, error, hash }
+  return { withdraw, isPending, isConfirming, isSuccess, error, hash, reset }
 }
 
 export function useInstantWithdraw() {
-  const { writeContract, data: hash, isPending, error } = useWriteContract()
+  const { writeContract, data: hash, isPending, error, reset } = useWriteContract()
   const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash })
 
   const instantWithdraw = (shareAmount: number) => {
@@ -75,11 +74,11 @@ export function useInstantWithdraw() {
     })
   }
 
-  return { instantWithdraw, isPending, isConfirming, isSuccess, error, hash }
+  return { instantWithdraw, isPending, isConfirming, isSuccess, error, hash, reset }
 }
 
 export function useCancelDeposit() {
-  const { writeContract, data: hash, isPending, error } = useWriteContract()
+  const { writeContract, data: hash, isPending, error, reset } = useWriteContract()
   const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash })
 
   const cancel = (index: bigint) => {
@@ -92,11 +91,11 @@ export function useCancelDeposit() {
     })
   }
 
-  return { cancel, isPending, isConfirming, isSuccess, error, hash }
+  return { cancel, isPending, isConfirming, isSuccess, error, hash, reset }
 }
 
 export function useCancelWithdraw() {
-  const { writeContract, data: hash, isPending, error } = useWriteContract()
+  const { writeContract, data: hash, isPending, error, reset } = useWriteContract()
   const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash })
 
   const cancel = (index: bigint) => {
@@ -109,5 +108,5 @@ export function useCancelWithdraw() {
     })
   }
 
-  return { cancel, isPending, isConfirming, isSuccess, error, hash }
+  return { cancel, isPending, isConfirming, isSuccess, error, hash, reset }
 }
