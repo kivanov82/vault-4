@@ -7,7 +7,6 @@ import { AccountStats } from "./account-stats"
 import { PnlChart } from "./pnl-chart"
 import { PositionsTable } from "./positions-table"
 import { PerformanceMetrics } from "./performance-metrics"
-import { FundMetrics } from "./fund-metrics"
 import { InvestPanel } from "./invest-panel"
 import { QueueStatus } from "./queue-status"
 import { CyclingTextPanel } from "./cycling-text-panel"
@@ -75,9 +74,6 @@ export function TerminalPortfolio() {
 
           {activeTab === "INVEST" && (
             <div className="space-y-3 terminal-tab-content">
-              <div className="boot-section boot-delay-2">
-                <FundMetrics />
-              </div>
               {isConnected && (
                 <div className="boot-section boot-delay-3">
                   <AccountStats />

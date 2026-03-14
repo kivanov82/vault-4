@@ -1,6 +1,7 @@
 import express from "express";
 import { Vault4 } from "./service/Vault4";
 import { VaultService } from "./service/vaults/VaultService";
+import { VaultContractService } from "./service/settlement/VaultContractService";
 import { logger } from "./service/utils/logger";
 
 const app = express();
@@ -89,6 +90,31 @@ app.get("/api/metrics", async (req, res) => {
     }
 });
 
+
+// Manual settlement trigger (dry-run by default, ?execute=true to run)
+app.post("/api/settle", async (req, res) => {
+    try {
+        const dryRun = String(req.query.execute ?? "false").toLowerCase() !== "true";
+        logger.info("Manual settlement triggered", { dryRun });
+        await VaultContractService.runSettlement({ dryRun });
+        const state = await VaultContractService.getContractState();
+        res.json({ ok: true, dryRun, contractState: state });
+    } catch (error: any) {
+        logger.error("Settlement failed", { message: error?.message });
+        res.status(500).json({ error: error?.message ?? "Settlement failed" });
+    }
+});
+
+// Contract state view
+app.get("/api/contract", async (req, res) => {
+    try {
+        const state = await VaultContractService.getContractState();
+        res.json(state);
+    } catch (error: any) {
+        logger.error("Failed to read contract state", { message: error?.message });
+        res.status(500).json({ error: error?.message ?? "Failed to read contract state" });
+    }
+});
 
 app.listen(port, () => {
     Vault4.init();

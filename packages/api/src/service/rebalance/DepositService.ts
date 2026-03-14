@@ -1,6 +1,7 @@
 import { logger } from "../utils/logger";
 import { HyperliquidConnector } from "../trade/HyperliquidConnector";
 import { VaultService } from "../vaults/VaultService";
+import { VaultContractService } from "../settlement/VaultContractService";
 import type {
     RecommendationSet,
     SuggestedAllocations,
@@ -233,8 +234,29 @@ export class DepositService {
         const lowAllocationNeeded = lowTargetPerVault * filteredLowCount;
         const totalAllocationNeeded = highAllocationNeeded + lowAllocationNeeded;
 
-        // Cap at available balance
-        const availableForDeposit = Math.min(perpsBalanceUsd, totalAllocationNeeded);
+        // Reserve funds for pending contract withdrawals
+        let withdrawReserveUsd = 0;
+        try {
+            const contractState = await VaultContractService.getContractState();
+            if (contractState.pendingWithdraws > 0) {
+                withdrawReserveUsd = contractState.pendingWithdraws * contractState.sharePrice;
+                logger.info("Reserving funds for pending withdrawals", {
+                    pendingWithdrawShares: contractState.pendingWithdraws,
+                    sharePrice: contractState.sharePrice,
+                    withdrawReserveUsd: roundUsd(withdrawReserveUsd),
+                });
+            }
+        } catch (err: any) {
+            logger.warn("Could not read contract state for withdraw reserve", {
+                message: err?.message,
+            });
+        }
+
+        // Cap at available balance minus withdrawal reserve
+        const availableForDeposit = Math.min(
+            Math.max(0, perpsBalanceUsd - withdrawReserveUsd),
+            totalAllocationNeeded
+        );
 
         // Scale down proportionally if we don't have enough balance
         const scaleFactor = totalAllocationNeeded > 0
