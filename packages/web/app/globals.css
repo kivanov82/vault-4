@@ -145,6 +145,17 @@
   }
 }
 
+@keyframes deposit-pulse {
+  0%, 100% {
+    box-shadow: 0 0 6px var(--terminal-green), 0 0 12px var(--terminal-green-glow);
+    opacity: 1;
+  }
+  50% {
+    box-shadow: 0 0 16px var(--terminal-green), 0 0 30px var(--terminal-green-glow);
+    opacity: 0.85;
+  }
+}
+
 .scanline-overlay {
   pointer-events: none;
   position: fixed;

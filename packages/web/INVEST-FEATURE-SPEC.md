@@ -1,82 +1,25 @@
 # Vault-4 Investment Feature — Frontend Integration Spec
 
-## Status: Partially Implemented — Bugs to Fix
+## Status: Core Flow Working — Settlement + Sweep Tested
 
-The hooks, ABI, and components are built. This document lists the **remaining work** to make them production-ready against the deployed contract.
+The hooks, ABI, components, and backend settlement are built. Deposit → settle → sweep flow tested end-to-end.
 
 ## Deployed Contract
 
-- **Address**: `0x9920F224123748eC1a1ADbAd4b941C510EC59948` (HyperEVM mainnet)
-- **Chain ID**: `999` (NOT 1337)
+- **Address**: `0xb6099d4545156f8ACA1A8Ea7CAA0762D81697809` (HyperEVM mainnet)
+- **Chain ID**: `999`
 - **Share Token**: V4FUND — **6 decimals** (same as USDC, no `_decimalsOffset`)
 - **Asset**: USDC `0xb88339CB7199b77E23DB6E890353E22632Ba630f` (6 decimals)
 - **Share Price**: 18-decimal precision (1e18 = 1.00 USDC/share)
-- **Env Var**: `NEXT_PUBLIC_VAULT4FUND_ADDRESS=0x9920F224123748eC1a1ADbAd4b941C510EC59948`
+- **Env Var**: `NEXT_PUBLIC_VAULT4FUND_ADDRESS=0xb6099d4545156f8ACA1A8Ea7CAA0762D81697809`
 
 ---
 
-## CRITICAL BUGS TO FIX
+## FIXED BUGS (for reference)
 
-### 1. Wrong Chain ID in `lib/wagmi.ts`
-
-**File**: `lib/wagmi.ts`
-**Bug**: `id: 1337` → must be `id: 999`
-**Also**: RPC URL should use the official endpoint, native currency is HYPE not USDC.
-
-```ts
-export const hyperliquidChain = defineChain({
-  id: 999,                          // ← was 1337, must be 999
-  name: "Hyperliquid",
-  nativeCurrency: {
-    name: "HYPE",                   // ← was "USDC"
-    symbol: "HYPE",                 // ← was "USDC"
-    decimals: 18,                   // ← was 6
-  },
-  rpcUrls: {
-    default: { http: ["https://rpc.hyperliquid.xyz/evm"] },
-  },
-  blockExplorers: {
-    default: {
-      name: "Hyperliquid Explorer",
-      url: "https://app.hyperliquid.xyz/explorer",
-    },
-  },
-})
-```
-
-### 2. Wrong Share Decimals in `hooks/useVault4Fund.ts`
-
-**File**: `hooks/useVault4Fund.ts`
-**Bug**: `to18Dec()` is used for share values, but V4FUND has **6 decimals** (not 18).
-Share price IS 18 decimals. Everything else (totalSupply, balanceOf, pendingWithdraws) is 6 decimals.
-
-**Fix `useFundState()`:**
-```ts
-totalSupply: toUsdc(results[2] as bigint | undefined),              // ← was to18Dec, use toUsdc (6 dec)
-pendingWithdrawsShares: toUsdc(results[7] as bigint | undefined),   // ← was to18Dec, use toUsdc (6 dec)
-// sharePrice stays to18Dec (it's 18-decimal precision) ✓
-// highWaterMark stays to18Dec (it's 18-decimal precision) ✓
-```
-
-**Fix `useInvestorState()`:**
-```ts
-shares: toUsdc(sharesRaw as bigint | undefined),   // ← was to18Dec, use toUsdc (6 dec)
-```
-
-### 3. Wrong Share Decimals in `hooks/useVault4FundWrite.ts`
-
-**File**: `hooks/useVault4FundWrite.ts`
-**Bug**: `parseUnits(shareAmount.toString(), 18)` → must be `6` for shares.
-
-**Fix `useRequestWithdraw()`:**
-```ts
-const shares = parseUnits(shareAmount.toString(), 6)   // ← was 18
-```
-
-**Fix `useInstantWithdraw()`:**
-```ts
-const shares = parseUnits(shareAmount.toString(), 6)   // ← was 18
-```
+1. ~~Chain ID 1337→999~~ ✓ Fixed
+2. ~~Share decimals 18→6 in hooks~~ ✓ Fixed
+3. ~~Share decimals 18→6 in write hooks~~ ✓ Fixed
 
 ---
 

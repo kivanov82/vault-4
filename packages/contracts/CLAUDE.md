@@ -32,7 +32,7 @@ src/
   lib/
     NAVLib.sol                # Pure math for NAV and performance fee calculations
 test/
-  Vault4Fund.t.sol            # Foundry test suite (42 tests)
+  Vault4Fund.t.sol            # Foundry test suite (44 tests)
   mocks/
     ERC20Mock.sol             # ERC20 mock for testing
 script/
@@ -41,8 +41,10 @@ script/
 
 ## Key Addresses (HyperEVM Mainnet)
 
+- Vault4Fund: `0xb6099d4545156f8ACA1A8Ea7CAA0762D81697809`
 - USDC: `0xb88339CB7199b77E23DB6E890353E22632Ba630f`
-- USDC System Address (EVM↔L1 bridge): `0x2000000000000000000000000000000000000000`
+- USDC System Address: `0x2000000000000000000000000000000000000000` (blacklisted — NOT used)
+- CoreDepositWallet: `0x6B9E773128f453f5c2C60935Ee2DE2CBc5390A24` (EVM→L1 bridge for contracts)
 
 ## Contract Design
 
@@ -63,8 +65,8 @@ script/
 - HWM only ratchets upward
 
 ### Bridge
-- `sweepToL1(amount)`: transfers USDC to system address (EVM→L1)
-- `recordL1Return(amount)`: accounting update when USDC returns from L1
+- `sweepToL1(amount)`: transfers USDC to **manager wallet** (not system address — it's blacklisted). Backend then bridges manager wallet EVM→L1 via `usdClassTransfer(Spot→Perps)`
+- `recordL1Return(amount)`: accounting update when USDC returns from L1 (via `spotSend` from L1 to contract)
 - Sweep is guarded: must leave enough for pending withdrawals
 
 ## Conventions

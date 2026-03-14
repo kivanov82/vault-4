@@ -14,7 +14,7 @@ import {
 
 type Mode = "DEPOSIT" | "WITHDRAW"
 
-const MIN_DEPOSIT = 10
+const MIN_AMOUNT = 10
 
 export function InvestPanel() {
   const { isConnected } = useAccount()
@@ -23,6 +23,7 @@ export function InvestPanel() {
   const [mode, setMode] = useState<Mode>("DEPOSIT")
   const [amount, setAmount] = useState("")
   const [useInstant, setUseInstant] = useState(false)
+  const [justApproved, setJustApproved] = useState(false)
 
   const approve = useApproveUsdc()
   const deposit = useRequestDeposit()
@@ -41,7 +42,8 @@ export function InvestPanel() {
     mode === "WITHDRAW" ? parsedAmount * fund.sharePrice : parsedAmount
 
   // Validation
-  const depositTooLow = mode === "DEPOSIT" && parsedAmount > 0 && parsedAmount < MIN_DEPOSIT
+  const depositTooLow = mode === "DEPOSIT" && parsedAmount > 0 && parsedAmount < MIN_AMOUNT
+  const withdrawTooLow = mode === "WITHDRAW" && parsedAmount > 0 && usdcEquivalent < MIN_AMOUNT
   const insufficientUsdc = mode === "DEPOSIT" && parsedAmount > investor.usdcBalance
   const insufficientShares = mode === "WITHDRAW" && parsedAmount > investor.shares
   const canInstant =
@@ -55,6 +57,7 @@ export function InvestPanel() {
   const isDisabled =
     parsedAmount <= 0 ||
     depositTooLow ||
+    withdrawTooLow ||
     insufficientUsdc ||
     insufficientShares ||
     fund.paused ||
@@ -65,6 +68,9 @@ export function InvestPanel() {
     if (approve.isSuccess) {
       investor.refetch()
       approve.reset()
+      setJustApproved(true)
+      const timer = setTimeout(() => setJustApproved(false), 4000)
+      return () => clearTimeout(timer)
     }
   }, [approve.isSuccess])
 
@@ -107,7 +113,7 @@ export function InvestPanel() {
         {(["DEPOSIT", "WITHDRAW"] as Mode[]).map((m) => (
           <button
             key={m}
-            onClick={() => { setMode(m); setAmount("") }}
+            onClick={() => { setMode(m); setAmount(""); deposit.reset(); withdraw.reset(); instant.reset(); approve.reset() }}
             className={`flex-1 py-2.5 text-xs font-semibold tracking-wider transition-all ${
               mode === m
                 ? "terminal-button bg-primary text-primary-foreground"
@@ -181,7 +187,12 @@ export function InvestPanel() {
       {/* Validation messages */}
       {depositTooLow && (
         <div className="mt-2 text-[10px] text-[color:var(--terminal-amber)]">
-          ! MIN_DEPOSIT: {MIN_DEPOSIT} USDC
+          ! MIN_DEPOSIT: {MIN_AMOUNT} USDC
+        </div>
+      )}
+      {withdrawTooLow && (
+        <div className="mt-2 text-[10px] text-[color:var(--terminal-amber)]">
+          ! MIN_WITHDRAW: {MIN_AMOUNT} USDC ({formatShares(MIN_AMOUNT / fund.sharePrice)} shares)
         </div>
       )}
       {insufficientUsdc && (
@@ -229,7 +240,9 @@ export function InvestPanel() {
         className={`w-full mt-3 py-3 text-xs font-bold tracking-wider transition-all ${
           isDisabled || !isConnected
             ? "terminal-button-locked"
-            : "terminal-button"
+            : justApproved && !needsApproval
+              ? "terminal-button animate-[deposit-pulse_0.8s_ease-in-out_infinite] shadow-[0_0_12px_var(--terminal-green)]"
+              : "terminal-button"
         }`}
       >
         {!isConnected
@@ -239,7 +252,9 @@ export function InvestPanel() {
             : mode === "DEPOSIT"
               ? needsApproval
                 ? "[ APPROVE USDC ]"
-                : "[ DEPOSIT ]"
+                : justApproved
+                  ? "[ ✓ APPROVED — DEPOSIT NOW ]"
+                  : "[ DEPOSIT ]"
               : useInstant && canInstant
                 ? "[ INSTANT WITHDRAW ]"
                 : "[ QUEUE WITHDRAWAL ]"

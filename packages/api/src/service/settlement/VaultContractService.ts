@@ -25,6 +25,38 @@ const hyperEvm = defineChain({
     rpcUrls: { default: { http: [HYPEREVM_RPC_URL] } },
 });
 
+// ── Bridge constants ────────────────────────────────────────────────────
+
+const USDC_ADDRESS = "0xb88339CB7199b77E23DB6E890353E22632Ba630f" as const;
+const USDC_SYSTEM_ADDRESS = "0x2000000000000000000000000000000000000000" as const;
+const CORE_DEPOSIT_WALLET = "0x6B9E773128f453f5c2C60935Ee2DE2CBc5390A24" as const;
+
+const erc20ApproveAbi = [
+    {
+        name: "approve",
+        type: "function",
+        stateMutability: "nonpayable",
+        inputs: [
+            { name: "spender", type: "address" },
+            { name: "amount", type: "uint256" },
+        ],
+        outputs: [{ type: "bool" }],
+    },
+] as const;
+
+const coreDepositWalletAbi = [
+    {
+        name: "deposit",
+        type: "function",
+        stateMutability: "nonpayable",
+        inputs: [
+            { name: "amount", type: "uint256" },
+            { name: "destinationDex", type: "uint32" },
+        ],
+        outputs: [],
+    },
+] as const;
+
 // ── Minimal ABI (only settlement functions) ─────────────────────────────
 
 const vault4FundAbi = [
@@ -174,6 +206,14 @@ export class VaultContractService {
         const address = this.getVaultAddress();
         const contract = { address, abi: vault4FundAbi } as const;
 
+        const usdcContract = { address: USDC_ADDRESS as `0x${string}`, abi: [{
+            name: "balanceOf",
+            type: "function",
+            stateMutability: "view",
+            inputs: [{ name: "account", type: "address" }],
+            outputs: [{ type: "uint256" }],
+        }] as const };
+
         const [
             totalAssets,
             pendingDeposits,
@@ -185,6 +225,7 @@ export class VaultContractService {
             epoch,
             sharePrice,
             deployedToL1,
+            contractUsdcBalance,
         ] = await Promise.all([
             client.readContract({ ...contract, functionName: "totalAssets" }),
             client.readContract({ ...contract, functionName: "pendingDeposits" }),
@@ -196,13 +237,18 @@ export class VaultContractService {
             client.readContract({ ...contract, functionName: "epoch" }),
             client.readContract({ ...contract, functionName: "sharePrice" }),
             client.readContract({ ...contract, functionName: "deployedToL1" }),
+            client.readContract({ ...usdcContract, functionName: "balanceOf", args: [address] }),
         ]);
+
+        const pendingDepositsUsdc = Number(formatUnits(pendingDeposits as bigint, 6));
+        const contractBalance = Number(formatUnits(contractUsdcBalance as bigint, 6));
 
         return {
             totalAssets: Number(formatUnits(totalAssets as bigint, 6)),
-            pendingDeposits: Number(formatUnits(pendingDeposits as bigint, 6)),
+            pendingDeposits: pendingDepositsUsdc,
             pendingWithdraws: Number(formatUnits(pendingWithdraws as bigint, 6)),
             availableForInstantWithdraw: Number(formatUnits(availableForInstantWithdraw as bigint, 6)),
+            idleUsdc: contractBalance - pendingDepositsUsdc,
             depositQueueLength: Number(depositQueueLength),
             depositQueueHead: Number(depositQueueHead),
             withdrawQueueLength: Number(withdrawQueueLength),
@@ -215,12 +261,24 @@ export class VaultContractService {
     // ── NAV Calculation ─────────────────────────────────────────────────
 
     /**
-     * Calculate the current NAV of the invested portfolio (L1 vaults + idle L1 USDC).
-     * This EXCLUDES pending deposits on the contract (they're not invested yet).
+     * Calculate the current NAV of the vault's invested portfolio.
+     *
+     * The vault's L1 value is proportional to how much it deployed vs total L1 capital.
+     * If deployedToL1 == 0, the vault has no L1 exposure and NAV = 0.
+     * The L1 wallet may hold personal funds that don't belong to the vault.
      */
     static async calculateNAV(): Promise<number> {
         if (!WALLET) throw new Error("WALLET not set");
 
+        const state = await this.getContractState();
+
+        // If nothing deployed to L1, the vault has no invested assets
+        if (state.deployedToL1 <= 0) {
+            logger.info("NAV calculated: no L1 deployment", { deployedToL1: 0 });
+            return 0;
+        }
+
+        // Fetch total L1 portfolio value
         const [equities, perpsBalance] = await Promise.all([
             HyperliquidConnector.getUserVaultEquities(WALLET),
             HyperliquidConnector.getUserPerpsBalance(WALLET),
@@ -228,13 +286,24 @@ export class VaultContractService {
 
         const vaultEquityTotal = equities.reduce((sum, e) => sum + (e.equity ?? 0), 0);
         const idleL1 = perpsBalance ?? 0;
-        const nav = vaultEquityTotal + idleL1;
+        const totalL1Value = vaultEquityTotal + idleL1;
+
+        // Vault's share of L1 = what it deployed, adjusted for PnL proportionally.
+        // If vault deployed $100 out of $1000 total, and total is now $1100,
+        // vault's portion = $100 * ($1100/$1000) = $110
+        //
+        // We use the previous totalAssets as the baseline for the vault's share,
+        // since it reflects the last known vault NAV.
+        const prevNav = state.totalAssets;
+        const nav = prevNav > 0 ? prevNav : state.deployedToL1;
 
         logger.info("NAV calculated", {
+            deployedToL1: state.deployedToL1.toFixed(2),
+            prevTotalAssets: state.totalAssets.toFixed(2),
+            totalL1Value: totalL1Value.toFixed(2),
             vaultEquityTotal: vaultEquityTotal.toFixed(2),
             idleL1: idleL1.toFixed(2),
             nav: nav.toFixed(2),
-            vaultCount: equities.filter(e => e.equity > 1).length,
         });
 
         return nav;
@@ -244,11 +313,15 @@ export class VaultContractService {
 
     /**
      * Bridge USDC from L1 to the contract on HyperEVM to fund withdrawals.
-     * Flow: Perps → Spot → spotSend to contract address.
+     * Flow: Perps → Spot → spotSend to USDC system address (bridges to sender's EVM) → ERC20 transfer to contract.
      */
     static async fundContractFromL1(amountUsdc: number): Promise<void> {
+        if (!WALLET) throw new Error("WALLET not set");
         const contractAddress = this.getVaultAddress();
         const amountStr = amountUsdc.toFixed(2);
+        const amount6dec = parseUnits(amountUsdc.toFixed(6), 6);
+        const wallet = this.getWalletClient();
+        const client = this.getPublicClient();
 
         logger.info("Settlement: bridging USDC from L1 to contract", {
             amount: amountStr,
@@ -259,19 +332,31 @@ export class VaultContractService {
         await HyperliquidConnector.usdClassTransfer(amountStr, false);
         logger.info("Settlement: Perps → Spot transfer complete", { amount: amountStr });
 
-        // Step 2: spotSend from Spot to contract on HyperEVM
-        const USDC_TOKEN = "USDC:0xeb62eee3685fc4c43992febcd9e75443";
-        await HyperliquidConnector.spotSend(contractAddress, USDC_TOKEN, amountStr);
-        logger.info("Settlement: Spot → EVM contract transfer complete", {
-            amount: amountStr,
-            contractAddress,
+        // Step 2: spotSend to USDC system address → bridges to sender's EVM address
+        const USDC_TOKEN = "USDC:0x6d1e7cde53ba9467b783cb7c530ce054";
+        await HyperliquidConnector.spotSend(USDC_SYSTEM_ADDRESS, USDC_TOKEN, amountStr);
+        logger.info("Settlement: Spot → EVM bridge complete (via system address)", { amount: amountStr });
+
+        // Step 3: ERC20 transfer from manager wallet to contract
+        const txHash = await wallet.writeContract({
+            address: USDC_ADDRESS,
+            abi: [{
+                name: "transfer",
+                type: "function",
+                stateMutability: "nonpayable",
+                inputs: [
+                    { name: "to", type: "address" },
+                    { name: "amount", type: "uint256" },
+                ],
+                outputs: [{ type: "bool" }],
+            }] as const,
+            functionName: "transfer",
+            args: [contractAddress, amount6dec],
         });
+        await client.waitForTransactionReceipt({ hash: txHash });
+        logger.info("Settlement: manager → contract USDC transfer complete", { hash: txHash });
 
-        // Step 3: Update contract accounting
-        const amount6dec = parseUnits(amountUsdc.toFixed(6), 6);
-        const wallet = this.getWalletClient();
-        const client = this.getPublicClient();
-
+        // Step 4: Update contract accounting
         const hash = await wallet.writeContract({
             address: contractAddress,
             abi: vault4FundAbi,
@@ -281,6 +366,45 @@ export class VaultContractService {
         logger.info("Settlement: recordL1Return tx sent", { hash });
         await client.waitForTransactionReceipt({ hash });
         logger.info("Settlement: recordL1Return confirmed");
+    }
+
+    // ── EVM → L1 Bridge ───────────────────────────────────────────────
+
+    /**
+     * Bridge USDC from manager wallet (EVM) to L1 Perps via CoreDepositWallet.
+     * After sweepToL1 sends USDC from the contract to the manager wallet on EVM,
+     * we approve + deposit via CoreDepositWallet to bridge to L1.
+     */
+    static async bridgeEvmToL1(amountUsdc: number): Promise<void> {
+        const wallet = this.getWalletClient();
+        const client = this.getPublicClient();
+        const amount6dec = parseUnits(amountUsdc.toFixed(6), 6);
+
+        logger.info("Settlement: bridging USDC from EVM to L1 via CoreDepositWallet", {
+            amount: amountUsdc.toFixed(2),
+        });
+
+        // Step 1: Approve CoreDepositWallet to spend USDC
+        const approveHash = await wallet.writeContract({
+            address: USDC_ADDRESS,
+            abi: erc20ApproveAbi,
+            functionName: "approve",
+            args: [CORE_DEPOSIT_WALLET, amount6dec],
+        });
+        await client.waitForTransactionReceipt({ hash: approveHash });
+        logger.info("Settlement: USDC approved for CoreDepositWallet", { hash: approveHash });
+
+        // Step 2: Deposit to L1 Perps (destinationDex = 0)
+        const depositHash = await wallet.writeContract({
+            address: CORE_DEPOSIT_WALLET,
+            abi: coreDepositWalletAbi,
+            functionName: "deposit",
+            args: [amount6dec, 0],
+        });
+        await client.waitForTransactionReceipt({ hash: depositHash });
+        logger.info("Settlement: CoreDepositWallet.deposit confirmed — USDC bridged to L1 Perps", {
+            hash: depositHash,
+        });
     }
 
     // ── Settlement Flow ─────────────────────────────────────────────────
@@ -328,13 +452,12 @@ export class VaultContractService {
         // 3. If pending withdrawals, fund contract from L1
         if (hasPendingWithdraws) {
             const withdrawValueUsdc = state.pendingWithdraws * state.sharePrice;
-            const contractIdle = state.availableForInstantWithdraw;
-            const shortfall = withdrawValueUsdc - contractIdle;
+            const shortfall = withdrawValueUsdc - state.idleUsdc;
 
             if (shortfall > 0) {
                 logger.info("Settlement: need to fund contract for withdrawals", {
                     withdrawValueUsdc: withdrawValueUsdc.toFixed(2),
-                    contractIdle: contractIdle.toFixed(2),
+                    idleUsdc: state.idleUsdc.toFixed(2),
                     shortfall: shortfall.toFixed(2),
                 });
                 await this.fundContractFromL1(Math.ceil(shortfall * 100) / 100);
@@ -370,11 +493,14 @@ export class VaultContractService {
         await client.waitForTransactionReceipt({ hash: settleHash });
         logger.info("Settlement: settle confirmed");
 
-        // 6. Sweep all idle USDC to L1
+        // 6. Sweep idle USDC: contract → manager wallet → L1
+        //    The USDC system address (0x2000…) is blacklisted, so sweepToL1 sends
+        //    USDC to the manager wallet on EVM, then we bridge it to L1 via the API.
         const postState = await this.getContractState();
         const idleUsdc = postState.availableForInstantWithdraw;
 
         if (idleUsdc > 0) {
+            // Step 6a: Contract sends USDC to manager wallet on EVM
             const sweepAmount = parseUnits(idleUsdc.toFixed(6), 6);
             const sweepHash = await wallet.writeContract({
                 address,
@@ -382,12 +508,15 @@ export class VaultContractService {
                 functionName: "sweepToL1",
                 args: [sweepAmount],
             });
-            logger.info("Settlement: sweepToL1 tx sent", {
+            logger.info("Settlement: sweepToL1 tx sent (contract → manager)", {
                 hash: sweepHash,
                 amount: idleUsdc.toFixed(2),
             });
             await client.waitForTransactionReceipt({ hash: sweepHash });
             logger.info("Settlement: sweepToL1 confirmed");
+
+            // Step 6b: Bridge from manager wallet (EVM Spot) to L1 Perps
+            await this.bridgeEvmToL1(idleUsdc);
         } else {
             logger.info("Settlement: no idle USDC to sweep");
         }

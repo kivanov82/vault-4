@@ -4,6 +4,7 @@ import { useEffect, useState } from "react"
 import { useAccount } from "wagmi"
 import { TerminalHeader } from "./terminal-header"
 import { AccountStats } from "./account-stats"
+import { FundOverview } from "./fund-overview"
 import { PnlChart } from "./pnl-chart"
 import { PositionsTable } from "./positions-table"
 import { PerformanceMetrics } from "./performance-metrics"
@@ -74,11 +75,9 @@ export function TerminalPortfolio() {
 
           {activeTab === "INVEST" && (
             <div className="space-y-3 terminal-tab-content">
-              {isConnected && (
-                <div className="boot-section boot-delay-3">
-                  <AccountStats />
-                </div>
-              )}
+              <div className="boot-section boot-delay-3">
+                <FundOverview />
+              </div>
               <div className="boot-section boot-delay-4">
                 <InvestPanel />
               </div>

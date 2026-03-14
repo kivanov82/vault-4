@@ -23,7 +23,7 @@ contract Vault4Fund is ERC4626, Pausable, ReentrancyGuard, IVault4Fund {
     uint256 public constant PERFORMANCE_FEE_BPS = 1000; // 10%
     uint256 public constant MAX_NAV_AGE = 1 hours; // NAV must be fresh for settlement
 
-    /// @dev USDC system address on HyperEVM — ERC20 transfer here bridges to L1
+    /// @dev USDC system address on HyperEVM (blacklisted — not used for bridging)
     address public constant USDC_SYSTEM_ADDRESS =
         0x2000000000000000000000000000000000000000;
 
@@ -278,8 +278,11 @@ contract Vault4Fund is ERC4626, Pausable, ReentrancyGuard, IVault4Fund {
         emit Settled(epoch, _totalAssets, depositsProcessed, withdrawsProcessed);
     }
 
-    /// @notice Transfer USDC from contract to L1 via system address bridge
-    /// @param amount USDC amount to bridge (must leave enough for pending withdrawals)
+    /// @notice Transfer USDC from contract to manager for bridging to L1
+    /// @dev Manager receives USDC on EVM, then bridges to L1 via Hyperliquid API.
+    ///      Direct bridging from contract would send to the contract's L1 address
+    ///      (not the manager's trading account), so we use this two-step approach.
+    /// @param amount USDC amount to sweep (must leave enough for pending withdrawals)
     function sweepToL1(uint256 amount) external onlyManager {
         require(amount > 0, "Vault4: zero amount");
 
@@ -292,7 +295,7 @@ contract Vault4Fund is ERC4626, Pausable, ReentrancyGuard, IVault4Fund {
         );
 
         deployedToL1 += amount;
-        IERC20(asset()).safeTransfer(USDC_SYSTEM_ADDRESS, amount);
+        IERC20(asset()).safeTransfer(manager, amount);
 
         emit SweptToL1(amount, deployedToL1);
     }
