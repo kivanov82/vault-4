@@ -4,8 +4,7 @@ import {
     http,
     parseUnits,
     formatUnits,
-    type PublicClient,
-    type WalletClient,
+    defineChain,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { logger } from "../utils/logger";
@@ -19,12 +18,12 @@ const WALLET_PK = process.env.WALLET_PK as `0x${string}` | undefined;
 const WALLET = process.env.WALLET as `0x${string}` | undefined;
 
 // HyperEVM chain definition
-const hyperEvm = {
+const hyperEvm = defineChain({
     id: 999,
     name: "HyperEVM",
     nativeCurrency: { name: "HYPE", symbol: "HYPE", decimals: 18 },
     rpcUrls: { default: { http: [HYPEREVM_RPC_URL] } },
-} as const;
+});
 
 // ── Minimal ABI (only settlement functions) ─────────────────────────────
 
@@ -137,10 +136,10 @@ const vault4FundAbi = [
 // ── Service ─────────────────────────────────────────────────────────────
 
 export class VaultContractService {
-    private static publicClient: PublicClient | null = null;
-    private static walletClient: WalletClient | null = null;
+    private static publicClient: any = null;
+    private static walletClient: any = null;
 
-    private static getPublicClient(): PublicClient {
+    private static getPublicClient() {
         if (!this.publicClient) {
             this.publicClient = createPublicClient({
                 chain: hyperEvm,
@@ -150,7 +149,7 @@ export class VaultContractService {
         return this.publicClient;
     }
 
-    private static getWalletClient(): WalletClient {
+    private static getWalletClient() {
         if (!this.walletClient) {
             if (!WALLET_PK) throw new Error("WALLET_PK not set");
             const account = privateKeyToAccount(WALLET_PK);
