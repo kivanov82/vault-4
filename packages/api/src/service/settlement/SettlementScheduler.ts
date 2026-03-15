@@ -1,6 +1,9 @@
 import { logger } from "../utils/logger";
 import { VaultContractService } from "./VaultContractService";
 
+const MAX_RETRIES = 3;
+const RETRY_DELAY_MS = 60_000; // 1 minute between retries
+
 /**
  * Daily settlement at 3PM CET (14:00 UTC winter / 13:00 UTC summer).
  * Runs: updateTotalAssets → settle → sweepToL1
@@ -49,9 +52,28 @@ export class SettlementScheduler {
         });
 
         this.timeoutHandle = setTimeout(async () => {
-            await this.runOnce();
+            await this.runWithRetries();
             this.scheduleNext();
         }, delayMs);
+    }
+
+    private static async runWithRetries(): Promise<void> {
+        for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+            try {
+                await this.runOnce();
+                return; // success
+            } catch (error: any) {
+                logger.warn("Settlement attempt failed", {
+                    attempt,
+                    maxRetries: MAX_RETRIES,
+                    message: error?.message,
+                });
+                if (attempt < MAX_RETRIES) {
+                    await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+                }
+            }
+        }
+        logger.error("Settlement failed after all retries", { maxRetries: MAX_RETRIES });
     }
 
     static async runOnce(): Promise<void> {
@@ -62,8 +84,6 @@ export class SettlementScheduler {
         this.running = true;
         try {
             await VaultContractService.runSettlement({ dryRun: false });
-        } catch (error: any) {
-            logger.warn("Settlement round failed", { message: error?.message });
         } finally {
             this.running = false;
         }

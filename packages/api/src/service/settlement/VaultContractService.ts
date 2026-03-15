@@ -175,7 +175,7 @@ export class VaultContractService {
         if (!this.publicClient) {
             this.publicClient = createPublicClient({
                 chain: hyperEvm,
-                transport: http(HYPEREVM_RPC_URL),
+                transport: http(HYPEREVM_RPC_URL, { timeout: 30_000 }),
             });
         }
         return this.publicClient;
@@ -188,7 +188,7 @@ export class VaultContractService {
             this.walletClient = createWalletClient({
                 account,
                 chain: hyperEvm,
-                transport: http(HYPEREVM_RPC_URL),
+                transport: http(HYPEREVM_RPC_URL, { timeout: 30_000 }),
             });
         }
         return this.walletClient;
