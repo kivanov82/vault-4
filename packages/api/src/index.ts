@@ -92,6 +92,49 @@ app.get("/api/metrics", async (req, res) => {
 });
 
 
+// Public strategy endpoint — current allocations and fund state
+app.get("/api/strategy", async (req, res) => {
+    try {
+        const [positions, contractState] = await Promise.all([
+            VaultService.getPlatformPositions(),
+            VaultContractService.getContractState(),
+        ]);
+
+        const allocations = positions.positions
+            .filter((p) => (p.amountUsd ?? 0) > 1) // filter dust
+            .sort((a, b) => (b.amountUsd ?? 0) - (a.amountUsd ?? 0))
+            .map((p) => ({
+                vault: p.vaultName ?? p.vaultAddress,
+                allocationUsd: p.amountUsd,
+                allocationPct: p.sizePct,
+                pnlUsd: p.pnlUsd,
+                roePct: p.roePct,
+            }));
+
+        res.json({
+            fund: {
+                name: "VAULT-4",
+                contract: process.env.VAULT4FUND_ADDRESS,
+                chain: "HyperEVM (999)",
+                shareToken: "V4FUND",
+                epoch: contractState.epoch,
+                sharePrice: contractState.sharePrice,
+                tvlUsd: contractState.totalAssets,
+                deployedToL1: contractState.deployedToL1,
+                pendingDepositsUsd: contractState.pendingDeposits,
+                pendingWithdrawsShares: contractState.pendingWithdraws,
+                settlementSchedule: "Daily 14:00 UTC (3PM CET)",
+            },
+            allocations,
+            activeVaults: allocations.length,
+            updatedAt: new Date().toISOString(),
+        });
+    } catch (error: any) {
+        logger.error("Failed to build strategy response", { message: error?.message });
+        res.status(500).json({ error: "Failed to fetch strategy data" });
+    }
+});
+
 // Manual settlement trigger (dry-run by default, ?execute=true to run)
 app.post("/api/settle", async (req, res) => {
     try {
