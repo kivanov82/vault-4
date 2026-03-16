@@ -9,6 +9,7 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import { logger } from "../utils/logger";
 import { HyperliquidConnector } from "../trade/HyperliquidConnector";
+import { XPostService } from "../social/XPostService";
 
 // ── Config ──────────────────────────────────────────────────────────────
 
@@ -521,13 +522,22 @@ export class VaultContractService {
             logger.info("Settlement: no idle USDC to sweep");
         }
 
-        // 7. Log final state
+        // 7. Log final state + post to X
         const finalState = await this.getContractState();
         logger.info("Settlement: complete", {
             epoch: finalState.epoch,
             totalAssets: finalState.totalAssets.toFixed(2),
             sharePrice: finalState.sharePrice.toFixed(6),
             deployedToL1: finalState.deployedToL1.toFixed(2),
+        });
+
+        await XPostService.postSettlementUpdate({
+            epoch: finalState.epoch,
+            totalAssets: finalState.totalAssets,
+            sharePrice: finalState.sharePrice,
+            deployedToL1: finalState.deployedToL1,
+            depositsProcessed: Number(maxDeposits),
+            withdrawsProcessed: Number(maxWithdraws),
         });
     }
 }
