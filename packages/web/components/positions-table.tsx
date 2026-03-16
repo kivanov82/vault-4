@@ -187,7 +187,7 @@ export function PositionsTable() {
   return (
     <div className="terminal-border p-3">
       <div className="flex items-center justify-between mb-3">
-        <BlinkingLabel text="TRADE_DATA" prefix="::" />
+        <BlinkingLabel text="TRADE_DATA" prefix="::" as="h2" />
         <div className="flex gap-1">
           {tabs.map((tab) => (
             <button

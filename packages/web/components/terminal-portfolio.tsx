@@ -39,11 +39,13 @@ export function TerminalPortfolio() {
         </div>
 
         {/* Tab navigation */}
-        <div className="boot-section boot-delay-1 mt-4">
-          <div className="flex gap-1 terminal-border p-1">
+        <nav aria-label="Main navigation" className="boot-section boot-delay-1 mt-4">
+          <div className="flex gap-1 terminal-border p-1" role="tablist">
             {(["DASHBOARD", "INVEST"] as Tab[]).map((tab) => (
               <button
                 key={tab}
+                role="tab"
+                aria-selected={activeTab === tab}
                 onClick={() => setActiveTab(tab)}
                 className={`flex-1 py-2 text-xs font-semibold tracking-wider transition-all ${
                   activeTab === tab
@@ -55,35 +57,35 @@ export function TerminalPortfolio() {
               </button>
             ))}
           </div>
-        </div>
+        </nav>
 
         {/* Tab content */}
         <div className="space-y-3 mt-3">
           {activeTab === "DASHBOARD" && (
-            <div className="space-y-3 terminal-tab-content">
-              <div className="boot-section boot-delay-2">
+            <div className="space-y-3 terminal-tab-content" role="tabpanel" aria-label="Dashboard">
+              <section className="boot-section boot-delay-2" aria-label="Performance metrics">
                 <PerformanceMetrics />
-              </div>
-              <div className="boot-section boot-delay-3">
+              </section>
+              <section className="boot-section boot-delay-3" aria-label="PnL chart">
                 <PnlChart />
-              </div>
-              <div className="boot-section boot-delay-4">
+              </section>
+              <section className="boot-section boot-delay-4" aria-label="Vault positions">
                 <PositionsTable />
-              </div>
+              </section>
             </div>
           )}
 
           {activeTab === "INVEST" && (
-            <div className="space-y-3 terminal-tab-content">
-              <div className="boot-section boot-delay-3">
+            <div className="space-y-3 terminal-tab-content" role="tabpanel" aria-label="Invest">
+              <section className="boot-section boot-delay-3" aria-label="Fund overview">
                 <FundOverview />
-              </div>
-              <div className="boot-section boot-delay-4">
+              </section>
+              <section className="boot-section boot-delay-4" aria-label="Deposit and withdraw">
                 <InvestPanel />
-              </div>
-              <div className="boot-section boot-delay-5">
+              </section>
+              <section className="boot-section boot-delay-5" aria-label="Queue status">
                 <QueueStatus />
-              </div>
+              </section>
             </div>
           )}
 

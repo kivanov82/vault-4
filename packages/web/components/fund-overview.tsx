@@ -17,7 +17,7 @@ export function FundOverview() {
 
   return (
     <div className="terminal-border-cyan p-3">
-      <BlinkingLabel text="VAULT-4 FUND" prefix="//" color="cyan" />
+      <BlinkingLabel text="VAULT-4 FUND" prefix="//" color="cyan" as="h2" />
 
       <div className="mt-3 space-y-3">
         {/* Your position (only when connected and has shares) */}

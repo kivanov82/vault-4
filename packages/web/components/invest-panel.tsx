@@ -106,7 +106,7 @@ export function InvestPanel() {
 
   return (
     <div className="terminal-border-hero p-3">
-      <BlinkingLabel text="INVEST" prefix=">>" />
+      <BlinkingLabel text="INVEST" prefix=">>" as="h2" />
 
       {/* Mode tabs */}
       <div className="flex gap-1 mt-3">

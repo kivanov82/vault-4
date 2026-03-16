@@ -115,7 +115,7 @@ export function PerformanceMetrics() {
 
   return (
     <div className="terminal-border p-3">
-      <BlinkingLabel text="PERFORMANCE_METRICS" prefix="$" color="cyan" />
+      <BlinkingLabel text="PERFORMANCE_METRICS" prefix="$" color="cyan" as="h2" />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-3">
         {items.map((metric) => (

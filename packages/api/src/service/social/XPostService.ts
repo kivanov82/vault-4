@@ -1,6 +1,7 @@
 import { TwitterApi } from "twitter-api-v2";
 import Anthropic from "@anthropic-ai/sdk";
 import { logger } from "../utils/logger";
+import { MarketDataService, MarketOverlay } from "../claude/MarketDataService";
 
 const X_API_KEY = process.env.X_API_KEY;
 const X_API_SECRET = process.env.X_API_SECRET;
@@ -29,6 +30,7 @@ const CONTENT_TYPES = [
     "educational_ai_agents",
     "performance_update",
     "how_it_works",
+    "market_commentary",
 ] as const;
 
 const TWEET_PROMPT = `You are the social media voice for VAULT-4, an AI-managed DeFi vault on Hyperliquid.
@@ -49,6 +51,10 @@ Content type guidelines:
 - educational_ai_agents: Talk about AI agents in DeFi — ERC-8004 trust layer, x402 payments, autonomous portfolio management. Position VAULT-4 as an example.
 - performance_update: Only if share price increased. Focus on the result, not just numbers. Compare to holding idle USDC.
 - how_it_works: Explain one specific mechanic: the queue system, instant withdrawals, sweep-to-L1, NAV calculation, performance fees, etc.
+- market_commentary: React to the current market conditions provided below. Connect market movement (BTC trend, fear/greed, funding rates, OI shifts) to what it means for vault allocation. Be specific — cite actual numbers. Show that the AI is reading the market, not just managing a portfolio.
+
+Current market data:
+{MARKET_DATA}
 
 Rules:
 - Max 260 characters (leave room for link)
@@ -114,12 +120,19 @@ export class XPostService {
     private static async generateTweet(context: SettlementContext): Promise<string | null> {
         const ai = this.getAIClient();
         if (!ai) {
-            // Fallback: simple stats tweet
             return this.fallbackTweet(context);
         }
 
         // Rotate content type
         const contentType = this.pickContentType(context);
+
+        // Fetch live market data for context-aware posts
+        let marketData: MarketOverlay | null = null;
+        try {
+            marketData = await MarketDataService.getMarketOverlay();
+        } catch (error: any) {
+            logger.warn("Market data fetch failed for tweet", { message: error?.message });
+        }
 
         const contextStr = JSON.stringify(
             {
@@ -144,10 +157,27 @@ export class XPostService {
             2
         );
 
-        const prompt = TWEET_PROMPT.replace("{CONTEXT}", contextStr).replace(
-            "{CONTENT_TYPE}",
-            contentType
-        );
+        const marketDataStr = marketData
+            ? JSON.stringify(
+                  {
+                      btc_24h: marketData.btc_24h_change != null ? `${marketData.btc_24h_change.toFixed(2)}%` : "N/A",
+                      btc_7d: marketData.btc_7d_change != null ? `${marketData.btc_7d_change.toFixed(2)}%` : "N/A",
+                      eth_24h: marketData.eth_24h_change != null ? `${marketData.eth_24h_change.toFixed(2)}%` : "N/A",
+                      trend: marketData.trend,
+                      fearGreed: marketData.fearGreed,
+                      funding_btc: marketData.funding_btc,
+                      funding_eth: marketData.funding_eth,
+                      long_short_ratio: marketData.long_short_ratio != null ? marketData.long_short_ratio.toFixed(2) : "N/A",
+                      btc_oi: marketData.btc_oi_change_24h,
+                  },
+                  null,
+                  2
+              )
+            : "Market data unavailable";
+
+        const prompt = TWEET_PROMPT.replace("{CONTEXT}", contextStr)
+            .replace("{CONTENT_TYPE}", contentType)
+            .replace("{MARKET_DATA}", marketDataStr);
 
         try {
             const response = await ai.messages.create({

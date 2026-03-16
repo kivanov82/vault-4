@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { logger } from "../utils/logger";
+import { MarketDataService } from "../claude/MarketDataService";
 
 const TOPICS: Record<string, string> = {
     ai_trading: `Write an educational article about AI-powered automated trading in DeFi.
@@ -80,6 +81,19 @@ export class ArticleService {
         return this.client;
     }
 
+    private static async getMarketContext(): Promise<string> {
+        try {
+            const m = await MarketDataService.getMarketOverlay();
+            return `Current market snapshot (use sparingly for color, don't build the article around it):
+BTC 24h: ${m.btc_24h_change?.toFixed(2) ?? "N/A"}%, 7d: ${m.btc_7d_change?.toFixed(2) ?? "N/A"}%
+ETH 24h: ${m.eth_24h_change?.toFixed(2) ?? "N/A"}%
+Trend: ${m.trend}, Fear/Greed: ${m.fearGreed ?? "N/A"}
+BTC funding: ${m.funding_btc ?? "N/A"}, ETH funding: ${m.funding_eth ?? "N/A"}`;
+        } catch {
+            return "";
+        }
+    }
+
     static getAvailableTopics(): string[] {
         return Object.keys(TOPICS);
     }
@@ -99,7 +113,7 @@ export class ArticleService {
                 messages: [
                     {
                         role: "user",
-                        content: `${topicPrompt}\n\nRespond with the article in this format:\nTITLE: <article title>\n\n<article body in markdown>`,
+                        content: `${topicPrompt}\n\n${await this.getMarketContext()}\nRespond with the article in this format:\nTITLE: <article title>\n\n<article body in markdown>`,
                     },
                 ],
             });

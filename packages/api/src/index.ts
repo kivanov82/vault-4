@@ -219,12 +219,16 @@ app.get("/api/draft-article", async (req, res) => {
             res.json({ topics: ArticleService.getAvailableTopics() });
             return;
         }
-        const article = await ArticleService.generateArticle(topic);
-        if (!article) {
+        if (!ArticleService.getAvailableTopics().includes(topic)) {
             res.status(400).json({
                 error: `Unknown topic: ${topic}`,
                 available: ArticleService.getAvailableTopics(),
             });
+            return;
+        }
+        const article = await ArticleService.generateArticle(topic);
+        if (!article) {
+            res.status(500).json({ error: "Article generation failed — check API key" });
             return;
         }
         res.json(article);

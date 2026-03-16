@@ -199,7 +199,7 @@ export function PnlChart() {
       </div>
 
       <div className="mb-2 flex items-center gap-2">
-        <BlinkingLabel text={chartMode === "PNL" ? "PNL_CHART" : "ACCOUNT_VALUE_CHART"} prefix="#" />
+        <BlinkingLabel text={chartMode === "PNL" ? "PNL_CHART" : "ACCOUNT_VALUE_CHART"} prefix="#" as="h2" />
         <span className="signal-dot" />
         <span className="text-[10px] text-muted-foreground signal-text">LIVE</span>
       </div>
