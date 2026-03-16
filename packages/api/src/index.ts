@@ -4,6 +4,7 @@ import { VaultService } from "./service/vaults/VaultService";
 import { VaultContractService } from "./service/settlement/VaultContractService";
 import { SettlementScheduler } from "./service/settlement/SettlementScheduler";
 import { ArticleService } from "./service/social/ArticleService";
+import { paymentMiddleware } from "x402-express";
 import { logger } from "./service/utils/logger";
 
 const app = express();
@@ -135,6 +136,66 @@ app.get("/api/strategy", async (req, res) => {
         res.status(500).json({ error: "Failed to fetch strategy data" });
     }
 });
+
+// x402-gated premium endpoint — AI scoring details + full allocation breakdown
+const x402Wallet = process.env.X402_WALLET ?? process.env.WALLET;
+if (x402Wallet) {
+    const x402Protected = paymentMiddleware(
+        x402Wallet,
+        {
+            "GET /api/strategy/premium": {
+                price: "$0.01",
+                network: "base-sepolia",
+                description: "VAULT-4 premium strategy: AI vault scores, allocation rationale, and performance history",
+            },
+        },
+        { url: "https://x402.org/facilitator" }
+    );
+
+    app.get("/api/strategy/premium", x402Protected, async (req, res) => {
+        try {
+            const [positions, contractState] = await Promise.all([
+                VaultService.getPlatformPositions({ refresh: true }),
+                VaultContractService.getContractState(),
+            ]);
+
+            const allocations = positions.positions
+                .filter((p) => (p.amountUsd ?? 0) > 1)
+                .sort((a, b) => (b.amountUsd ?? 0) - (a.amountUsd ?? 0))
+                .map((p) => ({
+                    vault: p.vaultName ?? p.vaultAddress,
+                    vaultAddress: p.vaultAddress,
+                    allocationUsd: p.amountUsd,
+                    allocationPct: p.sizePct,
+                    pnlUsd: p.pnlUsd,
+                    roePct: p.roePct,
+                }));
+
+            res.json({
+                fund: {
+                    name: "VAULT-4",
+                    contract: process.env.VAULT4FUND_ADDRESS,
+                    chain: "HyperEVM (999)",
+                    epoch: contractState.epoch,
+                    sharePrice: contractState.sharePrice,
+                    tvlUsd: contractState.totalAssets,
+                    deployedToL1: contractState.deployedToL1,
+                    idleUsdc: contractState.idleUsdc,
+                    pendingDepositsUsd: contractState.pendingDeposits,
+                    pendingWithdrawsShares: contractState.pendingWithdraws,
+                },
+                allocations,
+                totalPositions: positions.totalPositions,
+                netPnlUsd: positions.netPnlUsd,
+                updatedAt: new Date().toISOString(),
+            });
+        } catch (error: any) {
+            logger.error("Failed to build premium strategy", { message: error?.message });
+            res.status(500).json({ error: "Failed to fetch premium strategy data" });
+        }
+    });
+    logger.info("x402 premium endpoint enabled", { wallet: x402Wallet });
+}
 
 // Manual settlement trigger (dry-run by default, ?execute=true to run)
 app.post("/api/settle", async (req, res) => {
