@@ -54,8 +54,10 @@ Rules:
 - Max 260 characters (leave room for link)
 - One tweet only, no threads
 - End with "vault-4.xyz" on its own line
-- No "Just", no "Did you know", no "Here's why"
+- Sound like a real person, not a bot. Vary rhythm. Be direct.
+- NO: "Just", "Did you know", "Here's why", "Excited to", "Thrilled to", "Game-changer", "Revolutionizing", "Cutting-edge", "Dive in", emojis, hashtags
 - Be specific, reference actual data when possible
+- Have an opinion or a surprising angle. Don't be generic.
 - If performance is flat or negative, do NOT post about performance — pick a different angle`;
 
 export class XPostService {
