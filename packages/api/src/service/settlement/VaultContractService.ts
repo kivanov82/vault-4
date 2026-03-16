@@ -10,6 +10,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { logger } from "../utils/logger";
 import { HyperliquidConnector } from "../trade/HyperliquidConnector";
 import { XPostService } from "../social/XPostService";
+import { VaultService } from "../vaults/VaultService";
 
 // ── Config ──────────────────────────────────────────────────────────────
 
@@ -531,13 +532,31 @@ export class VaultContractService {
             deployedToL1: finalState.deployedToL1.toFixed(2),
         });
 
+        // Build X post context with allocations
+        let allocations: Array<{ vault: string; allocationUsd: number | null; roePct: number | null }> = [];
+        try {
+            const positions = await VaultService.getPlatformPositions({ refresh: true });
+            allocations = positions.positions
+                .filter((p) => (p.amountUsd ?? 0) > 1)
+                .sort((a, b) => (b.amountUsd ?? 0) - (a.amountUsd ?? 0))
+                .map((p) => ({
+                    vault: p.vaultName ?? p.vaultAddress,
+                    allocationUsd: p.amountUsd,
+                    roePct: p.roePct,
+                }));
+        } catch (e: any) {
+            logger.warn("Failed to fetch allocations for X post", { message: e?.message });
+        }
+
         await XPostService.postSettlementUpdate({
             epoch: finalState.epoch,
             totalAssets: finalState.totalAssets,
             sharePrice: finalState.sharePrice,
+            prevSharePrice: state.sharePrice,
             deployedToL1: finalState.deployedToL1,
             depositsProcessed: Number(maxDeposits),
             withdrawsProcessed: Number(maxWithdraws),
+            allocations,
         });
     }
 }
