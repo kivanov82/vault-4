@@ -3,6 +3,7 @@ import { Vault4 } from "./service/Vault4";
 import { VaultService } from "./service/vaults/VaultService";
 import { VaultContractService } from "./service/settlement/VaultContractService";
 import { SettlementScheduler } from "./service/settlement/SettlementScheduler";
+import { ArticleService } from "./service/social/ArticleService";
 import { logger } from "./service/utils/logger";
 
 const app = express();
@@ -146,6 +147,29 @@ app.post("/api/settle", async (req, res) => {
     } catch (error: any) {
         logger.error("Settlement failed", { message: error?.message });
         res.status(500).json({ error: error?.message ?? "Settlement failed" });
+    }
+});
+
+// Draft article for X Articles
+app.get("/api/draft-article", async (req, res) => {
+    try {
+        const topic = String(req.query.topic ?? "");
+        if (!topic) {
+            res.json({ topics: ArticleService.getAvailableTopics() });
+            return;
+        }
+        const article = await ArticleService.generateArticle(topic);
+        if (!article) {
+            res.status(400).json({
+                error: `Unknown topic: ${topic}`,
+                available: ArticleService.getAvailableTopics(),
+            });
+            return;
+        }
+        res.json(article);
+    } catch (error: any) {
+        logger.error("Article generation failed", { message: error?.message });
+        res.status(500).json({ error: "Failed to generate article" });
     }
 });
 

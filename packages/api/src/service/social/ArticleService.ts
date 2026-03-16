@@ -1,0 +1,111 @@
+import Anthropic from "@anthropic-ai/sdk";
+import { logger } from "../utils/logger";
+
+const TOPICS: Record<string, string> = {
+    ai_trading: `Write an educational article about AI-powered automated trading in DeFi.
+Cover: how AI agents analyze vault performance metrics, the two-stage scoring/ranking approach,
+barbell allocation strategy (high conviction vs exploratory), automated rebalancing cycles,
+and why removing human emotion from portfolio decisions matters.
+Reference VAULT-4 as a concrete example built on Hyperliquid.
+Mention how Claude AI evaluates TVL, trade frequency, PnL history, drawdown, and vault age.`,
+
+    erc8004: `Write an educational article about ERC-8004: the Trustless AI Agents standard on Ethereum.
+Cover: the three registries (Identity, Reputation, Validation), why AI agents need on-chain identity,
+how trust is established without centralized authorities, the role of staking/slashing in validation,
+and how this enables an autonomous agent economy.
+Connect it to DeFi: AI agents that manage funds need verifiable track records.
+Reference VAULT-4 as an example of an AI agent that could benefit from ERC-8004 registration.`,
+
+    x402: `Write an educational article about x402: HTTP 402 Payment Required for AI agent micropayments.
+Cover: the problem (AI agents need to pay for API access programmatically), how x402 works
+(payment headers in HTTP requests), the vision of agent-to-agent commerce,
+and why this matters for DeFi data access.
+Use the example: an AI trading agent paying per-request for vault performance data
+or alpha signals. Reference VAULT-4's /api/strategy endpoint as infrastructure that
+AI agents could consume.`,
+
+    erc4626: `Write an educational article about ERC-4626: the Tokenized Vault Standard.
+Cover: what ERC-4626 standardizes (deposit/withdraw/share accounting), why composability matters,
+how share price is calculated (totalAssets/totalSupply), the queue-based settlement pattern
+for managed vaults, instant vs queued withdrawals, and NAV reporting.
+Reference VAULT-4 as a concrete implementation on HyperEVM with daily settlement at 3PM CET.`,
+
+    hyperliquid_vaults: `Write an educational article about the Hyperliquid vault ecosystem.
+Cover: what Hyperliquid vaults are (managed trading accounts with public track records),
+how they differ from traditional DeFi yield vaults, the transparency of on-chain trading history,
+metrics that matter (TVL, PnL, drawdown, trade frequency, age),
+and why automated allocation across multiple vaults reduces single-manager risk.
+Reference VAULT-4 as an AI layer on top of this ecosystem.`,
+};
+
+const ARTICLE_SYSTEM_PROMPT = `You are a technical writer for VAULT-4, an AI-managed DeFi vault on Hyperliquid.
+
+Write educational articles that are:
+- Technical but accessible to a crypto-literate audience
+- Well-structured with clear headers (use markdown ## for sections)
+- 800-1200 words
+- Factual and specific — use real concepts, not vague hand-waving
+- No emojis, no "gm", no hype language
+- Tone: authoritative, like a research blog from a quant fund
+- Include a brief intro paragraph and a conclusion
+- End with a subtle CTA: "Learn more at vault-4.xyz"
+- Do NOT start with "In the rapidly evolving" or similar clichés
+
+About VAULT-4:
+- AI-managed ERC-4626 vault on HyperEVM (Hyperliquid's EVM chain)
+- Uses Claude AI to rank 100+ Hyperliquid vaults in a two-stage process
+- Barbell allocation: 70-80% high conviction, 20-30% exploratory
+- Automated 48-hour rebalancing cycles
+- Daily settlement at 3PM CET with on-chain NAV reporting
+- Non-custodial: users deposit USDC, receive V4FUND shares
+- Contract: 0xb6099d4545156f8ACA1A8Ea7CAA0762D81697809`;
+
+export class ArticleService {
+    private static client: Anthropic | null = null;
+
+    private static getClient(): Anthropic {
+        if (!this.client) {
+            this.client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+        }
+        return this.client;
+    }
+
+    static getAvailableTopics(): string[] {
+        return Object.keys(TOPICS);
+    }
+
+    static async generateArticle(topic: string): Promise<{ title: string; body: string } | null> {
+        const topicPrompt = TOPICS[topic];
+        if (!topicPrompt) {
+            logger.warn("Unknown article topic", { topic, available: Object.keys(TOPICS) });
+            return null;
+        }
+
+        try {
+            const response = await this.getClient().messages.create({
+                model: process.env.CLAUDE_MODEL ?? "claude-sonnet-4-20250514",
+                max_tokens: 2000,
+                system: ARTICLE_SYSTEM_PROMPT,
+                messages: [
+                    {
+                        role: "user",
+                        content: `${topicPrompt}\n\nRespond with the article in this format:\nTITLE: <article title>\n\n<article body in markdown>`,
+                    },
+                ],
+            });
+
+            const text = response.content[0].type === "text" ? response.content[0].text.trim() : "";
+
+            // Parse title from first line
+            const titleMatch = text.match(/^TITLE:\s*(.+)/);
+            const title = titleMatch ? titleMatch[1].trim() : `VAULT-4: ${topic.replace(/_/g, " ")}`;
+            const body = text.replace(/^TITLE:.*\n+/, "").trim();
+
+            logger.info("Article generated", { topic, title, length: body.length });
+            return { title, body };
+        } catch (error: any) {
+            logger.error("Article generation failed", { topic, message: error?.message });
+            return null;
+        }
+    }
+}
