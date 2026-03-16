@@ -132,12 +132,17 @@ export function InvestPanel() {
             <span className="text-[color:var(--terminal-green-dim)]">
               USDC_BAL: <span className="text-[color:var(--terminal-green)]">{formatUsd(investor.usdcBalance)}</span>
             </span>
-            <button
-              onClick={() => setAmount(String(investor.usdcBalance))}
-              className="text-[color:var(--terminal-cyan-dim)] hover:text-[color:var(--terminal-cyan)] transition-colors"
-            >
-              [MAX]
-            </button>
+            <span className="flex items-center gap-2">
+              <BridgeLink />
+              {investor.usdcBalance > 0 && (
+                <button
+                  onClick={() => setAmount(String(investor.usdcBalance))}
+                  className="text-[color:var(--terminal-cyan-dim)] hover:text-[color:var(--terminal-cyan)] transition-colors"
+                >
+                  [MAX]
+                </button>
+              )}
+            </span>
           </>
         ) : (
           <>
@@ -156,6 +161,11 @@ export function InvestPanel() {
           </>
         )}
       </div>
+      {mode === "DEPOSIT" && isConnected && investor.usdcBalance === 0 && (
+        <div className="mt-1.5 text-[10px] text-[color:var(--terminal-amber-dim)]">
+          ! USDC on HyperEVM required — bridge via links above
+        </div>
+      )}
 
       {/* Input */}
       <div className="mt-2 terminal-border-inset p-2">
