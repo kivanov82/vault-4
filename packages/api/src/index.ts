@@ -4,6 +4,7 @@ import { VaultService } from "./service/vaults/VaultService";
 import { VaultContractService } from "./service/settlement/VaultContractService";
 import { SettlementScheduler } from "./service/settlement/SettlementScheduler";
 import { ArticleService } from "./service/social/ArticleService";
+import { XPostService } from "./service/social/XPostService";
 import { paymentMiddleware } from "x402-express";
 import { logger } from "./service/utils/logger";
 
@@ -145,7 +146,7 @@ if (x402Wallet) {
         {
             "GET /api/strategy/premium": {
                 price: "$0.01",
-                network: "base-sepolia",
+                network: "base",
                 description: "VAULT-4 premium strategy: AI vault scores, allocation rationale, and performance history",
             },
         },
@@ -235,6 +236,46 @@ app.get("/api/draft-article", async (req, res) => {
     } catch (error: any) {
         logger.error("Article generation failed", { message: error?.message });
         res.status(500).json({ error: "Failed to generate article" });
+    }
+});
+
+// Test X post (generates tweet preview, ?post=true to actually publish)
+app.post("/api/x-post", async (req, res) => {
+    try {
+        const doPost = String(req.query.post ?? "false").toLowerCase() === "true";
+        const [positions, contractState] = await Promise.all([
+            VaultService.getPlatformPositions({ refresh: true }),
+            VaultContractService.getContractState(),
+        ]);
+        const allocations = positions.positions
+            .filter((p) => (p.amountUsd ?? 0) > 1)
+            .sort((a, b) => (b.amountUsd ?? 0) - (a.amountUsd ?? 0))
+            .map((p) => ({
+                vault: p.vaultName ?? p.vaultAddress,
+                allocationUsd: p.amountUsd,
+                roePct: p.roePct,
+            }));
+
+        const context = {
+            epoch: contractState.epoch,
+            totalAssets: contractState.totalAssets,
+            sharePrice: contractState.sharePrice,
+            prevSharePrice: contractState.sharePrice, // no change for test
+            deployedToL1: contractState.deployedToL1,
+            depositsProcessed: 0,
+            withdrawsProcessed: 0,
+            allocations,
+        };
+
+        if (doPost) {
+            await XPostService.postSettlementUpdate(context);
+            res.json({ ok: true, posted: true, context });
+        } else {
+            res.json({ ok: true, posted: false, preview: context, hint: "Add ?post=true to publish" });
+        }
+    } catch (error: any) {
+        logger.error("X post test failed", { message: error?.message });
+        res.status(500).json({ error: error?.message ?? "X post failed" });
     }
 });
 
