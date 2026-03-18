@@ -147,7 +147,15 @@ if (x402Wallet) {
             "GET /api/strategy/premium": {
                 price: "$0.01",
                 network: "base",
-                description: "VAULT-4 premium strategy: AI vault scores, allocation rationale, and performance history",
+                config: {
+                    description: "VAULT-4 premium strategy: AI vault scores, allocation rationale, and performance history",
+                    outputSchema: {
+                        fund: "object",
+                        allocations: "array",
+                        totalPositions: "number",
+                        netPnlUsd: "number",
+                    },
+                },
             },
         },
         { url: "https://x402.org/facilitator" }
