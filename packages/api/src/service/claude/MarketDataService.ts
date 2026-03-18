@@ -19,6 +19,8 @@ export type MarketOverlay = {
     btc_volume_24h: number | null;
     eth_volume_24h: number | null;
     long_short_ratio: number | null;
+    // Direction signal for 48h horizon
+    preferred_direction: "long" | "short" | "neutral";
     sources: {
         coingecko?: string;
         fearGreed?: string;
@@ -67,6 +69,9 @@ export class MarketDataService {
         const eth24 = ethData?.change_24h ?? null;
         const trend = inferTrend(btc7, btc24);
 
+        const fg = fearGreed?.value ?? null;
+        const preferredDirection = inferPreferredDirection(btc24, btc7, fg, trend);
+
         const data: MarketOverlay = {
             btc_7d_change: btc7,
             btc_24h_change: btc24,
@@ -74,7 +79,7 @@ export class MarketDataService {
             eth_24h_change: eth24,
             trend,
             velocity: btc24,
-            fearGreed: fearGreed?.value ?? null,
+            fearGreed: fg,
             dominance: globalData?.dominance ?? null,
             funding_btc: hyperliquidData?.funding_btc ?? null,
             funding_eth: hyperliquidData?.funding_eth ?? null,
@@ -86,6 +91,7 @@ export class MarketDataService {
             btc_volume_24h: btcData?.volume_24h ?? null,
             eth_volume_24h: ethData?.volume_24h ?? null,
             long_short_ratio: hyperliquidData?.long_short_ratio ?? null,
+            preferred_direction: preferredDirection,
             sources: {
                 coingecko: COINGECKO_BASE,
                 fearGreed: FEAR_GREED_URL,
@@ -215,6 +221,46 @@ async function fetchHyperliquidData(): Promise<HyperliquidData | null> {
     } catch {
         return null;
     }
+}
+
+function inferPreferredDirection(
+    btc24: number | null,
+    btc7: number | null,
+    fearGreed: number | null,
+    trend: string
+): "long" | "short" | "neutral" {
+    // Combine multiple signals to determine preferred vault direction for next 48h
+    let longScore = 0;
+    let shortScore = 0;
+
+    // BTC 24h momentum (strongest short-term signal)
+    if (btc24 !== null) {
+        if (btc24 > 1) longScore += 2;
+        else if (btc24 > 0) longScore += 1;
+        else if (btc24 < -1) shortScore += 2;
+        else if (btc24 < 0) shortScore += 1;
+    }
+
+    // BTC 7d trend (context signal)
+    if (btc7 !== null) {
+        if (btc7 > 2) longScore += 1;
+        else if (btc7 < -2) shortScore += 1;
+    }
+
+    // Fear & Greed
+    if (fearGreed !== null) {
+        if (fearGreed >= 60) longScore += 1;
+        else if (fearGreed <= 30) shortScore += 1;
+    }
+
+    // Trend confirmation
+    if (trend === "up") longScore += 1;
+    else if (trend === "down") shortScore += 1;
+
+    const diff = longScore - shortScore;
+    if (diff >= 2) return "long";
+    if (diff <= -2) return "short";
+    return "neutral";
 }
 
 function inferTrend(

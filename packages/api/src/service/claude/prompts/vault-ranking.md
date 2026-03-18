@@ -16,6 +16,9 @@ Input
   - Core: `{ btc_7d_change, btc_24h_change, eth_7d_change, eth_24h_change, trend, velocity }`
   - Sentiment: `{ fearGreed, dominance, funding_btc, funding_eth }`
   - Enhanced: `{ total_market_cap_change_24h, btc_oi_change_24h, eth_oi_change_24h, btc_volume_24h, eth_volume_24h, long_short_ratio, dvol }`
+  - Direction: `{ preferred_direction }` — "long", "short", or "neutral". Pre-computed signal
+    for the next 48h based on BTC momentum, trend, and sentiment. Use this to cross-check your
+    regime inference and prioritize directionally aligned vaults.
 - `{{vaults_json}}` -- array of vault objects. Each object contains:
 
   - `vault.summary`: `{ name, vaultAddress, tvl }` (pre-filtered to deposit-open only).
@@ -73,17 +76,19 @@ Robust normalization
 - If `MAD=0`, fall back to standard z-score.
 
 Base (edge + quality) score
-Use robust z-scored features across the provided universe:
+Use robust z-scored features across the provided universe. Weights are tuned for a **48-hour
+deployment horizon** — capital stays deployed ~2 days before next rebalance, so recent momentum
+and direction matter more than weekly trends.
 
 ```
 base_score =
-  0.30·robust_z(week_rt) +
+  0.15·robust_z(week_rt) +
   0.30·robust_z(pnl7_rt) +
-  0.10·robust_z(day_rt) +
+  0.25·robust_z(day_rt) +              # elevated for 48h horizon
   0.10·robust_z(unreal_rt) +
   0.10·robust_z(winrate_7d) +
-  0.10·robust_z(pnl30_rt)   # stability anchor
-- 0.10·robust_z(pnl_sd_30d) # consistency penalty
+  0.10·robust_z(pnl30_rt)              # stability anchor
+- 0.10·robust_z(pnl_sd_30d)            # consistency penalty
 ```
 
 Market-aware overlay
@@ -91,18 +96,33 @@ Apply additive overlay based on the regime flags:
 
 ```
 overlay =
-  0.20·bearFlag · robust_z(-net_rt)   # favor net-short when BTC down
-+ 0.15·fundingPos · robust_z(-net_rt) # penalize net-long when funding positive
-+ 0.15·domHigh · robust_z(-alts_rt)   # favor short alts when BTC dominance high
-- 0.10·fearHigh · robust_z(pnl_sd_7d) # avoid volatile vaults in fear
-+ 0.05·robust_z(mm_proxy)             # MM boost
-+ 0.15·riskOn · robust_z(net_rt)      # favor net-long in risk-on regimes
-+ 0.10·altSeason · robust_z(alts_rt)  # favor alt exposure during alt season
-- 0.10·highOI · robust_z(gross_lev)   # penalize high leverage when OI crowded
-+ 0.05·volumeSpike · robust_z(trades_7d) # favor active vaults during high volume
+  0.15·bearFlag · robust_z(-net_rt)         # favor net-short when BTC down
++ 0.10·fundingPos · robust_z(-net_rt)       # penalize net-long when funding positive
++ 0.15·domHigh · robust_z(-alts_rt)         # favor short alts when BTC dominance high
+- 0.10·fearHigh · robust_z(pnl_sd_7d)       # avoid volatile vaults in fear
++ 0.05·robust_z(mm_proxy)                   # MM boost
++ 0.10·riskOn · robust_z(net_rt)            # favor net-long in risk-on regimes
++ 0.10·altSeason · robust_z(alts_rt)        # favor alt exposure during alt season
+- 0.10·highOI · robust_z(gross_lev)         # penalize high leverage when OI crowded
++ 0.05·volumeSpike · robust_z(trades_7d)    # favor active vaults during high volume
++ 0.10·bearFlag · robust_z(short_ratio_7d)  # favor short-biased traders in bear
++ 0.10·riskOn · robust_z(-short_ratio_7d)   # favor long-biased traders in risk-on
++ 0.10·bearFlag · robust_z(-btc_rt)         # favor negative BTC exposure in bear
++ 0.10·riskOn · robust_z(btc_rt)            # favor positive BTC exposure in risk-on
 ```
 
 `score_market = base_score + overlay`
+
+Direction alignment (critical for 48h horizon)
+
+Before finalizing rankings, assess each vault's **directional alignment** with the market:
+- In bear/risk-off: vaults with net-short positions, high `short_ratio_7d`, or negative `btc_rt`
+  are directionally aligned and should rank higher.
+- In risk-on: vaults with net-long positions, low `short_ratio_7d`, or positive `btc_rt` are aligned.
+- If a vault's direction strongly conflicts with the regime (e.g., heavily net-long BTC in a bear
+  market), apply an additional penalty of -0.3 to `score_market` before ranking.
+- For the high-confidence bucket, strongly prefer directionally aligned vaults. Mis-aligned vaults
+  may still appear in the low-confidence bucket if they have strong edge metrics.
 
 Ranking task
 

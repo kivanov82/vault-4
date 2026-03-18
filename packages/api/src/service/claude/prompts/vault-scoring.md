@@ -10,6 +10,9 @@ Input
   - Core: `{ btc_7d_change, btc_24h_change, eth_7d_change, eth_24h_change, trend, velocity }`
   - Sentiment: `{ fearGreed, dominance, funding_btc, funding_eth }`
   - Enhanced: `{ total_market_cap_change_24h, btc_oi_change_24h, eth_oi_change_24h, btc_volume_24h, eth_volume_24h, long_short_ratio, dvol }`
+  - Direction: `{ preferred_direction }` — "long", "short", or "neutral". Pre-computed signal
+    for the next 48h based on BTC momentum, trend, and sentiment. Use this to cross-check your
+    regime inference and directional overlay.
 - `vaults_json` -- array of vault objects. Each object contains:
   - `vault.summary`: `{ name, vaultAddress, tvl }` (pre-filtered to deposit-open only).
   - `vault.pnls`: array of `[period, points]` where period in {`day`,`week`,`month`,`allTime`}
@@ -41,30 +44,47 @@ Feature engineering per vault
 
 Scoring formula
 
-Use robust z-scoring within this batch:
+Use robust z-scoring within this batch. Weights are tuned for a **48-hour deployment horizon**
+(capital is deployed for ~2 days before next rebalance), so recent momentum matters more than
+weekly trends.
 
 ```
 base_score =
-  0.30*robust_z(week_rt) +
+  0.15*robust_z(week_rt) +
   0.30*robust_z(pnl7_rt) +
-  0.10*robust_z(day_rt) +
+  0.25*robust_z(day_rt) +
   0.10*robust_z(unreal_rt) +
   0.10*robust_z(winrate_7d) +
   0.10*robust_z(pnl30_rt)
 - 0.10*robust_z(pnl_sd_30d)
 
 overlay =
-  0.20*bearFlag*robust_z(-net_rt) +
-  0.15*fundingPos*robust_z(-net_rt) +
+  0.15*bearFlag*robust_z(-net_rt) +
+  0.10*fundingPos*robust_z(-net_rt) +
   0.15*domHigh*robust_z(-alts_rt) -
   0.10*fearHigh*robust_z(pnl_sd_7d) +
-  0.15*riskOn*robust_z(net_rt) +
+  0.10*riskOn*robust_z(net_rt) +
   0.10*altSeason*robust_z(alts_rt) -
   0.10*highOI*robust_z(gross_lev) +
-  0.05*volumeSpike*robust_z(trades_7d)
+  0.05*volumeSpike*robust_z(trades_7d) +
+  0.10*bearFlag*robust_z(short_ratio_7d) +
+  0.10*riskOn*robust_z(-short_ratio_7d) +
+  0.10*bearFlag*robust_z(-btc_rt) +
+  0.10*riskOn*robust_z(btc_rt)
 
 raw_score = base_score + overlay
 ```
+
+Direction alignment (critical for 48h horizon)
+
+Before computing the final score, check each vault's **directional alignment** with the current
+market regime:
+- In bear/risk-off: vaults with net-short exposure, high `short_ratio_7d`, or negative `btc_rt`
+  are directionally aligned. Vaults that are heavily net-long BTC in a downtrend will likely lose
+  over the next 48 hours.
+- In risk-on: vaults with net-long exposure, low `short_ratio_7d`, or positive `btc_rt` are aligned.
+- If a vault's trading direction (from `short_ratio_7d` and current positions) strongly conflicts
+  with the market regime, apply an additional penalty of -0.3 to `raw_score`.
 
 Convert `raw_score` to 0-100 scale: `score = 50 + (raw_score * 15)`, clamped to [0, 100].
 
