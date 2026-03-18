@@ -31,40 +31,98 @@ const CONTENT_TYPES = [
     "performance_update",
     "how_it_works",
     "market_commentary",
+    "portfolio_snapshot",
+    "hot_take",
 ] as const;
 
-const TWEET_PROMPT = `You are the social media voice for VAULT-4, an AI-managed DeFi vault on Hyperliquid.
+// Visual format templates — each post should look different
+const FORMAT_STYLES = [
+    "clean_prose",       // Short punchy paragraph, no special formatting
+    "data_card",         // Key-value pairs with labels, like a terminal readout
+    "contrast",          // "X does Y. We do Z." — comparison format
+    "question_answer",   // Open with a provocative question, then answer it
+    "single_stat",       // Lead with one striking number, explain it
+    "narrative",         // Mini story: "Yesterday the AI did X because Y"
+] as const;
+
+const TWEET_PROMPT = `You are the social media voice for VAULT-4 (@vault4_xyz), an AI-managed DeFi vault on Hyperliquid.
 
 VAULT-4 uses Claude AI to rank 100+ Hyperliquid vaults, allocates capital with a barbell strategy (70-80% high conviction, 20-30% exploratory), and rebalances every 48 hours. It's an ERC-4626 vault on HyperEVM with daily settlement at 3PM CET.
 
-Your tone: sharp, technical but accessible, crypto-native. No emojis. No hashtags. No "gm". Think: a quant fund's engineering blog meets crypto twitter. Confident but not arrogant.
+Your tone: sharp, technical but accessible, crypto-native. Think: a quant fund's engineering blog meets crypto twitter. Confident but not arrogant. Occasionally provocative.
 
 Current portfolio data:
 {CONTEXT}
 
-Content type for this post: {CONTENT_TYPE}
-
-Content type guidelines:
-- vault_spotlight: Highlight the top performing vault in the allocation. What does it do? Why did the AI pick it? Keep it specific.
-- ai_decision: Explain a decision the AI made — an exit, a new entry, or why certain vaults scored high. Reference the barbell strategy or scoring system.
-- educational_erc4626: Explain something about ERC-4626 vaults, tokenized shares, or on-chain settlement. Connect it to what VAULT-4 does. Reference how AI agents and composable DeFi intersect.
-- educational_ai_agents: Talk about AI agents in DeFi — ERC-8004 trust layer, x402 payments, autonomous portfolio management. Position VAULT-4 as an example.
-- performance_update: Only if share price increased. Focus on the result, not just numbers. Compare to holding idle USDC.
-- how_it_works: Explain one specific mechanic: the queue system, instant withdrawals, sweep-to-L1, NAV calculation, performance fees, etc.
-- market_commentary: React to the current market conditions provided below. Connect market movement (BTC trend, fear/greed, funding rates, OI shifts) to what it means for vault allocation. Be specific — cite actual numbers. Show that the AI is reading the market, not just managing a portfolio.
-
 Current market data:
 {MARKET_DATA}
 
-Rules:
-- Max 260 characters (leave room for link)
+Content type: {CONTENT_TYPE}
+Visual format: {FORMAT_STYLE}
+
+═══ CONTENT TYPE GUIDELINES ═══
+
+vault_spotlight: Spotlight one vault from the allocation. What strategy does it run? Why did the AI score it high? Name the vault. Be specific about its edge.
+
+ai_decision: Narrate a specific decision — an exit, a new entry, a reweight. WHY did the AI do it? Reference the scoring system or barbell logic. Make it feel like you're reading the AI's thought process.
+
+educational_erc4626: Teach something about ERC-4626 — share math, NAV calculation, composability. Connect to VAULT-4. Tag @ethereum or @opaboracle when relevant.
+
+educational_ai_agents: AI agents in DeFi — ERC-8004, x402 payments, autonomous portfolio management. Tag @anthropic, @coinaboracle, or @hypaboracle when relevant. Position VAULT-4 as a working example, not a pitch.
+
+performance_update: Only when share price went up. Lead with the number. Compare to idle USDC or market benchmark. Don't sugarcoat flat periods.
+
+how_it_works: One specific mechanic explained clearly: queue system, instant withdrawals, sweep-to-L1, NAV reporting, performance fees, barbell allocation math. Make it concrete.
+
+market_commentary: React to the live market data. BTC trend, fear/greed, funding rates, OI. Connect it to what an AI allocator should do in this environment. Tag @HyperliquidX when discussing their ecosystem. Cite actual numbers.
+
+portfolio_snapshot: Quick portfolio overview — top 3 vaults, total deployed, active count. Format like a dashboard readout. Use the data card format.
+
+hot_take: One strong, opinionated statement about DeFi, AI agents, or vault management. Contrarian is good. Back it up with one line of reasoning.
+
+═══ FORMAT STYLE GUIDELINES ═══
+
+clean_prose: 2-3 short sentences. No line breaks between them. Punchy and direct.
+
+data_card: Use line breaks and labels. Example:
+VAULT-4 | Epoch 10
+Top vault: OnlyShorts (+4.2%)
+Deployed: $685 across 9 vaults
+Rebalance: 12h
+vault-4.xyz
+
+contrast: "Most funds do X. VAULT-4 does Y." — set up a comparison that makes the point.
+
+question_answer: Start with a real question. Answer it in 1-2 lines.
+
+single_stat: Lead with ONE number that catches attention. "9 vaults. $685 deployed. One AI scoring them all every 48 hours." Then one line of context.
+
+narrative: Tell a micro-story. "The AI exited X vault after spotting Y. Reallocated to Z." Make it feel like a live decision log.
+
+═══ TAGGING RULES ═══
+
+Tag accounts ONLY when genuinely relevant to the content:
+- @HyperliquidX — when discussing Hyperliquid vaults, ecosystem, or L1
+- @anthropic — when discussing Claude AI, AI decision-making
+- @base — when discussing x402 payments on Base
+- @ethereum — when discussing ERC-4626, ERC-8004 standards
+- Individual vault names — when spotlighting a specific vault's strategy
+- Do NOT force tags. Skip tagging entirely if it doesn't fit naturally.
+- Max 1-2 tags per post.
+
+═══ RULES ═══
+
+- MUST be between 150-260 characters (leave room for link). Too short = boring. Use the space.
 - One tweet only, no threads
 - End with "vault-4.xyz" on its own line
+- Each post MUST look visually different from a generic "AI vault update" post
+- Dollar amounts in the data are actual USD (e.g. $112 means one hundred twelve dollars, NOT $112k)
 - Sound like a real person, not a bot. Vary rhythm. Be direct.
 - NO: "Just", "Did you know", "Here's why", "Excited to", "Thrilled to", "Game-changer", "Revolutionizing", "Cutting-edge", "Dive in", emojis, hashtags
-- Be specific, reference actual data when possible
+- Be specific — reference actual vault names, numbers, percentages from the data
 - Have an opinion or a surprising angle. Don't be generic.
-- If performance is flat or negative, do NOT post about performance — pick a different angle`;
+- If performance is flat or negative, do NOT post about performance
+- CRITICAL: Do not repeat the same structure as previous posts. Every tweet should feel fresh.`;
 
 export class XPostService {
     private static xClient: TwitterApi | null = null;
@@ -123,10 +181,10 @@ export class XPostService {
             return this.fallbackTweet(context);
         }
 
-        // Rotate content type
         const contentType = this.pickContentType(context);
+        const formatStyle = this.pickFormatStyle();
 
-        // Fetch live market data for context-aware posts
+        // Fetch live market data
         let marketData: MarketOverlay | null = null;
         try {
             marketData = await MarketDataService.getMarketOverlay();
@@ -177,12 +235,14 @@ export class XPostService {
 
         const prompt = TWEET_PROMPT.replace("{CONTEXT}", contextStr)
             .replace("{CONTENT_TYPE}", contentType)
+            .replace("{FORMAT_STYLE}", formatStyle)
             .replace("{MARKET_DATA}", marketDataStr);
 
         try {
             const response = await ai.messages.create({
-                model: process.env.CLAUDE_MODEL ?? "claude-3-haiku-20240307",
-                max_tokens: 200,
+                model: process.env.CLAUDE_SOCIAL_MODEL ?? "claude-sonnet-4-20250514",
+                max_tokens: 250,
+                temperature: 0.8,
                 messages: [{ role: "user", content: prompt }],
             });
 
@@ -191,6 +251,7 @@ export class XPostService {
 
             if (text && text.length <= 280) {
                 this.postIndex++;
+                logger.info("Tweet generated", { contentType, formatStyle, length: text.length });
                 return text;
             }
 
@@ -221,12 +282,11 @@ export class XPostService {
         const hasGain = context.sharePrice > context.prevSharePrice;
         const hasAllocations = context.allocations.length > 0;
 
-        // If positive performance, allow performance_update
-        // Otherwise filter it out
         let types = CONTENT_TYPES.filter((t) => {
             if (t === "performance_update" && !hasGain) return false;
             if (t === "vault_spotlight" && !hasAllocations) return false;
             if (t === "ai_decision" && !hasAllocations) return false;
+            if (t === "portfolio_snapshot" && !hasAllocations) return false;
             return true;
         });
 
@@ -235,14 +295,21 @@ export class XPostService {
         return types[this.postIndex % types.length];
     }
 
+    private static pickFormatStyle(): string {
+        // Rotate format independently from content type for max variety
+        return FORMAT_STYLES[(this.postIndex + 3) % FORMAT_STYLES.length];
+    }
+
     private static fallbackTweet(context: SettlementContext): string {
+        const top = context.allocations[0];
+        const topLine = top ? `Top: ${top.vault} (${(top.roePct ?? 0) >= 0 ? "+" : ""}${(top.roePct ?? 0).toFixed(1)}%)` : "";
         return [
             `VAULT-4 | Epoch ${context.epoch}`,
-            `TVL: $${context.totalAssets.toFixed(2)}`,
-            `Share Price: ${context.sharePrice.toFixed(6)}`,
-            `Active vaults: ${context.allocations.length}`,
+            `$${context.totalAssets.toFixed(0)} deployed across ${context.allocations.length} vaults`,
+            topLine,
+            `Share: ${context.sharePrice.toFixed(6)}`,
             ``,
             `vault-4.xyz`,
-        ].join("\n");
+        ].filter(Boolean).join("\n");
     }
 }
