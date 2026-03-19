@@ -457,12 +457,28 @@ export class VaultContractService {
             const shortfall = withdrawValueUsdc - state.idleUsdc;
 
             if (shortfall > 0) {
+                // Cap at available L1 balance to avoid "Insufficient balance" errors.
+                // The contract processes withdrawals until idle USDC runs out,
+                // so partial funding still settles as many requests as possible.
+                const l1Balance = (await HyperliquidConnector.getUserPerpsBalance(WALLET!)) ?? 0;
+                const bridgeAmount = Math.min(
+                    Math.ceil(shortfall * 100) / 100,
+                    Math.floor(l1Balance * 100) / 100 // floor to avoid rounding over
+                );
+
                 logger.info("Settlement: need to fund contract for withdrawals", {
                     withdrawValueUsdc: withdrawValueUsdc.toFixed(2),
                     idleUsdc: state.idleUsdc.toFixed(2),
                     shortfall: shortfall.toFixed(2),
+                    l1Balance: l1Balance.toFixed(2),
+                    bridgeAmount: bridgeAmount.toFixed(2),
                 });
-                await this.fundContractFromL1(Math.ceil(shortfall * 100) / 100);
+
+                if (bridgeAmount > 0) {
+                    await this.fundContractFromL1(bridgeAmount);
+                } else {
+                    logger.warn("Settlement: no L1 balance available to fund withdrawals, will process what contract has");
+                }
             }
         }
 
