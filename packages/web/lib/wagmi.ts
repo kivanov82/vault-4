@@ -26,6 +26,7 @@ export const hyperliquidChain = defineChain({
 export const wagmiConfig = createConfig({
   chains: [hyperliquidChain],
   connectors: [injected({ shimDisconnect: true })],
+  multiInjectedProviderDiscovery: true,
   transports: {
     [hyperliquidChain.id]: http(rpcUrl),
   },

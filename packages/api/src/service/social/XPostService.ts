@@ -167,11 +167,17 @@ export class XPostService {
             return;
         }
 
-        try {
-            const result = await xClient.v2.tweet(tweet);
-            logger.info("X post published", { tweetId: result.data.id, content: tweet });
-        } catch (error: any) {
-            logger.warn("X post failed", { message: error?.message });
+        for (let attempt = 1; attempt <= 2; attempt++) {
+            try {
+                const result = await xClient.v2.tweet(tweet);
+                logger.info("X post published", { tweetId: result.data.id, content: tweet });
+                return;
+            } catch (error: any) {
+                logger.warn("X post failed", { message: error?.message, attempt });
+                if (attempt === 1 && error?.code === 403) {
+                    await new Promise((r) => setTimeout(r, 60_000));
+                }
+            }
         }
     }
 
