@@ -376,13 +376,11 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
                 regime: parsed.regime,
                 total: ordered.length,
                 highConfidence: high.map(v => ({
-                    name: v.name || v.vaultAddress,
                     address: v.vaultAddress,
                     score: v.score,
                     reason: v.reason,
                 })),
                 lowConfidence: low.map(v => ({
-                    name: v.name || v.vaultAddress,
                     address: v.vaultAddress,
                     score: v.score,
                     reason: v.reason,
