@@ -9,8 +9,8 @@ WORKDIR /usr/src/app
 # A wildcard is used to ensure both package.json AND package-lock.json are copied.
 COPY package*.json ./
 
-# Install production dependencies.
-RUN npm install --only=production
+# Install all dependencies (ts-node needed at runtime since we run TypeScript directly).
+RUN npm install
 
 # Copy local code to the container image.
 COPY . .

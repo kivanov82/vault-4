@@ -180,7 +180,7 @@ export class RebalanceOrchestrator {
         // Fetch market direction for stop-loss intelligence
         let marketDirection: "long" | "short" | "neutral" = "neutral";
         try {
-            const marketData = await MarketDataService.getMarketData();
+            const marketData = await MarketDataService.getMarketOverlay();
             marketDirection = marketData.preferred_direction;
         } catch (err: any) {
             logger.warn("Failed to fetch market direction for stop-loss check", {
