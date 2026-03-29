@@ -72,6 +72,20 @@ export class ClaudeService {
         const marketData = await MarketDataService.getMarketOverlay();
         const alreadyExposed = await getAlreadyExposedVaults();
 
+        logger.info("AI ranking context", {
+            totalCandidates: candidates.length,
+            totalCount,
+            highConfidenceCount,
+            alreadyExposedCount: alreadyExposed.length,
+            alreadyExposed,
+            marketDirection: marketData.preferred_direction,
+            marketTrend: marketData.trend,
+            btc24h: marketData.btc_24h_change,
+            btc7d: marketData.btc_7d_change,
+            fearGreed: marketData.fearGreed,
+            longShortRatio: marketData.long_short_ratio,
+        });
+
         // Stage 1: Score vaults in batches
         const batches = chunkArray(candidates, BATCH_SIZE);
         logger.info("Starting batched vault scoring", {
@@ -108,6 +122,17 @@ export class ClaudeService {
             scoredCount: allScored.length,
             topScore: allScored[0]?.score,
             bottomScore: allScored[allScored.length - 1]?.score,
+            scoreDistribution: {
+                above80: allScored.filter(s => s.score >= 80).length,
+                above60: allScored.filter(s => s.score >= 60).length,
+                above40: allScored.filter(s => s.score >= 40).length,
+                below40: allScored.filter(s => s.score < 40).length,
+            },
+            allScores: allScored.map(s => ({
+                name: s.candidate.name,
+                score: s.score,
+                address: s.candidate.vaultAddress,
+            })),
         });
 
         // Stage 2: Final ranking of top candidates
@@ -115,6 +140,16 @@ export class ClaudeService {
         const FINAL_RANKING_LIMIT = Number(process.env.CLAUDE_FINAL_RANKING_LIMIT ?? 12);
         const topCandidates = allScored.slice(0, Math.min(FINAL_RANKING_LIMIT, Math.max(totalCount * 2, 20)));
         const topVaultCandidates = topCandidates.map((s) => s.candidate);
+
+        logger.info("Stage 2 candidates selected", {
+            finalRankingLimit: FINAL_RANKING_LIMIT,
+            selectedCount: topCandidates.length,
+            selectedVaults: topCandidates.map(s => ({
+                name: s.candidate.name,
+                score: s.score,
+                isExposed: alreadyExposed.includes(s.candidate.vaultAddress.toLowerCase()),
+            })),
+        });
 
         // Wait before Stage 2 to respect rate limits
         if (CLAUDE_API_DELAY_MS > 0) {
@@ -338,7 +373,20 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
 
             logger.info("Claude ranking parsed", {
                 model: RANKING_MODEL,
+                regime: parsed.regime,
                 total: ordered.length,
+                highConfidence: high.map(v => ({
+                    name: v.name || v.vaultAddress,
+                    address: v.vaultAddress,
+                    score: v.score,
+                    reason: v.reason,
+                })),
+                lowConfidence: low.map(v => ({
+                    name: v.name || v.vaultAddress,
+                    address: v.vaultAddress,
+                    score: v.score,
+                    reason: v.reason,
+                })),
                 suggestedAllocations: {
                     totalPct: suggestedAllocations?.totalPct,
                     highPct: suggestedAllocations?.highPct,

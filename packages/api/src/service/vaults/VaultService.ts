@@ -54,9 +54,9 @@ const CANDIDATE_LIMIT = readNumberEnv(
 );
 const RECOMMENDATION_COUNT = readNumberEnv(
     process.env.VAULT_RECOMMENDATION_COUNT,
-    10
+    15
 );
-const HIGH_CONF_COUNT = readNumberEnv(process.env.VAULT_HIGH_CONF_COUNT, 5);
+const HIGH_CONF_COUNT = readNumberEnv(process.env.VAULT_HIGH_CONF_COUNT, 8);
 const HIGH_ALLOC_PCT = readNumberEnv(process.env.VAULT_ALLOC_HIGH_PCT, 70);
 const LOW_ALLOC_PCT = readNumberEnv(process.env.VAULT_ALLOC_LOW_PCT, 30);
 const USER_VAULTS_CACHE_TTL_MS = readNumberEnv(
@@ -101,7 +101,10 @@ export class VaultService {
     > = new Map();
 
     static async getCandidates(options: CandidateOptions = {}): Promise<CandidatesResult> {
-        logger.info("Searching for vault candidates");
+        logger.info("Searching for vault candidates", {
+            refresh: options.refresh,
+            filters: options.filters,
+        });
         const filters = mergeFilters(options.filters);
         const now = Date.now();
         if (
@@ -110,6 +113,11 @@ export class VaultService {
             now - this.candidatesCache.fetchedAt < CANDIDATE_CACHE_TTL_MS &&
             sameFilters(this.candidatesCache.result.filters, filters)
         ) {
+            const cacheAgeMs = now - this.candidatesCache.fetchedAt;
+            logger.info("Using cached candidates", {
+                count: this.candidatesCache.result.count,
+                cacheAgeSec: Math.round(cacheAgeMs / 1000),
+            });
             return this.candidatesCache.result;
         }
 
@@ -152,6 +160,18 @@ export class VaultService {
                 performance,
             });
         }
+
+        logger.info("Vault prefilter complete", {
+            rawVaults: rawVaults.length,
+            passedPrefilter: prefiltered.length,
+            filtered: rawVaults.length - prefiltered.length,
+            filters: {
+                minTvl: filters.minTvl,
+                minAgeDays: filters.minAgeDays,
+                requirePositiveWeeklyPnl: filters.requirePositiveWeeklyPnl,
+                requirePositiveMonthlyPnl: filters.requirePositiveMonthlyPnl,
+            },
+        });
 
         prefiltered.sort((a, b) => b.tvl - a.tvl);
         const limited =
@@ -240,14 +260,29 @@ export class VaultService {
             items: candidates,
         };
         this.candidatesCache = { fetchedAt: now, result };
-        logger.info("Found vault candidates", { count: candidates.length });
+        logger.info("Found vault candidates", {
+            count: candidates.length,
+            detailsScanned: limited.length,
+            filteredInDetailPass: limited.length - candidates.length,
+            topByTvl: candidates.slice(0, 5).map(c => ({
+                name: c.name,
+                tvl: c.tvl,
+                weeklyPnl: c.weeklyPnl,
+                tradesLast7d: c.tradesLast7d,
+            })),
+        });
         return result;
     }
 
     static async getRecommendations(
         options: RecommendationOptions = {}
     ): Promise<RecommendationSet> {
-        logger.info("Generating vault recommendations");
+        logger.info("Generating vault recommendations", {
+            refreshCandidates: options.refreshCandidates,
+            refresh: options.refresh,
+            recommendationCount: RECOMMENDATION_COUNT,
+            highConfCount: HIGH_CONF_COUNT,
+        });
 
         const candidatesResult = await this.getCandidates({
             refresh: options.refreshCandidates,
@@ -255,6 +290,13 @@ export class VaultService {
         const candidates = candidatesResult.items;
         const totalCount = Math.min(RECOMMENDATION_COUNT, candidates.length);
         const highCount = Math.min(HIGH_CONF_COUNT, totalCount);
+
+        logger.info("Recommendation parameters", {
+            candidateCount: candidates.length,
+            totalCount,
+            highCount,
+            lowCount: totalCount - highCount,
+        });
 
         let source: "claude" | "heuristic" = "heuristic";
         let model: string | undefined;
@@ -287,6 +329,9 @@ export class VaultService {
             }
 
             if (!highConfidence.length && !lowConfidence.length) {
+                logger.warn("Claude ranking returned no results, falling back to heuristic", {
+                    aiRankingResult: aiRankingResult ? "returned-but-empty" : "null",
+                });
                 const ranked = rankByHeuristic(candidates, totalCount, highCount);
                 highConfidence = ranked.highConfidence;
                 lowConfidence = ranked.lowConfidence;
@@ -322,6 +367,21 @@ export class VaultService {
             source,
             model,
             total: result.highConfidence.length + result.lowConfidence.length,
+            highCount: result.highConfidence.length,
+            lowCount: result.lowConfidence.length,
+            highConfidence: result.highConfidence.map(r => ({
+                name: r.name,
+                score: r.score,
+                allocationPct: r.allocationPct,
+                address: r.vaultAddress,
+            })),
+            lowConfidence: result.lowConfidence.map(r => ({
+                name: r.name,
+                score: r.score,
+                allocationPct: r.allocationPct,
+                address: r.vaultAddress,
+            })),
+            suggestedAllocations: result.suggestedAllocations,
         });
         return result;
     }

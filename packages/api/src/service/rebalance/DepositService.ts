@@ -70,6 +70,8 @@ const DEFAULT_HIGH_COUNT = readNumberEnv(process.env.DEPOSIT_HIGH_COUNT, 7);
 const DEFAULT_LOW_COUNT = readNumberEnv(process.env.DEPOSIT_LOW_COUNT, 3);
 const DEFAULT_HIGH_PCT = readNumberEnv(process.env.DEPOSIT_HIGH_PCT, 80);
 const DEFAULT_LOW_PCT = readNumberEnv(process.env.DEPOSIT_LOW_PCT, 20);
+// Max percentage of new deposits that can share the same directional bias (long or short)
+const MAX_SAME_DIRECTION_PCT = readNumberEnv(process.env.MAX_SAME_DIRECTION_PCT, 60);
 
 export class DepositService {
     static async buildDepositPlan(
@@ -96,6 +98,17 @@ export class DepositService {
         );
         const rawHighPct = options.highTotalPct ?? DEFAULT_HIGH_PCT;
         const rawLowPct = options.lowTotalPct ?? DEFAULT_LOW_PCT;
+
+        logger.info("Building deposit plan", {
+            maxActive,
+            highCount,
+            lowCount,
+            highPct: rawHighPct,
+            lowPct: rawLowPct,
+            maxSameDirectionPct: MAX_SAME_DIRECTION_PCT,
+            refreshRecommendations: options.refreshRecommendations,
+            refreshCandidates: options.refreshCandidates,
+        });
 
         const recommendations = await VaultService.getRecommendations({
             refresh: options.refreshRecommendations,
@@ -189,8 +202,8 @@ export class DepositService {
         const remainingSlots = availableSlots - highSlotsToUse;
         const lowSlotsToUse = Math.min(lowWithoutExposure.length, remainingSlots);
 
-        const limitedHighWithoutExposure = highWithoutExposure.slice(0, highSlotsToUse);
-        const limitedLowWithoutExposure = lowWithoutExposure.slice(0, lowSlotsToUse);
+        const slotLimitedHigh = highWithoutExposure.slice(0, highSlotsToUse);
+        const slotLimitedLow = lowWithoutExposure.slice(0, lowSlotsToUse);
 
         if (highWithoutExposure.length > highSlotsToUse || lowWithoutExposure.length > lowSlotsToUse) {
             logger.info("Limiting new deposits to available slots (sorted by score)", {
@@ -199,14 +212,60 @@ export class DepositService {
                 highUsed: highSlotsToUse,
                 lowRequested: lowWithoutExposure.length,
                 lowUsed: lowSlotsToUse,
-                selectedHighVaults: highWithoutExposure.slice(0, highSlotsToUse).map(v => ({
+                selectedHighVaults: slotLimitedHigh.map(v => ({
                     name: v.name,
                     score: v.score,
                 })),
-                selectedLowVaults: lowWithoutExposure.slice(0, lowSlotsToUse).map(v => ({
+                selectedLowVaults: slotLimitedLow.map(v => ({
                     name: v.name,
                     score: v.score,
                 })),
+            });
+        }
+
+        // Directional concentration filter: ensure new deposits don't over-concentrate
+        // in a single direction (long/short). Classify each candidate and enforce limits.
+        const allCandidates = [
+            ...slotLimitedHigh.map(v => ({ ...v, group: "high" as const })),
+            ...slotLimitedLow.map(v => ({ ...v, group: "low" as const })),
+        ];
+        const directionMap = await classifyVaultDirections(
+            allCandidates.map(c => c.vaultAddress)
+        );
+
+        const maxSameDirection = Math.ceil(allCandidates.length * (MAX_SAME_DIRECTION_PCT / 100));
+        const directionCounts: Record<string, number> = { long: 0, short: 0, neutral: 0 };
+        const accepted = new Set<string>();
+
+        for (const candidate of allCandidates) {
+            const dir = directionMap.get(candidate.vaultAddress.toLowerCase()) ?? "neutral";
+            if (dir === "neutral" || directionCounts[dir] < maxSameDirection) {
+                directionCounts[dir] += (dir !== "neutral" ? 1 : 0);
+                accepted.add(candidate.vaultAddress.toLowerCase());
+            } else {
+                logger.info("Skipping vault (directional concentration limit)", {
+                    vaultAddress: candidate.vaultAddress,
+                    vaultName: candidate.name,
+                    direction: dir,
+                    currentCount: directionCounts[dir],
+                    maxSameDirection,
+                });
+            }
+        }
+
+        const limitedHighWithoutExposure = slotLimitedHigh.filter(
+            v => accepted.has(v.vaultAddress.toLowerCase())
+        );
+        const limitedLowWithoutExposure = slotLimitedLow.filter(
+            v => accepted.has(v.vaultAddress.toLowerCase())
+        );
+
+        if (accepted.size < allCandidates.length) {
+            logger.info("Directional concentration filter applied", {
+                before: allCandidates.length,
+                after: accepted.size,
+                directionCounts,
+                maxSameDirection,
             });
         }
 
@@ -357,6 +416,18 @@ export class DepositService {
         let errors = 0;
         const actions: VaultTransferAction[] = [];
 
+        logger.info("Executing deposit plan", {
+            dryRun,
+            minDepositUsd,
+            targetCount: plan.targets.length,
+            totalDepositUsd: plan.targets.reduce((s, t) => s + t.depositUsd, 0),
+            targets: plan.targets.map(t => ({
+                name: t.name,
+                confidence: t.confidence,
+                depositUsd: t.depositUsd,
+            })),
+        });
+
         for (const target of plan.targets) {
             if (target.depositUsd < minDepositUsd) {
                 skipped += 1;
@@ -379,7 +450,16 @@ export class DepositService {
                 dryRun,
             });
             actions.push(result.action);
-            if (result.action.status === "submitted") submitted += 1;
+            if (result.action.status === "submitted") {
+                submitted += 1;
+                logger.info("Deposit submitted", {
+                    vaultAddress: target.vaultAddress,
+                    vaultName: target.name,
+                    depositUsd: target.depositUsd,
+                    confidence: target.confidence,
+                    dryRun,
+                });
+            }
             if (result.action.status === "skipped") skipped += 1;
             if (result.action.status === "error") {
                 errors += 1;
@@ -474,4 +554,45 @@ function roundPct(value: number): number {
 
 function roundUsd(value: number): number {
     return Math.round(value * 100) / 100;
+}
+
+async function classifyVaultDirections(
+    vaultAddresses: string[]
+): Promise<Map<string, "long" | "short" | "neutral">> {
+    const result = new Map<string, "long" | "short" | "neutral">();
+    for (const addr of vaultAddresses) {
+        try {
+            const summary = await HyperliquidConnector.getVaultAccountSummary(addr);
+            if (!summary || !Array.isArray(summary.assetPositions) || summary.assetPositions.length === 0) {
+                result.set(addr.toLowerCase(), "neutral");
+                continue;
+            }
+            let netExposure = 0;
+            let grossExposure = 0;
+            for (const entry of summary.assetPositions) {
+                const pos = entry?.position;
+                if (!pos) continue;
+                const szi = Number(pos.szi);
+                const value = Math.abs(Number(pos.positionValue ?? 0));
+                if (!Number.isFinite(szi) || !Number.isFinite(value)) continue;
+                netExposure += szi >= 0 ? value : -value;
+                grossExposure += value;
+            }
+            if (grossExposure === 0) {
+                result.set(addr.toLowerCase(), "neutral");
+                continue;
+            }
+            const netRatio = netExposure / grossExposure;
+            if (netRatio > 0.2) result.set(addr.toLowerCase(), "long");
+            else if (netRatio < -0.2) result.set(addr.toLowerCase(), "short");
+            else result.set(addr.toLowerCase(), "neutral");
+        } catch (error: any) {
+            logger.warn("Failed to classify vault direction", {
+                vaultAddress: addr,
+                error: error?.message,
+            });
+            result.set(addr.toLowerCase(), "neutral");
+        }
+    }
+    return result;
 }

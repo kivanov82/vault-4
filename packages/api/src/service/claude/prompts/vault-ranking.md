@@ -127,15 +127,16 @@ Before finalizing rankings, assess each vault's **directional alignment** with t
 Ranking task
 
 1. Compute `score_market` for each vault; sort descending.
-2. Select up to 10 as the deposit targets for the next 7 days.
+2. Select up to 12 as the recommended vaults. **Important**: vaults in `already_exposed`
+   should be included in this list if they still rank well — keeping a good existing position
+   is better than churning into a marginally better new one. Only drop an `already_exposed`
+   vault if it ranks poorly (below rank 15) or its score dropped > 1.0 robust z.
 
 Allocation logic (barbell, flexible count)
 
-- Select up to `max_active=10` from the ranked list.
+- Select up to `max_active=12` from the ranked list.
 - High confidence bucket = top `ceil(0.7 * N)`, low confidence = the rest.
 - Allocate `high_pct` evenly or risk-parity by `sigma_rt`, capped per-vault (e.g., 15%).
-- If `already_exposed` is provided, do not force churn: replace only those below a
-  threshold (e.g., rank > 15 or score drop > 1.0 robust z).
 
 TP/SL framework
 
@@ -162,7 +163,7 @@ Return ONLY this compact JSON structure (no text before or after):
 }
 ```
 
-Keep responses minimal to stay within token limits. Include all 10 vaults in top10 and targets arrays.
+Keep responses minimal to stay within token limits. Include all ranked vaults (up to 12) in top10 and targets arrays.
 
 Constraints
 

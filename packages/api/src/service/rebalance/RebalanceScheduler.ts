@@ -57,14 +57,28 @@ export class RebalanceScheduler {
             return;
         }
         this.running = true;
+        const runStart = Date.now();
+        logger.info("Rebalance scheduled run starting", {
+            timestamp: new Date(runStart).toISOString(),
+        });
         try {
-            await RebalanceOrchestrator.runRound({
+            const result = await RebalanceOrchestrator.runRound({
                 dryRun: false,
                 refreshCandidates: true,
                 refreshRecommendations: true,
             });
+            logger.info("Rebalance scheduled run completed successfully", {
+                durationMs: Date.now() - runStart,
+                tpWithdrawals: result.tpWithdrawals.length,
+                withdrawals: result.withdrawals.length,
+                depositsSubmitted: result.deposits?.submitted ?? 0,
+                recommended: result.recommended.length,
+            });
         } catch (error: any) {
-            logger.warn("Rebalance round failed", { message: error?.message });
+            logger.warn("Rebalance round failed", {
+                message: error?.message,
+                durationMs: Date.now() - runStart,
+            });
         } finally {
             this.running = false;
         }

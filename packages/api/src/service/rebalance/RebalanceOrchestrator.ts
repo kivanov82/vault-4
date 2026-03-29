@@ -2,7 +2,13 @@ import { DepositService } from "./DepositService";
 import { RebalanceService, type VaultTransferAction } from "./RebalanceService";
 import { VaultService } from "../vaults/VaultService";
 import { HyperliquidConnector } from "../trade/HyperliquidConnector";
+import { MarketDataService } from "../claude/MarketDataService";
 import { logger } from "../utils/logger";
+
+const STOP_LOSS_PCT = Number(process.env.STOP_LOSS_PCT ?? -15);
+const HARD_STOP_LOSS_PCT = Number(process.env.HARD_STOP_LOSS_PCT ?? -25);
+const MIN_HOLD_DAYS = Number(process.env.MIN_HOLD_DAYS ?? 5);
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 export type RebalanceRoundOptions = {
     dryRun?: boolean;
@@ -49,13 +55,49 @@ export class RebalanceOrchestrator {
             maxActive: 10,
         });
 
-        const recommended = plan.targets.map((target) =>
-            target.vaultAddress.toLowerCase()
+        // Build recommended set from the FULL recommendation list (before exposure filtering),
+        // not just deposit targets. Deposit targets exclude vaults we already hold,
+        // but we need to know if our current positions are still recommended by Claude.
+        const allRecommended = [
+            ...plan.recommendations.highConfidence,
+            ...plan.recommendations.lowConfidence,
+        ];
+        const recommended = allRecommended.map((rec) =>
+            rec.vaultAddress.toLowerCase()
         );
         const recommendedSet = new Set(recommended);
 
+        logger.info("Recommendation set built", {
+            source: plan.recommendations.source,
+            model: plan.recommendations.model,
+            totalRecommended: recommendedSet.size,
+            highConfidence: plan.recommendations.highConfidence.map(r => ({
+                name: r.name, score: r.score, address: r.vaultAddress,
+            })),
+            lowConfidence: plan.recommendations.lowConfidence.map(r => ({
+                name: r.name, score: r.score, address: r.vaultAddress,
+            })),
+            depositTargets: plan.targets.length,
+            totalCapitalUsd: plan.totalCapitalUsd,
+            availableBalanceUsd: plan.availableBalanceUsd,
+        });
+
         const positions = await VaultService.getPlatformPositions({
             refresh: options.refreshRecommendations ?? options.refreshCandidates,
+        });
+
+        logger.info("Current positions snapshot", {
+            totalPositions: positions.totalPositions,
+            totalCapitalUsd: positions.totalCapitalUsd,
+            totalInvestedUsd: positions.totalInvestedUsd,
+            netPnlUsd: positions.netPnlUsd,
+            positions: positions.positions.map(p => ({
+                name: p.vaultName,
+                amountUsd: p.amountUsd,
+                roePct: p.roePct,
+                pnlUsd: p.pnlUsd,
+                isRecommended: recommendedSet.has(p.vaultAddress.toLowerCase()),
+            })),
         });
 
         // Use recommendations from the plan (already fetched in buildDepositPlan)
@@ -130,15 +172,97 @@ export class RebalanceOrchestrator {
             tpWithdrawals.push(result.action);
         }
 
-        // Full exit from non-recommended vaults and inactive vaults
+        // Build deposit time map for hold period enforcement
+        const depositTimeMap = await buildLastDepositTimeMap();
+        const now = Date.now();
+        const minHoldMs = MIN_HOLD_DAYS * MS_PER_DAY;
+
+        // Fetch market direction for stop-loss intelligence
+        let marketDirection: "long" | "short" | "neutral" = "neutral";
+        try {
+            const marketData = await MarketDataService.getMarketData();
+            marketDirection = marketData.preferred_direction;
+        } catch (err: any) {
+            logger.warn("Failed to fetch market direction for stop-loss check", {
+                error: err?.message,
+            });
+        }
+
+        logger.info("Withdrawal scan starting", {
+            positionCount: positions.positions.length,
+            marketDirection,
+            stopLossPct: STOP_LOSS_PCT,
+            hardStopLossPct: HARD_STOP_LOSS_PCT,
+            minHoldDays: MIN_HOLD_DAYS,
+            depositTimeEntries: depositTimeMap.size,
+        });
+
+        // Full exit from non-recommended, inactive, and stop-loss vaults
         const withdrawals: VaultTransferAction[] = [];
         for (const position of positions.positions) {
             const address = position.vaultAddress.toLowerCase();
+            const roePct = position.roePct ?? 0;
             const pnlUsd =
                 typeof position.pnlUsd === "number" ? position.pnlUsd : null;
 
-            // Check if vault is inactive (0 positions, no trades in 7 days)
-            // Withdraw from inactive vaults regardless of recommendation status or PnL
+            // 1. HARD STOP-LOSS: Exit unconditionally at severe loss
+            if (roePct <= HARD_STOP_LOSS_PCT) {
+                logger.info("Hard stop-loss triggered", {
+                    vaultAddress: position.vaultAddress,
+                    vaultName: position.vaultName,
+                    roePct,
+                    threshold: HARD_STOP_LOSS_PCT,
+                    pnlUsd,
+                    reason: "hard-stop-loss",
+                });
+                const result = await RebalanceService.withdrawAllFromVault({
+                    vaultAddress: position.vaultAddress as `0x${string}`,
+                    dryRun,
+                    includeLocked,
+                    sweepDust: true,
+                });
+                withdrawals.push(result.action);
+                continue;
+            }
+
+            // 2. SOFT STOP-LOSS: Exit at -15% if vault is NOT recommended OR not aligned with market
+            if (roePct <= STOP_LOSS_PCT) {
+                const isRecommended = recommendedSet.has(address);
+                const vaultDirection = await getVaultNetDirection(position.vaultAddress);
+                const isAligned = vaultDirection === marketDirection || marketDirection === "neutral";
+
+                if (!isRecommended || !isAligned) {
+                    logger.info("Stop-loss triggered (not recommended or mis-aligned)", {
+                        vaultAddress: position.vaultAddress,
+                        vaultName: position.vaultName,
+                        roePct,
+                        threshold: STOP_LOSS_PCT,
+                        pnlUsd,
+                        isRecommended,
+                        vaultDirection,
+                        marketDirection,
+                        reason: "stop-loss",
+                    });
+                    const result = await RebalanceService.withdrawAllFromVault({
+                        vaultAddress: position.vaultAddress as `0x${string}`,
+                        dryRun,
+                        includeLocked,
+                        sweepDust: true,
+                    });
+                    withdrawals.push(result.action);
+                    continue;
+                }
+
+                logger.info("Stop-loss threshold hit but vault is recommended and aligned — holding", {
+                    vaultAddress: position.vaultAddress,
+                    vaultName: position.vaultName,
+                    roePct,
+                    vaultDirection,
+                    marketDirection,
+                });
+            }
+
+            // 3. INACTIVE VAULT EXIT: Withdraw from vaults with 0 positions + 0 trades in 7d
             const isInactive = await checkVaultInactive(position.vaultAddress);
 
             if (isInactive) {
@@ -159,22 +283,35 @@ export class RebalanceOrchestrator {
                 continue;
             }
 
-            // Skip withdrawal if still in recommendations (handled by TP strategy)
+            // 4. Skip if still in recommendations (handled by TP strategy above)
             if (recommendedSet.has(address)) {
                 continue;
             }
 
-            // Normal withdrawal logic: only withdraw if ROE >= 2%
-            const EXIT_THRESHOLD_PCT = 2;
-            const roePct = position.roePct ?? 0;
-            if (roePct < EXIT_THRESHOLD_PCT) {
-                logger.info("Skipping withdrawal (ROE below threshold)", {
+            // 5. HOLD PERIOD: Don't rotate out of recently entered vaults (unless stop-loss, handled above)
+            const lastDeposit = depositTimeMap.get(address);
+            if (lastDeposit && (now - lastDeposit) < minHoldMs) {
+                const holdDaysRemaining = ((minHoldMs - (now - lastDeposit)) / MS_PER_DAY).toFixed(1);
+                logger.info("Skipping exit (minimum hold period not met)", {
                     vaultAddress: position.vaultAddress,
+                    vaultName: position.vaultName,
                     roePct,
-                    threshold: EXIT_THRESHOLD_PCT,
+                    daysSinceDeposit: ((now - lastDeposit) / MS_PER_DAY).toFixed(1),
+                    minHoldDays: MIN_HOLD_DAYS,
+                    holdDaysRemaining,
+                    reason: "hold-period",
                 });
                 continue;
             }
+
+            // 6. EXIT NON-RECOMMENDED: Vault is not recommended and hold period is met — exit
+            logger.info("Exiting non-recommended vault", {
+                vaultAddress: position.vaultAddress,
+                vaultName: position.vaultName,
+                roePct,
+                pnlUsd,
+                reason: "not-recommended",
+            });
             const result = await RebalanceService.withdrawAllFromVault({
                 vaultAddress: position.vaultAddress as `0x${string}`,
                 dryRun,
@@ -216,12 +353,31 @@ export class RebalanceOrchestrator {
             minDepositUsd,
         });
 
+        // Categorize withdrawal reasons for analysis
+        const withdrawalsByReason: Record<string, number> = {};
+        for (const w of withdrawals) {
+            const reason = w.reason ?? "unknown";
+            withdrawalsByReason[reason] = (withdrawalsByReason[reason] ?? 0) + 1;
+        }
+
         logger.info("Rebalance round completed", {
             startedAt,
-            tpWithdrawals: tpWithdrawals.length,
-            withdrawals: withdrawals.length,
-            depositsSubmitted: deposits.submitted,
+            durationMs: Date.now() - new Date(startedAt).getTime(),
             dryRun,
+            marketDirection,
+            summary: {
+                tpWithdrawals: tpWithdrawals.length,
+                tpSubmitted: tpWithdrawals.filter(a => a.status === "submitted").length,
+                withdrawals: withdrawals.length,
+                withdrawalsSubmitted: withdrawals.filter(a => a.status === "submitted").length,
+                withdrawalsByReason,
+                depositsTotal: deposits.total,
+                depositsSubmitted: deposits.submitted,
+                depositsSkipped: deposits.skipped,
+                depositsErrors: deposits.errors,
+            },
+            recommended: recommendedSet.size,
+            positionsAfter: positions.totalPositions,
         });
 
         return {
@@ -306,6 +462,59 @@ async function checkVaultInactive(vaultAddress: string): Promise<boolean> {
         });
         // If we can't check, assume it's active (don't withdraw on error)
         return false;
+    }
+}
+
+async function getVaultNetDirection(vaultAddress: string): Promise<"long" | "short" | "neutral"> {
+    try {
+        const summary = await HyperliquidConnector.getVaultAccountSummary(vaultAddress);
+        if (!summary || !Array.isArray(summary.assetPositions) || summary.assetPositions.length === 0) {
+            return "neutral";
+        }
+        let netExposure = 0;
+        let grossExposure = 0;
+        for (const entry of summary.assetPositions) {
+            const pos = entry?.position;
+            if (!pos) continue;
+            const szi = Number(pos.szi);
+            const value = Math.abs(Number(pos.positionValue ?? 0));
+            if (!Number.isFinite(szi) || !Number.isFinite(value)) continue;
+            netExposure += szi >= 0 ? value : -value;
+            grossExposure += value;
+        }
+        if (grossExposure === 0) return "neutral";
+        const netRatio = netExposure / grossExposure;
+        if (netRatio > 0.2) return "long";
+        if (netRatio < -0.2) return "short";
+        return "neutral";
+    } catch (error: any) {
+        logger.warn("Failed to get vault net direction", {
+            vaultAddress,
+            error: error?.message,
+        });
+        return "neutral";
+    }
+}
+
+async function buildLastDepositTimeMap(): Promise<Map<string, number>> {
+    const wallet = process.env.WALLET as `0x${string}` | undefined;
+    if (!wallet) return new Map();
+    try {
+        const updates = await HyperliquidConnector.getUserVaultLedgerUpdates(wallet);
+        const map = new Map<string, number>();
+        for (const update of updates) {
+            if (update.type !== "vaultDeposit") continue;
+            if (!Number.isFinite(update.time)) continue;
+            const addr = update.vault.toLowerCase();
+            const existing = map.get(addr);
+            if (!existing || update.time > existing) {
+                map.set(addr, update.time);
+            }
+        }
+        return map;
+    } catch (error: any) {
+        logger.warn("Failed to build deposit time map", { error: error?.message });
+        return new Map();
     }
 }
 

@@ -59,9 +59,15 @@ src/
 
 **Withdrawals (priority order):**
 
-1. **Inactive Vault Exits** — Withdraw ALL from vaults with 0 positions + 0 trades in 7 days (regardless of PnL)
-2. **Take-Profit Partial Withdrawals** — Over-allocated vaults with ROE >= 10%, withdraw excess to target
-3. **Full Exits** — Non-recommended vaults with ROE >= 2% (prevents realizing small losses)
+1. **Hard Stop-Loss** — Exit unconditionally at ROE <= -25% (`HARD_STOP_LOSS_PCT`)
+2. **Soft Stop-Loss** — Exit at ROE <= -15% (`STOP_LOSS_PCT`) if vault is NOT recommended OR not aligned with market direction
+3. **Inactive Vault Exits** — Withdraw ALL from vaults with 0 positions + 0 trades in 7 days (regardless of PnL)
+4. **Take-Profit Partial Withdrawals** — Over-allocated recommended vaults with ROE >= 10%, withdraw excess to target
+5. **Hold Period Check** — Non-recommended vaults within minimum hold period (5 days, `MIN_HOLD_DAYS`) are kept
+6. **Full Exits** — All non-recommended vaults past hold period are exited unconditionally
+
+**Deposit filtering:**
+- Directional concentration limit: max 60% of new deposits in same direction (`MAX_SAME_DIRECTION_PCT`)
 
 Wait 60s after withdrawals before deposits (configurable via `REBALANCE_WITHDRAWAL_DELAY_MS`).
 
