@@ -41,6 +41,10 @@ const DEFAULT_FILTERS: VaultFilters = {
         (process.env.VAULT_REQUIRE_POSITIVE_WEEKLY_PNL ?? "false") === "true",
     requirePositiveMonthlyPnl:
         (process.env.VAULT_REQUIRE_POSITIVE_MONTHLY_PNL ?? "false") === "true",
+    requirePositiveAllTimePnl:
+        (process.env.VAULT_REQUIRE_POSITIVE_ALLTIME_PNL ?? "true") === "true",
+    maxDrawdownPct: readNumberEnv(process.env.VAULT_MAX_DRAWDOWN_PCT, 30),
+    maxMarginUtilPct: readNumberEnv(process.env.VAULT_MAX_MARGIN_UTIL_PCT, 50),
     requireDepositsOpen: true
 };
 
@@ -151,6 +155,11 @@ export class VaultService {
                 !(performance.monthlyPnl !== null && performance.monthlyPnl > 0)
             )
                 continue;
+            if (
+                filters.requirePositiveAllTimePnl &&
+                !(performance.allTimePnl !== null && performance.allTimePnl > 0)
+            )
+                continue;
 
             prefiltered.push({
                 vault,
@@ -170,6 +179,9 @@ export class VaultService {
                 minAgeDays: filters.minAgeDays,
                 requirePositiveWeeklyPnl: filters.requirePositiveWeeklyPnl,
                 requirePositiveMonthlyPnl: filters.requirePositiveMonthlyPnl,
+                requirePositiveAllTimePnl: filters.requirePositiveAllTimePnl,
+                maxDrawdownPct: filters.maxDrawdownPct,
+                maxMarginUtilPct: filters.maxMarginUtilPct,
             },
         });
 
@@ -231,6 +243,32 @@ export class VaultService {
                     vaultAddress: entry.summary.vaultAddress,
                 });
                 continue;
+            }
+            // Max drawdown filter: reject vaults with excessive historical drawdown
+            if (filters.maxDrawdownPct > 0) {
+                const dd = maxDrawdownFromPnls(entry.vault.pnls, entry.tvl);
+                if (dd !== null && dd > filters.maxDrawdownPct) {
+                    logger.info("Skipping vault candidate (drawdown too high)", {
+                        name: entry.summary.name,
+                        vaultAddress: entry.summary.vaultAddress,
+                        drawdownPct: round(dd, 2),
+                        maxAllowed: filters.maxDrawdownPct,
+                    });
+                    continue;
+                }
+            }
+            // Margin utilization filter: reject overly leveraged vaults
+            if (filters.maxMarginUtilPct > 0) {
+                const marginUtil = accountSummary?.marginUtilPct;
+                if (marginUtil !== null && marginUtil !== undefined && marginUtil > filters.maxMarginUtilPct) {
+                    logger.info("Skipping vault candidate (margin utilization too high)", {
+                        name: entry.summary.name,
+                        vaultAddress: entry.summary.vaultAddress,
+                        marginUtilPct: round(marginUtil, 2),
+                        maxAllowed: filters.maxMarginUtilPct,
+                    });
+                    continue;
+                }
             }
 
             logger.info("Found vault candidate", { name: entry.summary.name });
@@ -723,8 +761,35 @@ function sameFilters(a: VaultFilters, b: VaultFilters): boolean {
         a.minTrades7d === b.minTrades7d &&
         a.requirePositiveWeeklyPnl === b.requirePositiveWeeklyPnl &&
         a.requirePositiveMonthlyPnl === b.requirePositiveMonthlyPnl &&
+        a.requirePositiveAllTimePnl === b.requirePositiveAllTimePnl &&
+        a.maxDrawdownPct === b.maxDrawdownPct &&
+        a.maxMarginUtilPct === b.maxMarginUtilPct &&
         a.requireDepositsOpen === b.requireDepositsOpen
     );
+}
+
+function maxDrawdownFromPnls(pnls: any, tvl: number): number | null {
+    if (!Array.isArray(pnls) || !pnls.length || tvl <= 0) return null;
+    // Find the allTime series (index 0) or the longest available
+    const allTimeSeries = pnls[0];
+    const points = Array.isArray(allTimeSeries?.[1]) ? allTimeSeries[1] : allTimeSeries;
+    if (!Array.isArray(points) || points.length < 2) return null;
+
+    let peak = -Infinity;
+    let maxDdPct = 0;
+    for (const point of points) {
+        // points are [timestamp, pnl] or just pnl values
+        const pnl = Number(Array.isArray(point) ? point[1] ?? point[0] : point);
+        if (!Number.isFinite(pnl)) continue;
+        // Account value = TVL + cumulative PnL (approximation at each point)
+        const value = tvl + pnl;
+        if (value > peak) peak = value;
+        if (peak > 0) {
+            const dd = ((peak - value) / peak) * 100;
+            if (dd > maxDdPct) maxDdPct = dd;
+        }
+    }
+    return maxDdPct > 0 ? maxDdPct : null;
 }
 
 function mergeFilters(overrides?: Partial<VaultFilters>): VaultFilters {

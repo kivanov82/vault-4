@@ -431,24 +431,31 @@ export class HyperliquidConnector {
 
     static async getVaultAccountSummary(
         vaultAddress: string
-    ): Promise<{ assetPositions: any[] } | null> {
+    ): Promise<{ assetPositions: any[]; marginUtilPct: number | null }> {
         try {
             const response = await axios.post(HYPERLIQUID_INFO_URL, {
                 type: "webData2",
                 user: vaultAddress,
             });
             const data = response?.data;
-            const assetPositions = data?.clearinghouseState?.assetPositions;
-            if (!data || !Array.isArray(assetPositions)) {
-                return { assetPositions: [] };
-            }
-            return { assetPositions };
+            const clearinghouse = data?.clearinghouseState;
+            const assetPositions = Array.isArray(clearinghouse?.assetPositions)
+                ? clearinghouse.assetPositions
+                : [];
+            const margin = clearinghouse?.crossMarginSummary ?? clearinghouse?.marginSummary;
+            const accountValue = toNumberSafe(margin?.accountValue);
+            const totalMarginUsed = toNumberSafe(margin?.totalMarginUsed);
+            const marginUtilPct =
+                Number.isFinite(accountValue) && accountValue > 0 && Number.isFinite(totalMarginUsed)
+                    ? (totalMarginUsed / accountValue) * 100
+                    : null;
+            return { assetPositions, marginUtilPct };
         } catch (error: any) {
             logger.warn("Failed to fetch vault account summary", {
                 vaultAddress,
                 message: error?.message,
             });
-            return null;
+            return { assetPositions: [], marginUtilPct: null };
         }
     }
 

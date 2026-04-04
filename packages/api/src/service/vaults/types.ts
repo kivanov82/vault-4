@@ -7,6 +7,9 @@ export type VaultFilters = {
     minTrades7d: number;
     requirePositiveWeeklyPnl: boolean;
     requirePositiveMonthlyPnl: boolean;
+    requirePositiveAllTimePnl: boolean;
+    maxDrawdownPct: number;
+    maxMarginUtilPct: number;
     requireDepositsOpen: boolean;
 };
 
