@@ -68,7 +68,9 @@ export function PerformanceMetrics() {
   }, [retryKey])
 
   const tvl = useCountUp(metrics?.tvlUsd ?? null)
-  const annualizedRaw = metrics?.pnlChange60dPct != null ? metrics.pnlChange60dPct * 6 : null
+  const annualizedRaw = metrics?.pnlChange60dPct != null
+    ? (Math.pow(1 + metrics.pnlChange60dPct / 100, 365 / 60) - 1) * 100
+    : null
   const annualized = useCountUp(annualizedRaw)
   const pnl30d = useCountUp(metrics?.pnlChange30dPct ?? null)
   const drawdown = useCountUp(metrics?.maxDrawdownPct ?? null)

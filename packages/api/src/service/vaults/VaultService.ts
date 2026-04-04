@@ -520,8 +520,8 @@ export class VaultService {
                         ? (pnlUsd / entryUsd) * 100
                         : null;
                 const sizePct =
-                    totalCapital && totalCapital > 0 && amountUsd !== null
-                        ? (amountUsd / totalCapital) * 100
+                    investedUsd > 0 && amountUsd !== null
+                        ? (amountUsd / investedUsd) * 100
                         : null;
                 return {
                     vaultAddress: entry.vaultAddress,
@@ -638,8 +638,8 @@ export class VaultService {
             Number.isFinite(currentAccountValue) && Number.isFinite(value30d)
                 ? (currentAccountValue as number) - (value30d as number)
                 : null;
-        const pnlChange30dPct = calcPnlPct(updates, MIN_POSITION_USD, 30);
-        const pnlChange60dPct = calcPnlPct(updates, MIN_POSITION_USD, 60);
+        const pnlChange30dPct = calcPnlPct(updates, MIN_POSITION_USD, 30, positions.positions);
+        const pnlChange60dPct = calcPnlPct(updates, MIN_POSITION_USD, 60, positions.positions);
         const maxDrawdownPct = await calcProRataMaxDrawdownPct(vaults.items, updates, MIN_POSITION_USD);
         const winRatePct = calcWinRatePct(updates, LAUNCH_DATE_MS, MIN_POSITION_USD);
 
@@ -825,7 +825,7 @@ function buildLedgerByVault(
                 withdrawals += entry.usdc;
                 current -= entry.usdc;
             }
-            if (current < minPositionUsd) {
+            if (current < 0) {
                 current = 0;
             }
         }
@@ -1277,7 +1277,8 @@ async function calcProRataMaxDrawdownPct(
 function calcPnlPct(
     updates: UserLedgerUpdate[],
     minUsd: number,
-    days: number = 30
+    days: number = 30,
+    openPositions?: { pnlUsd: number | null; amountUsd: number | null }[]
 ): number | null {
     const cutoff = Date.now() - days * MS_PER_DAY;
     const closures = updates.filter((entry) => {
@@ -1290,7 +1291,6 @@ function calcPnlPct(
             (entry.basisUsd as number) > 0
         );
     });
-    if (!closures.length) return null;
     let totalPnl = 0;
     let totalBasis = 0;
     for (const entry of closures) {
@@ -1298,6 +1298,17 @@ function calcPnlPct(
         const pnl = (entry.netWithdrawnUsd as number) - basis;
         totalPnl += pnl;
         totalBasis += basis;
+    }
+    if (openPositions) {
+        for (const pos of openPositions) {
+            if (pos.pnlUsd !== null && pos.amountUsd !== null && Number.isFinite(pos.pnlUsd) && Number.isFinite(pos.amountUsd)) {
+                const basis = pos.amountUsd - pos.pnlUsd;
+                if (basis > 0) {
+                    totalPnl += pos.pnlUsd;
+                    totalBasis += basis;
+                }
+            }
+        }
     }
     if (totalBasis <= 0) return null;
     return (totalPnl / totalBasis) * 100;

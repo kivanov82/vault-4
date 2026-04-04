@@ -122,26 +122,12 @@ export function PositionsTable() {
   const netPnl = positionsData?.netPnlUsd ?? null
   const totalPositions = positionsData?.totalPositions ?? 0
   const totalHistoryPages = historyData?.totalPages ?? 1
-  const totalTvl =
-    positionsData?.totalInvestedUsd ??
-    positions.reduce((sum, position) => sum + (position.amountUsd ?? 0), 0)
-
   const maxSizePct = Math.max(
-    ...positions.map((p) =>
-      totalTvl > 0 && p.amountUsd != null ? (p.amountUsd / totalTvl) * 100 : 0
-    ),
+    ...positions.map((p) => p.sizePct ?? 0),
     1,
   )
 
-  const positionsWithSize = positions.map((position) => ({
-    ...position,
-    sizePctFromTvl:
-      totalTvl > 0 && position.amountUsd !== null && position.amountUsd !== undefined
-        ? (position.amountUsd / totalTvl) * 100
-        : null,
-  }))
-
-  const sortedPositions = [...positionsWithSize].sort((a, b) => {
+  const sortedPositions = [...positions].sort((a, b) => {
     const direction = sortConfig.direction === "asc" ? 1 : -1
     const compareNullable = (left: number | string | null, right: number | string | null) => {
       if (left === null && right === null) return 0
@@ -157,7 +143,7 @@ export function PositionsTable() {
       case "asset":
         return direction * compareNullable(a.vaultName ?? a.vaultAddress, b.vaultName ?? b.vaultAddress)
       case "size":
-        return direction * compareNullable(a.sizePctFromTvl, b.sizePctFromTvl)
+        return direction * compareNullable(a.sizePct, b.sizePct)
       case "amount":
         return direction * compareNullable(a.amountUsd, b.amountUsd)
       case "pnl":
@@ -229,7 +215,7 @@ export function PositionsTable() {
             </thead>
             <tbody>
               {sortedPositions.map((pos, i) => {
-                const barWidth = pos.sizePctFromTvl != null ? (pos.sizePctFromTvl / maxSizePct) * 100 : 0
+                const barWidth = pos.sizePct != null ? (pos.sizePct / maxSizePct) * 100 : 0
                 return (
                   <tr key={i} className="border-b border-border/30 hover:bg-secondary/30 transition-colors">
                     <td className="py-2 pr-2 font-semibold text-primary">
@@ -244,7 +230,7 @@ export function PositionsTable() {
                     </td>
                     <td className="py-2 px-2 text-right text-primary position-bar-cell">
                       <div className="position-bar" style={{ width: `${barWidth}%` }} />
-                      <span className="relative z-10">{formatPercent(pos.sizePctFromTvl)}</span>
+                      <span className="relative z-10">{formatPercent(pos.sizePct)}</span>
                     </td>
                     <td className="py-2 px-2 text-right hidden sm:table-cell">{formatUsd(pos.amountUsd)}</td>
                     <td className={`py-2 px-2 text-right ${formatSignedClass(pos.pnlUsd)}`}>

@@ -113,4 +113,4 @@ Vercel. Set Root Directory to `packages/web`.
 - `next.config.mjs` has `ignoreBuildErrors: true` — TypeScript errors won't block builds
 - Action buttons are intentionally locked (beta) — they use `terminal-button-locked` class
 - `account-stats.tsx` fetches real data from `/api/positions` — no `isConnected` prop needed
-- Annualized performance = 60D PnL * 6 (computed client-side from `pnlChange60dPct`)
+- Annualized performance = compound annualization of 60D PnL (computed client-side from `pnlChange60dPct`)

@@ -290,18 +290,13 @@ export class VaultContractService {
         const idleL1 = perpsBalance ?? 0;
         const totalL1Value = vaultEquityTotal + idleL1;
 
-        // Vault's share of L1 = what it deployed, adjusted for PnL proportionally.
-        // If vault deployed $100 out of $1000 total, and total is now $1100,
-        // vault's portion = $100 * ($1100/$1000) = $110
-        //
-        // We use the previous totalAssets as the baseline for the vault's share,
-        // since it reflects the last known vault NAV.
-        const prevNav = state.totalAssets;
-        const nav = prevNav > 0 ? prevNav : state.deployedToL1;
+        // NAV = idle USDC in contract (excl. pending deposits) + total L1 portfolio value.
+        // The L1 wallet is 100% vault capital, so totalL1Value is used directly.
+        const nav = state.idleUsdc + totalL1Value;
 
         logger.info("NAV calculated", {
             deployedToL1: state.deployedToL1.toFixed(2),
-            prevTotalAssets: state.totalAssets.toFixed(2),
+            idleUsdc: state.idleUsdc.toFixed(2),
             totalL1Value: totalL1Value.toFixed(2),
             vaultEquityTotal: vaultEquityTotal.toFixed(2),
             idleL1: idleL1.toFixed(2),
