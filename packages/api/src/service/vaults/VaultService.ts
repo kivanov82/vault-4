@@ -104,6 +104,11 @@ export class VaultService {
         Cached<UserPortfolioSummary | null>
     > = new Map();
 
+    static clearUserCaches(): void {
+        this.userVaultsCache.clear();
+        this.userPortfolioCache.clear();
+    }
+
     static async getCandidates(options: CandidateOptions = {}): Promise<CandidatesResult> {
         logger.info("Searching for vault candidates", {
             refresh: options.refresh,

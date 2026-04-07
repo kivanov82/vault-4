@@ -325,11 +325,15 @@ export class RebalanceOrchestrator {
             withdrawals.some((action) => action.status === "submitted") ||
             tpWithdrawals.some((action) => action.status === "submitted");
 
-        if (withdrawalDelayMs > 0 && hasSubmittedWithdrawals) {
-            logger.info("Waiting for withdrawals to settle", {
-                withdrawalDelayMs,
-            });
-            await sleep(withdrawalDelayMs);
+        if (hasSubmittedWithdrawals) {
+            const withdrawnVaults = [...withdrawals, ...tpWithdrawals]
+                .filter((a) => a.status === "submitted")
+                .map((a) => a.vaultAddress.toLowerCase());
+
+            await waitForWithdrawalsToSettle(withdrawnVaults, withdrawalDelayMs);
+
+            // Invalidate position caches so deposit plan sees fresh state
+            VaultService.clearUserCaches();
         }
 
         // Rebuild deposit plan after withdrawals to pick up freed slots
@@ -515,6 +519,66 @@ async function buildLastDepositTimeMap(): Promise<Map<string, number>> {
     } catch (error: any) {
         logger.warn("Failed to build deposit time map", { error: error?.message });
         return new Map();
+    }
+}
+
+const WITHDRAWAL_POLL_INTERVAL_MS = 10_000;
+const WITHDRAWAL_DUST_USD = 1;
+
+async function waitForWithdrawalsToSettle(
+    vaultAddresses: string[],
+    maxWaitMs: number
+): Promise<void> {
+    if (!vaultAddresses.length) return;
+    const wallet = process.env.WALLET as `0x${string}` | undefined;
+    if (!wallet) {
+        logger.warn("No WALLET set, falling back to blind sleep for withdrawal settle");
+        await sleep(maxWaitMs);
+        return;
+    }
+
+    const pending = new Set(vaultAddresses.map((a) => a.toLowerCase()));
+    const deadline = Date.now() + maxWaitMs;
+
+    logger.info("Polling for withdrawal settlement", {
+        vaults: vaultAddresses.length,
+        maxWaitMs,
+    });
+
+    while (pending.size > 0 && Date.now() < deadline) {
+        await sleep(WITHDRAWAL_POLL_INTERVAL_MS);
+        try {
+            const equities = await HyperliquidConnector.getUserVaultEquities(wallet);
+            const equityMap = new Map(
+                equities.map((e) => [e.vaultAddress.toLowerCase(), e.equity])
+            );
+
+            for (const vault of [...pending]) {
+                const equity = equityMap.get(vault) ?? 0;
+                if (equity < WITHDRAWAL_DUST_USD) {
+                    pending.delete(vault);
+                    logger.info("Withdrawal settled", { vault, remainingEquity: equity });
+                }
+            }
+
+            if (pending.size > 0) {
+                logger.info("Waiting for withdrawals to settle", {
+                    remaining: pending.size,
+                    vaults: [...pending],
+                    timeLeftMs: deadline - Date.now(),
+                });
+            }
+        } catch (error: any) {
+            logger.warn("Error polling withdrawal status", { error: error?.message });
+        }
+    }
+
+    if (pending.size > 0) {
+        logger.warn("Withdrawal settlement timed out, proceeding with deposits", {
+            unsettled: [...pending],
+        });
+    } else {
+        logger.info("All withdrawals settled");
     }
 }
 

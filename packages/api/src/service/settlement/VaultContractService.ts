@@ -426,11 +426,6 @@ export class VaultContractService {
         const hasPendingDeposits = state.depositQueueLength > state.depositQueueHead;
         const hasPendingWithdraws = state.pendingWithdraws > 0;
 
-        if (!hasPendingDeposits && !hasPendingWithdraws) {
-            logger.info("Settlement: nothing to settle, skipping");
-            return;
-        }
-
         // 2. Calculate NAV
         const nav = await this.calculateNAV();
         const navUsdc6dec = parseUnits(nav.toFixed(6), 6);
@@ -438,6 +433,8 @@ export class VaultContractService {
         logger.info("Settlement: NAV", {
             nav: nav.toFixed(2),
             navUsdc6dec: navUsdc6dec.toString(),
+            hasPendingDeposits,
+            hasPendingWithdraws,
             dryRun,
         });
 
@@ -452,13 +449,10 @@ export class VaultContractService {
             const shortfall = withdrawValueUsdc - state.idleUsdc;
 
             if (shortfall > 0) {
-                // Cap at available L1 balance to avoid "Insufficient balance" errors.
-                // The contract processes withdrawals until idle USDC runs out,
-                // so partial funding still settles as many requests as possible.
                 const l1Balance = (await HyperliquidConnector.getUserPerpsBalance(WALLET!)) ?? 0;
                 const bridgeAmount = Math.min(
                     Math.ceil(shortfall * 100) / 100,
-                    Math.floor(l1Balance * 100) / 100 // floor to avoid rounding over
+                    Math.floor(l1Balance * 100) / 100
                 );
 
                 logger.info("Settlement: need to fund contract for withdrawals", {
@@ -477,7 +471,7 @@ export class VaultContractService {
             }
         }
 
-        // 4. updateTotalAssets
+        // 4. Always update NAV so share price reflects current portfolio value
         const updateHash = await wallet.writeContract({
             address,
             abi: vault4FundAbi,
@@ -488,7 +482,12 @@ export class VaultContractService {
         await client.waitForTransactionReceipt({ hash: updateHash });
         logger.info("Settlement: updateTotalAssets confirmed");
 
-        // 5. settle
+        // 5. Process pending deposits/withdrawals if any
+        if (!hasPendingDeposits && !hasPendingWithdraws) {
+            logger.info("Settlement: NAV updated, no pending deposits/withdrawals to settle");
+            return;
+        }
+
         const maxDeposits = BigInt(state.depositQueueLength - state.depositQueueHead);
         const maxWithdraws = BigInt(state.withdrawQueueLength);
 
