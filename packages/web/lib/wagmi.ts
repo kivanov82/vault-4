@@ -21,6 +21,11 @@ export const hyperliquidChain = defineChain({
       url: "https://app.hyperliquid.xyz/explorer",
     },
   },
+  contracts: {
+    multicall3: {
+      address: "0xcA11bde05977b3631167028862bE2a173976CA11",
+    },
+  },
 })
 
 export const wagmiConfig = createConfig({
@@ -28,7 +33,9 @@ export const wagmiConfig = createConfig({
   connectors: [injected({ shimDisconnect: true })],
   multiInjectedProviderDiscovery: true,
   transports: {
-    [hyperliquidChain.id]: http(rpcUrl),
+    [hyperliquidChain.id]: http(rpcUrl, {
+      batch: true,
+    }),
   },
   ssr: true,
 })

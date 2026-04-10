@@ -521,17 +521,19 @@ export class VaultService {
         userAddress: string,
         options: { refresh?: boolean } = {}
     ): Promise<UserPositionsResponse> {
-        const vaults = await this.getUserVaults(userAddress, {
-            refresh: options.refresh,
-            includeHistory: true,
-        });
-        const ledgerUpdates = await HyperliquidConnector.getUserVaultLedgerUpdates(
-            userAddress as `0x${string}`
-        );
+        const [vaults, ledgerUpdates, portfolio] = await Promise.all([
+            this.getUserVaults(userAddress, {
+                refresh: options.refresh,
+                includeHistory: true,
+            }),
+            HyperliquidConnector.getUserVaultLedgerUpdates(
+                userAddress as `0x${string}`
+            ),
+            this.getUserPortfolio(userAddress, {
+                refresh: options.refresh,
+            }),
+        ]);
         const ledgerByVault = buildLedgerByVault(ledgerUpdates, MIN_POSITION_USD);
-        const portfolio = await this.getUserPortfolio(userAddress, {
-            refresh: options.refresh,
-        });
         const perpsEquity = extractAccountEquity(portfolio);
         const investedUsd = vaults.items.reduce((sum, entry) => {
             const equity = Number.isFinite(entry.equity) ? entry.equity : 0;
