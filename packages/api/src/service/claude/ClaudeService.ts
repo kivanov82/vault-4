@@ -361,9 +361,9 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
                 : ranked;
 
             const high = ordered.slice(0, highConfidenceCount);
-            const low = ordered.slice(highConfidenceCount, totalCount);
-            if (!high.length || high.length + low.length < totalCount) {
-                logger.warn("Claude response returned insufficient ranked vaults");
+            const low = ordered.slice(highConfidenceCount);
+            if (!high.length) {
+                logger.warn("Claude response returned no high-confidence vaults");
                 return null;
             }
 

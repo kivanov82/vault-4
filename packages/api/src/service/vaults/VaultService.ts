@@ -1089,8 +1089,7 @@ function mapOpenAiRanking(
         if (highRecs.length + lowRecs.length >= totalCount) break;
     }
 
-    const totalSelected = highRecs.length + lowRecs.length;
-    if (totalSelected < Math.min(totalCount, candidates.length)) {
+    if (!highRecs.length) {
         return null;
     }
     return { highConfidence: highRecs, lowConfidence: lowRecs };

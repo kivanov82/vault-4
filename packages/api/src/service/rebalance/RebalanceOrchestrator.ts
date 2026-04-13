@@ -55,6 +55,22 @@ export class RebalanceOrchestrator {
             maxActive: 10,
         });
 
+        // If Claude ranking failed and we fell back to heuristic, abort rebalancing.
+        // Heuristic scoring is unstable across cycles and causes unnecessary churn.
+        if (plan.recommendations.source !== "claude") {
+            logger.warn("Aborting rebalance: Claude ranking failed, heuristic fallback is too unstable for withdrawal decisions", {
+                source: plan.recommendations.source,
+            });
+            return {
+                startedAt,
+                planTargets: plan.targets.length,
+                recommended: [],
+                tpWithdrawals: [],
+                withdrawals: [],
+                deposits: null,
+            };
+        }
+
         // Build recommended set from the FULL recommendation list (before exposure filtering),
         // not just deposit targets. Deposit targets exclude vaults we already hold,
         // but we need to know if our current positions are still recommended by Claude.
