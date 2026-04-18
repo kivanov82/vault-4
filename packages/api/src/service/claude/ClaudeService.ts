@@ -34,7 +34,7 @@ const RANKING_MAX_TOKENS = Number(process.env.CLAUDE_RANKING_MAX_TOKENS ?? 4096)
 const MAX_TRADES = Number(process.env.CLAUDE_MAX_TRADES_PER_VAULT ?? 50);
 const MAX_POSITIONS = Number(process.env.CLAUDE_MAX_POSITIONS_PER_VAULT ?? 30);
 const MAX_PNL_POINTS = Number(process.env.CLAUDE_MAX_PNL_POINTS ?? 60);
-const BATCH_SIZE = Number(process.env.CLAUDE_BATCH_SIZE ?? 10);
+const BATCH_SIZE = Number(process.env.CLAUDE_BATCH_SIZE ?? 5);
 const CLAUDE_API_DELAY_MS = Number(process.env.CLAUDE_API_DELAY_MS ?? 60000);
 
 const PROMPT_PATH = path.join(__dirname, "prompts", "vault-ranking.md");

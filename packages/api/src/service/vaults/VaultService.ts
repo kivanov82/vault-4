@@ -374,6 +374,12 @@ export class VaultService {
             if (!highConfidence.length && !lowConfidence.length) {
                 logger.warn("Claude ranking returned no results, falling back to heuristic", {
                     aiRankingResult: aiRankingResult ? "returned-but-empty" : "null",
+                    claudeHighCount: aiRankingResult?.highConfidence?.length,
+                    claudeLowCount: aiRankingResult?.lowConfidence?.length,
+                    claudeHighAddrs: aiRankingResult?.highConfidence?.map(e => e.vaultAddress),
+                    claudeLowAddrs: aiRankingResult?.lowConfidence?.map(e => e.vaultAddress),
+                    candidatesCount: candidates.length,
+                    candidateAddrs: candidates.slice(0, 5).map(c => c.vaultAddress),
                 });
                 const ranked = rankByHeuristic(candidates, totalCount, highCount);
                 highConfidence = ranked.highConfidence;

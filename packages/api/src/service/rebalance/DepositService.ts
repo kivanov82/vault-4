@@ -272,26 +272,39 @@ export class DepositService {
         const filteredHighCount = limitedHighWithoutExposure.length;
         const filteredLowCount = limitedLowWithoutExposure.length;
 
-        // Calculate barbell-weighted target per vault based on FULL recommendation counts
-        // High confidence vaults get a larger share than low confidence vaults
+        // Combined list of vaults we'll actually deposit into, in priority order.
+        const allFiltered: { rec: VaultRecommendation; confidence: "high" | "low" }[] = [
+            ...limitedHighWithoutExposure.map((rec) => ({ rec, confidence: "high" as const })),
+            ...limitedLowWithoutExposure.map((rec) => ({ rec, confidence: "low" as const })),
+        ];
+
+        // Prefer Claude's per-vault allocations when available. These come from
+        // suggestedAllocations and get populated on each VaultRecommendation via
+        // mapOpenAiRanking. Sum across the FILTERED subset (some recommended vaults
+        // may be skipped for existing exposure or directional limits).
+        const filteredAllocSum = allFiltered.reduce(
+            (sum, { rec }) => sum + Math.max(0, Number(rec.allocationPct) || 0),
+            0
+        );
+        const useClaudeWeights = filteredAllocSum > 0;
+
+        // Fallback even-split targets (used when Claude did not provide allocations,
+        // e.g. heuristic source or parsing failed).
         const totalHighCount = recommendations.highConfidence.length;
         const totalLowCount = recommendations.lowConfidence.length;
-
-        // Calculate per-vault targets using barbell weighting
-        // E.g., with 5 high / 5 low and 70/30 split:
-        //   High target: 70% / 5 = 14% each
-        //   Low target: 30% / 5 = 6% each
         const highTargetPerVault = totalHighCount > 0
             ? totalCapitalUsd * (groupHighPct / 100) / totalHighCount
             : 0;
         const lowTargetPerVault = totalLowCount > 0
             ? totalCapitalUsd * (groupLowPct / 100) / totalLowCount
             : 0;
-
-        // Calculate total allocation needed for new vaults based on their confidence levels
         const highAllocationNeeded = highTargetPerVault * filteredHighCount;
         const lowAllocationNeeded = lowTargetPerVault * filteredLowCount;
-        const totalAllocationNeeded = highAllocationNeeded + lowAllocationNeeded;
+
+        // Total USD we want to deploy into the filtered set.
+        const totalAllocationNeeded = useClaudeWeights
+            ? totalCapitalUsd * (filteredAllocSum / 100)
+            : highAllocationNeeded + lowAllocationNeeded;
 
         // Reserve funds for pending contract withdrawals
         let withdrawReserveUsd = 0;
@@ -338,26 +351,44 @@ export class DepositService {
             perpsBalanceUsd,
             availableForDeposit: roundUsd(availableForDeposit),
             scaleFactor: roundPct(scaleFactor * 100) + "%",
+            allocationSource: useClaudeWeights ? "claude" : "even-split",
+            filteredAllocSum: useClaudeWeights ? roundPct(filteredAllocSum) : undefined,
         });
 
-        const targets: DepositTarget[] = [
-            ...limitedHighWithoutExposure.map((rec) =>
-                buildTargetFromAllocation(
-                    rec,
-                    "high",
-                    adjustedHighAllocation,
-                    filteredHighCount
-                )
-            ),
-            ...limitedLowWithoutExposure.map((rec) =>
-                buildTargetFromAllocation(
-                    rec,
-                    "low",
-                    adjustedLowAllocation,
-                    filteredLowCount
-                )
-            ),
-        ];
+        const targets: DepositTarget[] = useClaudeWeights
+            ? allFiltered.map(({ rec, confidence }) => {
+                  const pct = Math.max(0, Number(rec.allocationPct) || 0);
+                  const perVaultUsd = availableForDeposit * (pct / filteredAllocSum);
+                  const depositUsd = roundUsd(perVaultUsd);
+                  return {
+                      vaultAddress: rec.vaultAddress as `0x${string}`,
+                      name: rec.name,
+                      confidence,
+                      targetPct: roundPct((pct / filteredAllocSum) * 100),
+                      targetUsd: depositUsd,
+                      currentUsd: 0,
+                      desiredUsd: depositUsd,
+                      depositUsd,
+                  };
+              })
+            : [
+                  ...limitedHighWithoutExposure.map((rec) =>
+                      buildTargetFromAllocation(
+                          rec,
+                          "high",
+                          adjustedHighAllocation,
+                          filteredHighCount
+                      )
+                  ),
+                  ...limitedLowWithoutExposure.map((rec) =>
+                      buildTargetFromAllocation(
+                          rec,
+                          "low",
+                          adjustedLowAllocation,
+                          filteredLowCount
+                      )
+                  ),
+              ];
 
         logger.info("Deposit allocation calculated", {
             availableForDeposit,
