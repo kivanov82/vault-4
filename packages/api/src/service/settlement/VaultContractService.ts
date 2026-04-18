@@ -409,9 +409,10 @@ export class VaultContractService {
     /**
      * Run the full settlement:
      *   1. Fund contract from L1 if needed for pending withdrawals
-     *   2. updateTotalAssets (report current NAV)
-     *   3. settle (process deposits + withdrawals)
-     *   4. sweepToL1 (bridge idle USDC back to L1 for investing)
+     *   2. recordL1Return if NAV < deployedToL1 (trading losses)
+     *   3. updateTotalAssets (report current NAV)
+     *   4. settle (process deposits + withdrawals)
+     *   5. sweepToL1 (bridge idle USDC back to L1 for investing)
      */
     static async runSettlement(options: { dryRun?: boolean } = {}): Promise<void> {
         const dryRun = options.dryRun ?? false;
@@ -471,7 +472,27 @@ export class VaultContractService {
             }
         }
 
-        // 4. Always update NAV so share price reflects current portfolio value
+        // 4. If NAV dropped below deployedToL1, record the loss first so
+        //    updateTotalAssets doesn't revert (contract requires NAV >= deployedToL1)
+        const deployedToL1Raw = parseUnits(state.deployedToL1.toFixed(6), 6);
+        if (navUsdc6dec < deployedToL1Raw) {
+            const loss = deployedToL1Raw - navUsdc6dec;
+            logger.info("Settlement: NAV below deployedToL1, recording L1 loss", {
+                nav: nav.toFixed(2),
+                deployedToL1: state.deployedToL1.toFixed(2),
+                loss: Number(formatUnits(loss, 6)).toFixed(2),
+            });
+            const returnHash = await wallet.writeContract({
+                address,
+                abi: vault4FundAbi,
+                functionName: "recordL1Return",
+                args: [loss],
+            });
+            await client.waitForTransactionReceipt({ hash: returnHash });
+            logger.info("Settlement: recordL1Return confirmed", { hash: returnHash });
+        }
+
+        // 5. Always update NAV so share price reflects current portfolio value
         const updateHash = await wallet.writeContract({
             address,
             abi: vault4FundAbi,
@@ -482,7 +503,7 @@ export class VaultContractService {
         await client.waitForTransactionReceipt({ hash: updateHash });
         logger.info("Settlement: updateTotalAssets confirmed");
 
-        // 5. Process pending deposits/withdrawals if any
+        // 6. Process pending deposits/withdrawals if any
         if (!hasPendingDeposits && !hasPendingWithdraws) {
             logger.info("Settlement: NAV updated, no pending deposits/withdrawals to settle");
             return;
@@ -505,14 +526,14 @@ export class VaultContractService {
         await client.waitForTransactionReceipt({ hash: settleHash });
         logger.info("Settlement: settle confirmed");
 
-        // 6. Sweep idle USDC: contract → manager wallet → L1
+        // 7. Sweep idle USDC: contract → manager wallet → L1
         //    The USDC system address (0x2000…) is blacklisted, so sweepToL1 sends
         //    USDC to the manager wallet on EVM, then we bridge it to L1 via the API.
         const postState = await this.getContractState();
         const idleUsdc = postState.availableForInstantWithdraw;
 
         if (idleUsdc > 0) {
-            // Step 6a: Contract sends USDC to manager wallet on EVM
+            // Step 7a: Contract sends USDC to manager wallet on EVM
             const sweepAmount = parseUnits(idleUsdc.toFixed(6), 6);
             const sweepHash = await wallet.writeContract({
                 address,
@@ -527,13 +548,13 @@ export class VaultContractService {
             await client.waitForTransactionReceipt({ hash: sweepHash });
             logger.info("Settlement: sweepToL1 confirmed");
 
-            // Step 6b: Bridge from manager wallet (EVM Spot) to L1 Perps
+            // Step 7b: Bridge from manager wallet (EVM Spot) to L1 Perps
             await this.bridgeEvmToL1(idleUsdc);
         } else {
             logger.info("Settlement: no idle USDC to sweep");
         }
 
-        // 7. Log final state + post to X
+        // 8. Log final state + post to X
         const finalState = await this.getContractState();
         logger.info("Settlement: complete", {
             epoch: finalState.epoch,
