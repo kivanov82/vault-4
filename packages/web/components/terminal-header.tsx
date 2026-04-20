@@ -42,7 +42,7 @@ export function TerminalHeader() {
       <div className="flex items-center justify-between gap-2">
         <div className="flex-1 min-w-0">
           <h1
-            className="text-sm md:text-base font-bold glow-pulse truncate glitch-hover cursor-default"
+            className="text-sm md:text-base font-bold glow-pulse truncate glitch-hover glitch-auto cursor-default"
             data-text="> Vault 4"
           >
             {">"} Vault 4

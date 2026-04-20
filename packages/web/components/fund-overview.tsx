@@ -17,7 +17,7 @@ export function FundOverview() {
 
   return (
     <div className="terminal-border-cyan p-3">
-      <BlinkingLabel text="VAULT-4 FUND" prefix="//" color="cyan" as="h2" />
+      <BlinkingLabel text="MY_HOLDINGS" prefix="//" color="cyan" as="h2" />
 
       <div className="mt-3 space-y-3">
         {/* Your position (only when connected and has shares) */}
@@ -28,13 +28,6 @@ export function FundOverview() {
             ) : (
               <span className="text-2xl md:text-3xl font-bold glow-text-cyan text-[color:var(--terminal-cyan)]">
                 {formatUsd(yourValue)}
-              </span>
-            )}
-            {loading ? (
-              <TerminalSkeletonLine variant="cyan" className="w-32 h-4" />
-            ) : (
-              <span className="text-xs text-[color:var(--terminal-cyan-dim)]">
-                {formatShares(investor.shares)} V4FUND
               </span>
             )}
           </div>

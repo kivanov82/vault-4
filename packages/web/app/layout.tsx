@@ -92,6 +92,8 @@ export default function RootLayout({
       <body className={`${firaCode.className} antialiased`}>
         <Providers>
           <div className="scanline-overlay" />
+          <div className="film-grain" />
+          <div className="crt-retrace" />
           <div className="crt-effect">{children}</div>
         </Providers>
         <Analytics />

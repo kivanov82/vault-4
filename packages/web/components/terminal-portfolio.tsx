@@ -1,7 +1,8 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { useAccount } from "wagmi"
+import { useAccount, useConnect } from "wagmi"
+import { hyperliquidChain } from "@/lib/wagmi"
 import { TerminalHeader } from "./terminal-header"
 import { AccountStats } from "./account-stats"
 import { FundOverview } from "./fund-overview"
@@ -12,24 +13,35 @@ import { InvestPanel } from "./invest-panel"
 import { QueueStatus } from "./queue-status"
 import { CyclingTextPanel } from "./cycling-text-panel"
 import { MatrixRain } from "./matrix-rain"
+import { AmbientGlow } from "./ambient-glow"
 import { CornerDecorations } from "./corner-decorations"
 
 type Tab = "DASHBOARD" | "INVEST"
 
 export function TerminalPortfolio() {
   const { isConnected } = useAccount()
+  const { connect, connectors } = useConnect()
   const [activeTab, setActiveTab] = useState<Tab>("DASHBOARD")
   const [lastRefresh, setLastRefresh] = useState("")
 
   useEffect(() => {
-    const update = () => setLastRefresh(new Date().toISOString().slice(11, 19))
+    const update = () => setLastRefresh(new Date().toLocaleTimeString([], { hour12: false }))
     update()
     const interval = setInterval(update, 30_000)
     return () => clearInterval(interval)
   }, [])
 
+  const handleTabClick = (tab: Tab) => {
+    setActiveTab(tab)
+    if (tab === "INVEST" && !isConnected) {
+      const connector = connectors[0]
+      if (connector) connect({ connector, chainId: hyperliquidChain.id })
+    }
+  }
+
   return (
     <>
+      <AmbientGlow />
       <MatrixRain />
       <CornerDecorations />
 
@@ -46,7 +58,7 @@ export function TerminalPortfolio() {
                 key={tab}
                 role="tab"
                 aria-selected={activeTab === tab}
-                onClick={() => setActiveTab(tab)}
+                onClick={() => handleTabClick(tab)}
                 className={`flex-1 py-2 text-xs font-semibold tracking-wider transition-all ${
                   activeTab === tab
                     ? "terminal-button bg-primary text-primary-foreground"
@@ -100,7 +112,7 @@ export function TerminalPortfolio() {
             <div className="flex items-center justify-between text-[10px] font-mono">
               <div className="flex items-center gap-3">
                 <div className="flex items-center gap-1.5">
-                  <span className="status-indicator status-indicator-active" />
+                  <span className="status-indicator status-indicator-active feed-pulse-sync" />
                   <span className="text-[color:var(--terminal-green)]">FEED ACTIVE</span>
                 </div>
                 <span className="text-[color:var(--terminal-green-dim)]">|</span>

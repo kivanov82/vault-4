@@ -69,7 +69,7 @@ export function PerformanceMetrics() {
 
   const tvl = useCountUp(metrics?.tvlUsd ?? null)
   const annualizedRaw = metrics?.pnlChange60dPct != null
-    ? (Math.pow(1 + metrics.pnlChange60dPct / 100, 365 / 60) - 1) * 100
+    ? metrics.pnlChange60dPct * 6
     : null
   const annualized = useCountUp(annualizedRaw)
   const pnl30d = useCountUp(metrics?.pnlChange30dPct ?? null)
@@ -81,14 +81,14 @@ export function PerformanceMetrics() {
 
   const items = [
     {
-      label: "30D_TVL",
+      label: "TVL",
       value: formatUsd(tvl),
-      change: metrics?.tvlChange30dUsd != null ? formatUsdSigned(metrics.tvlChange30dUsd) : null,
-      changeValue: metrics?.tvlChange30dUsd ?? null,
+      change: null,
+      changeValue: null,
       negative: false,
     },
     {
-      label: pnlMode === "ANNUALIZED" ? "ANNUALIZED_PERF" : "30D_PNL",
+      label: pnlMode === "ANNUALIZED" ? "ANNUALIZED_PERF" : "30D_PERFORMANCE",
       value: formatPercentSigned(pnlValue),
       change: null,
       changeValue: null,
@@ -96,14 +96,14 @@ export function PerformanceMetrics() {
       switcher: true as const,
     },
     {
-      label: "30D_MAX_DRAWDOWN",
+      label: "MAX_DRAWDOWN",
       value: formatPercentSigned(drawdown),
       change: null,
       changeValue: null,
       negative: true,
     },
     {
-      label: "WIN_RATE",
+      label: "WIN_RATE_ALL",
       value: formatPercent(winRate),
       change: null,
       changeValue: null,
@@ -146,7 +146,7 @@ export function PerformanceMetrics() {
                       : "text-[color:var(--terminal-cyan-dim)] hover:text-[color:var(--terminal-cyan)]"
                   }`}
                 >
-                  [30D_PNL]
+                  [30D_PERFORMANCE]
                 </button>
               </div>
             ) : (

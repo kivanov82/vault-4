@@ -26,10 +26,9 @@ export function MatrixRain() {
     const drops: number[] = Array(columns).fill(1)
 
     const draw = () => {
-      ctx.fillStyle = "rgba(0, 0, 0, 0.05)"
+      ctx.fillStyle = "rgba(0, 0, 0, 0.08)"
       ctx.fillRect(0, 0, canvas.width, canvas.height)
 
-      ctx.fillStyle = "#00ff4120"
       ctx.font = `${fontSize}px monospace`
 
       for (let i = 0; i < drops.length; i++) {
@@ -37,6 +36,15 @@ export function MatrixRain() {
         const x = i * fontSize
         const y = drops[i] * fontSize
 
+        // Head of each column glows bright; trail fades to dim green
+        const isHead = Math.random() > 0.98
+        ctx.fillStyle = isHead ? "#b8f0c8" : "#00ff4180"
+        if (isHead) {
+          ctx.shadowColor = "#00ff41"
+          ctx.shadowBlur = 6
+        } else {
+          ctx.shadowBlur = 0
+        }
         ctx.fillText(char, x, y)
 
         if (y > canvas.height && Math.random() > 0.975) {
@@ -57,7 +65,7 @@ export function MatrixRain() {
   return (
     <canvas
       ref={canvasRef}
-      className="fixed inset-0 pointer-events-none z-0 opacity-30"
+      className="fixed inset-0 pointer-events-none z-0 opacity-55"
     />
   )
 }

@@ -163,7 +163,7 @@ export function InvestPanel() {
       </div>
       {mode === "DEPOSIT" && isConnected && investor.usdcBalance === 0 && (
         <div className="mt-1.5 text-[10px] text-[color:var(--terminal-amber-dim)]">
-          ! USDC on HyperEVM required — bridge via links above
+          ! USDC on HyperEVM required — bridge via link above
         </div>
       )}
 
@@ -181,14 +181,14 @@ export function InvestPanel() {
             step="any"
           />
           <span className="text-xs text-[color:var(--terminal-green-dim)]">
-            {mode === "DEPOSIT" ? "USDC" : "V4FUND"}
+            {mode === "DEPOSIT" ? "USDC" : "SHARES"}
           </span>
         </div>
         {parsedAmount > 0 && (
           <div className="mt-1 text-[10px] text-[color:var(--terminal-cyan-dim)] pl-5">
             {mode === "DEPOSIT"
-              ? `≈ ${formatShares(shareEquivalent)} V4FUND shares`
-              : `≈ ${formatUsd(usdcEquivalent)} USDC`
+              ? `≈ ${formatShares(shareEquivalent)} shares`
+              : `MY_HOLDINGS ≈ ${formatUsd(usdcEquivalent)}`
             }
           </div>
         )}
@@ -340,25 +340,14 @@ function SettlementCountdown() {
 
 function BridgeLink() {
   return (
-    <span className="inline-flex items-center gap-1">
-      <a
-        href="https://jumper.exchange/?toChain=999&toToken=0xb88339CB7199b77E23DB6E890353E22632Ba630f"
-        target="_blank"
-        rel="noopener noreferrer"
-        className="text-[color:var(--terminal-cyan)] hover:underline"
-      >
-        [JUMPER]
-      </a>
-      <span className="text-muted-foreground">/</span>
-      <a
-        href="https://app.hyperliquid.xyz/bridge"
-        target="_blank"
-        rel="noopener noreferrer"
-        className="text-[color:var(--terminal-cyan)] hover:underline"
-      >
-        [HL BRIDGE]
-      </a>
-    </span>
+    <a
+      href="https://jumper.exchange/?toChain=999&toToken=0xb88339CB7199b77E23DB6E890353E22632Ba630f"
+      target="_blank"
+      rel="noopener noreferrer"
+      className="text-[color:var(--terminal-cyan)] hover:underline"
+    >
+      [JUMPER]
+    </a>
   )
 }
 

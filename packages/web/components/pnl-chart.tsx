@@ -192,7 +192,7 @@ export function PnlChart() {
                   : "text-muted-foreground hover:text-primary border border-transparent hover:border-primary/30"
               }`}
             >
-              {period}
+              {period === "1M" ? "1min" : period}
             </button>
           ))}
         </div>
