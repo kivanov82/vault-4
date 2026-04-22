@@ -11,21 +11,13 @@ export type MarketOverlay = {
     dominance: number | null;
     funding_btc: number | null;
     funding_eth: number | null;
-    dvol: number | null;
-    // Enhanced indicators
     total_market_cap_change_24h: number | null;
     btc_oi_change_24h: number | null;
     eth_oi_change_24h: number | null;
     btc_volume_24h: number | null;
     eth_volume_24h: number | null;
     long_short_ratio: number | null;
-    // Direction signal for 48h horizon
     preferred_direction: "long" | "short" | "neutral";
-    sources: {
-        coingecko?: string;
-        fearGreed?: string;
-        hyperliquid?: string;
-    };
 };
 
 const COINGECKO_BASE =
@@ -83,8 +75,6 @@ export class MarketDataService {
             dominance: globalData?.dominance ?? null,
             funding_btc: hyperliquidData?.funding_btc ?? null,
             funding_eth: hyperliquidData?.funding_eth ?? null,
-            dvol: null,
-            // Enhanced indicators
             total_market_cap_change_24h: globalData?.market_cap_change_24h ?? null,
             btc_oi_change_24h: hyperliquidData?.btc_oi ?? null,
             eth_oi_change_24h: hyperliquidData?.eth_oi ?? null,
@@ -92,11 +82,6 @@ export class MarketDataService {
             eth_volume_24h: ethData?.volume_24h ?? null,
             long_short_ratio: hyperliquidData?.long_short_ratio ?? null,
             preferred_direction: preferredDirection,
-            sources: {
-                coingecko: COINGECKO_BASE,
-                fearGreed: FEAR_GREED_URL,
-                hyperliquid: HYPERLIQUID_INFO_URL,
-            },
         };
 
         cached = { fetchedAt: now, data };

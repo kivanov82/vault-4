@@ -336,7 +336,6 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
 
             if (suggestedAllocations) {
                 logger.info("Claude barbell suggestion received", {
-                    note: suggestedAllocations.barbellNote,
                     totalPct: suggestedAllocations.totalPct,
                     highPct: suggestedAllocations.highPct,
                     lowPct: suggestedAllocations.lowPct,
@@ -673,32 +672,10 @@ function parseSuggestedAllocations(raw: any): SuggestedAllocations | undefined {
     const totalPct = pickNumber(raw.total_pct ?? raw.totalPct ?? raw.total ?? 100, 100);
     const highPct = pickNumber(raw.high_pct ?? raw.highPct ?? raw.high ?? 0, 0);
     const lowPct = pickNumber(raw.low_pct ?? raw.lowPct ?? raw.low ?? 0, 0);
-    const maxActive =
-        Number.isFinite(Number(raw.max_active ?? raw.maxActive))
-            ? Number(raw.max_active ?? raw.maxActive)
-            : null;
-    const highCount =
-        Number.isFinite(Number(raw.high_count ?? raw.highCount))
-            ? Number(raw.high_count ?? raw.highCount)
-            : null;
-    const lowCount =
-        Number.isFinite(Number(raw.low_count ?? raw.lowCount))
-            ? Number(raw.low_count ?? raw.lowCount)
-            : null;
-    const barbellNote =
-        typeof raw.barbell_note === "string"
-            ? raw.barbell_note
-            : typeof raw.barbellNote === "string"
-            ? raw.barbellNote
-            : undefined;
     return {
         totalPct,
-        maxActive,
         highPct,
         lowPct,
-        highCount,
-        lowCount,
-        barbellNote,
         targets,
     };
 }

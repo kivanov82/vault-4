@@ -77,12 +77,8 @@ export type SuggestedAllocationTarget = {
 
 export type SuggestedAllocations = {
     totalPct: number;
-    maxActive: number | null;
     highPct: number | null;
     lowPct: number | null;
-    highCount: number | null;
-    lowCount: number | null;
-    barbellNote?: string;
     targets: SuggestedAllocationTarget[];
 };
 

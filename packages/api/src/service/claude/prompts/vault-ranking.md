@@ -15,7 +15,7 @@ Input
 - `market_data` -- object with market overlay fields:
   - Core: `{ btc_7d_change, btc_24h_change, eth_7d_change, eth_24h_change, trend, velocity }`
   - Sentiment: `{ fearGreed, dominance, funding_btc, funding_eth }`
-  - Enhanced: `{ total_market_cap_change_24h, btc_oi_change_24h, eth_oi_change_24h, btc_volume_24h, eth_volume_24h, long_short_ratio, dvol }`
+  - Enhanced: `{ total_market_cap_change_24h, btc_oi_change_24h, eth_oi_change_24h, btc_volume_24h, eth_volume_24h, long_short_ratio }`
   - Direction: `{ preferred_direction }` — "long", "short", or "neutral". Pre-computed signal
     for the next 48h based on BTC momentum, trend, and sentiment. Use this to cross-check your
     regime inference and prioritize directionally aligned vaults.
@@ -37,7 +37,6 @@ Market overlay data (provided in input)
 - Open interest levels for BTC and ETH.
 - 24h trading volumes and total market cap change.
 - Long/short ratio (aggregate market positioning).
-- Optional: DVOL or comparable implied vol proxy.
 
 Use the provided market data to infer a regime label: {risk-on, neutral, risk-off},
 and flags:
@@ -117,12 +116,12 @@ Direction alignment (critical for 48h horizon)
 
 Before finalizing rankings, assess each vault's **directional alignment** with the market:
 - In bear/risk-off: vaults with net-short positions, high `short_ratio_7d`, or negative `btc_rt`
-  are directionally aligned and should rank higher.
+  are directionally aligned.
 - In risk-on: vaults with net-long positions, low `short_ratio_7d`, or positive `btc_rt` are aligned.
 - If a vault's direction strongly conflicts with the regime (e.g., heavily net-long BTC in a bear
-  market), apply an additional penalty of -0.3 to `score_market` before ranking.
-- For the high-confidence bucket, strongly prefer directionally aligned vaults. Mis-aligned vaults
-  may still appear in the low-confidence bucket if they have strong edge metrics.
+  market), apply a penalty of -0.3 to `score_market` before ranking.
+- The **high-confidence bucket** should strongly prefer directionally aligned vaults.
+- The **low-confidence bucket** serves as a **counter-regime hedge** (see allocation logic).
 
 Ranking task
 
@@ -132,11 +131,21 @@ Ranking task
    is better than churning into a marginally better new one. Only drop an `already_exposed`
    vault if it ranks poorly (below rank 15) or its score dropped > 1.0 robust z.
 
-Allocation logic (barbell, flexible count)
+Allocation logic (barbell with counter-regime hedge)
 
 - Select up to `max_active=12` from the ranked list.
-- High confidence bucket = top `ceil(0.7 * N)`, low confidence = the rest.
-- Allocate `high_pct` evenly or risk-parity by `sigma_rt`, capped per-vault (e.g., 15%).
+- **High-confidence bucket** = top `ceil(0.7 * N)` → regime-aligned, high-edge vaults.
+  Allocate `high_pct` (~70%) evenly or risk-parity by `sigma_rt`, capped per-vault at 15%.
+- **Low-confidence bucket** = the rest, used as a **counter-regime hedge**:
+  - Actively prefer vaults whose trading direction *opposes* `preferred_direction`
+    (short-biased in risk-on, long-biased in risk-off), as long as they still show positive edge
+    metrics (non-negative `pnl7_rt` and `winrate_7d >= 0.5`).
+  - Rationale: `preferred_direction` is a 48h signal from BTC momentum + sentiment; it can flip
+    mid-cycle. A 20-30% counter-regime allocation caps the downside if the regime call is wrong.
+  - If no counter-regime vault clears the edge bar, fill the bucket with the next-best aligned
+    vaults — a hedge without edge is just drag.
+  - Allocate `low_pct` (~30%) evenly across low-confidence vaults.
+- If regime is **neutral**, skip the counter-regime preference — fill both buckets by score_market alone.
 
 TP/SL framework
 

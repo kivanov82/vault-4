@@ -9,7 +9,7 @@ Input
 - `market_data` -- object with market overlay fields:
   - Core: `{ btc_7d_change, btc_24h_change, eth_7d_change, eth_24h_change, trend, velocity }`
   - Sentiment: `{ fearGreed, dominance, funding_btc, funding_eth }`
-  - Enhanced: `{ total_market_cap_change_24h, btc_oi_change_24h, eth_oi_change_24h, btc_volume_24h, eth_volume_24h, long_short_ratio, dvol }`
+  - Enhanced: `{ total_market_cap_change_24h, btc_oi_change_24h, eth_oi_change_24h, btc_volume_24h, eth_volume_24h, long_short_ratio }`
   - Direction: `{ preferred_direction }` — "long", "short", or "neutral". Pre-computed signal
     for the next 48h based on BTC momentum, trend, and sentiment. Use this to cross-check your
     regime inference and directional overlay.
