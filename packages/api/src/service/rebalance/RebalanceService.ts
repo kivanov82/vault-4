@@ -242,7 +242,7 @@ export class RebalanceService {
                     equity: currentEquityUsd,
                     usdMicros: withdrawMicros,
                     status: "prepared",
-                    reason: "take-profit",
+                    reason: "trim-to-target",
                 },
             };
         }
@@ -262,7 +262,7 @@ export class RebalanceService {
                     equity: currentEquityUsd,
                     usdMicros: result.actualUsdMicros ?? withdrawMicros,
                     status: "submitted",
-                    reason: "take-profit",
+                    reason: "trim-to-target",
                 },
             };
         }

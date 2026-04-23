@@ -107,7 +107,7 @@ BTC funding: ${m.funding_btc ?? "N/A"}, ETH funding: ${m.funding_eth ?? "N/A"}`;
 
         try {
             const response = await this.getClient().messages.create({
-                model: process.env.CLAUDE_MODEL ?? "claude-sonnet-4-20250514",
+                model: process.env.CLAUDE_MODEL ?? "claude-sonnet-4-6",
                 max_tokens: 2000,
                 system: ARTICLE_SYSTEM_PROMPT,
                 messages: [

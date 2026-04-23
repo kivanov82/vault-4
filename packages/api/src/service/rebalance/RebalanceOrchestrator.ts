@@ -125,25 +125,16 @@ export class RebalanceOrchestrator {
             plan.totalCapitalUsd
         );
 
-        // TP Strategy: Partial withdrawals from over-allocated positions
-        const TP_THRESHOLD_PCT = 10; // Hardcoded 10% profit threshold
+        // Trim over-allocated recommended positions back to barbell target.
         const tpWithdrawals: VaultTransferAction[] = [];
 
         for (const position of positions.positions) {
             const address = position.vaultAddress.toLowerCase();
 
-            // Only process vaults still in recommendations
             if (!recommendedSet.has(address)) {
                 continue;
             }
 
-            // Check if profitable enough for TP
-            const roePct = position.roePct ?? 0;
-            if (roePct < TP_THRESHOLD_PCT) {
-                continue;
-            }
-
-            // Check if over-allocated
             const targetAllocation = targetAllocations.get(address);
             if (!targetAllocation) {
                 continue;
@@ -153,11 +144,11 @@ export class RebalanceOrchestrator {
             const targetUsd = targetAllocation.targetUsd;
 
             if (currentUsd <= targetUsd) {
-                // Under-allocated or at target, keep it
                 continue;
             }
 
-            logger.info("Take-profit opportunity detected", {
+            const roePct = position.roePct ?? 0;
+            logger.info("Trimming over-allocated recommended vault to target", {
                 vaultAddress: address,
                 vaultName: position.vaultName,
                 currentUsd,
@@ -167,7 +158,6 @@ export class RebalanceOrchestrator {
                 confidence: targetAllocation.confidence,
             });
 
-            // Execute partial withdrawal to bring position to target
             const result = await RebalanceService.withdrawPartialFromVault({
                 vaultAddress: address as `0x${string}`,
                 targetAmountUsd: targetUsd,
@@ -175,7 +165,7 @@ export class RebalanceOrchestrator {
             });
 
             if (result.action.status === "submitted" || result.action.status === "prepared") {
-                logger.info("Take-profit withdrawal executed", {
+                logger.info("Trim withdrawal executed", {
                     vaultAddress: address,
                     vaultName: position.vaultName,
                     withdrawnUsd: (result.action.usdMicros ?? 0) / 1e6,
@@ -299,7 +289,7 @@ export class RebalanceOrchestrator {
                 continue;
             }
 
-            // 4. Skip if still in recommendations (handled by TP strategy above)
+            // 4. Skip if still in recommendations (over-allocations already trimmed above)
             if (recommendedSet.has(address)) {
                 continue;
             }

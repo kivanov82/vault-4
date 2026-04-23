@@ -246,7 +246,7 @@ export class XPostService {
 
         try {
             const response = await ai.messages.create({
-                model: process.env.CLAUDE_SOCIAL_MODEL ?? "claude-sonnet-4-20250514",
+                model: process.env.CLAUDE_MODEL ?? "claude-sonnet-4-6",
                 max_tokens: 250,
                 temperature: 0.8,
                 messages: [{ role: "user", content: prompt }],

@@ -53,18 +53,25 @@ src/
 2. **Rank** (two-stage):
    - **Stage 1**: Score vaults in batches (`vault-scoring.md` prompt, returns 0-100 scores)
    - **Stage 2**: Top candidates ranked for final allocation (`vault-ranking.md` prompt, returns barbell allocation)
-3. **Rebalance**: Every 2 days — take-profit withdrawals, exit non-recommended/inactive vaults, deposit into top vaults
+3. **Rebalance**: Every 2 days — trim over-allocated recommended vaults, exit non-recommended/inactive/SL vaults, deposit into top vaults
 
 ### Rebalancing Logic
 
-**Withdrawals (priority order):**
+Each round runs two passes in this order:
 
-1. **Hard Stop-Loss** — Exit unconditionally at ROE <= -25% (`HARD_STOP_LOSS_PCT`)
-2. **Soft Stop-Loss** — Exit at ROE <= -15% (`STOP_LOSS_PCT`) if vault is NOT recommended OR not aligned with market direction
-3. **Inactive Vault Exits** — Withdraw ALL from vaults with 0 positions + 0 trades in 7 days (regardless of PnL)
-4. **Take-Profit Partial Withdrawals** — Over-allocated recommended vaults with ROE >= 10%, withdraw excess to target
-5. **Hold Period Check** — Non-recommended vaults within minimum hold period (5 days, `MIN_HOLD_DAYS`) are kept
-6. **Full Exits** — All non-recommended vaults past hold period are exited unconditionally
+**Pass 1 — Trim over-allocated recommended vaults to barbell target.**
+For every current position that is still in the Claude recommendation set: if `currentUsd > targetUsd`, partial-withdraw the excess back to `targetUsd`. **No profit threshold** — trims fire whenever Claude says we're overweight, regardless of ROE. **No hold-period gate** — a vault funded today can be trimmed today if it's already over target.
+
+**Pass 2 — Withdrawal scan, evaluated per position in this exact order:**
+
+1. **Hard Stop-Loss** — `roePct <= -25` (`HARD_STOP_LOSS_PCT`) → full exit, unconditional.
+2. **Soft Stop-Loss** — `roePct <= -15` (`STOP_LOSS_PCT`) → full exit only if `(!isRecommended || !isAligned)`. `isAligned = vaultDirection === marketDirection || marketDirection === "neutral"`, where `vaultDirection` comes from `getVaultNetDirection` (long if net/gross > +0.2, short if < -0.2, else neutral). A recommended + aligned vault at -15% is **held**, but the iteration falls through to the inactive check below — it does not skip the rest of the loop.
+3. **Inactive Vault Exit** — 0 open positions + 0 trades in last 7 days → full exit. Applies to recommended vaults too.
+4. **Recommended skip** — still in recommendations after passing inactive check → leave alone.
+5. **Hold Period** — non-recommended within 5 days (`MIN_HOLD_DAYS`) of last deposit → skip.
+6. **Non-recommended past hold** — full exit.
+
+**Important caveat about "recommended".** Claude is only told which vaults we already hold (`already_exposed`); it is *not* told our per-position ROE. The `vault-ranking.md` prompt instructs Claude to *prefer keeping* exposed vaults that still rank well. So a vault we are underwater on can absolutely still appear in the recommended set — there is no automatic rule that drops losing positions from recommendations. The soft-SL "recommended + aligned ⇒ hold" branch is therefore reachable.
 
 **Deposit filtering:**
 - Directional concentration limit: max 60% of new deposits in same direction (`MAX_SAME_DIRECTION_PCT`)
@@ -104,15 +111,13 @@ WALLET=0x<user-address>
 WALLET_PK=0x<private-key>
 ```
 
-Claude AI:
+Claude AI (single model used for every Claude call — Stage 1, Stage 2, articles, X posts):
 ```
-CLAUDE_MODEL=claude-3-haiku-20240307
-CLAUDE_SCORING_MODEL=              # Stage 1 model (defaults to CLAUDE_MODEL)
-CLAUDE_RANKING_MODEL=              # Stage 2 model (defaults to CLAUDE_MODEL)
+CLAUDE_MODEL=claude-sonnet-4-6
 CLAUDE_TEMPERATURE=0.2
 CLAUDE_SCORING_MAX_TOKENS=4096
 CLAUDE_RANKING_MAX_TOKENS=4096
-CLAUDE_BATCH_SIZE=10
+CLAUDE_BATCH_SIZE=5
 CLAUDE_FINAL_RANKING_LIMIT=12
 CLAUDE_API_DELAY_MS=60000
 CLAUDE_MAX_TRADES_PER_VAULT=50

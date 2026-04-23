@@ -25,8 +25,7 @@ export type ClaudeRanking = {
     allocationMap?: Record<string, number>;
 };
 
-const SCORING_MODEL = process.env.CLAUDE_SCORING_MODEL ?? process.env.CLAUDE_MODEL ?? "claude-3-haiku-20240307";
-const RANKING_MODEL = process.env.CLAUDE_RANKING_MODEL ?? process.env.CLAUDE_MODEL ?? "claude-3-haiku-20240307";
+const MODEL = process.env.CLAUDE_MODEL ?? "claude-sonnet-4-6";
 const RAW_TEMPERATURE = Number(process.env.CLAUDE_TEMPERATURE ?? 0.2);
 const DEFAULT_TEMPERATURE = Number.isFinite(RAW_TEMPERATURE) ? RAW_TEMPERATURE : 0.2;
 const SCORING_MAX_TOKENS = Number(process.env.CLAUDE_SCORING_MAX_TOKENS ?? 4096);
@@ -195,7 +194,7 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
             });
 
             const response = await client.messages.create({
-                model: SCORING_MODEL,
+                model: MODEL,
                 max_tokens: SCORING_MAX_TOKENS,
                 temperature: DEFAULT_TEMPERATURE,
                 system: systemPrompt,
@@ -214,7 +213,7 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
                     batchIndex,
                     responsePreview: content.slice(0, 500),
                     responseLength: content.length,
-                    model: SCORING_MODEL,
+                    model: MODEL,
                     parsedType: typeof parsed,
                     hasScoresArray: parsed ? Array.isArray(parsed.scores) : false,
                 });
@@ -300,11 +299,11 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
         try {
             logger.info("Stage 2: Final ranking", {
                 candidateCount: candidates.length,
-                model: RANKING_MODEL,
+                model: MODEL,
             });
 
             const response = await client.messages.create({
-                model: RANKING_MODEL,
+                model: MODEL,
                 max_tokens: RANKING_MAX_TOKENS,
                 temperature: DEFAULT_TEMPERATURE,
                 system: systemPrompt,
@@ -321,7 +320,7 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
                 logger.warn("Claude response was not valid JSON", {
                     responsePreview: content.slice(0, 500),
                     responseLength: content.length,
-                    model: RANKING_MODEL,
+                    model: MODEL,
                 });
                 return null;
             }
@@ -371,7 +370,7 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
                 : undefined;
 
             logger.info("Claude ranking parsed", {
-                model: RANKING_MODEL,
+                model: MODEL,
                 regime: parsed.regime,
                 total: ordered.length,
                 highConfidence: high.map(v => ({
@@ -392,7 +391,7 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
             });
 
             return {
-                model: RANKING_MODEL,
+                model: MODEL,
                 highConfidence: normalizeRankedVaults(high),
                 lowConfidence: normalizeRankedVaults(low),
                 raw: content,
