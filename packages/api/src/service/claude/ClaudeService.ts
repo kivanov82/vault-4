@@ -200,12 +200,14 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
                 system: systemPrompt,
                 messages: [
                     { role: "user", content: userPrompt },
+                    { role: "assistant", content: "{" },
                 ],
             });
 
-            const content = response.content[0]?.type === "text"
-                ? response.content[0].text.trim()
+            const rawText = response.content[0]?.type === "text"
+                ? response.content[0].text
                 : "";
+            const content = ("{" + rawText).trim();
             const parsed = parseJsonPayload(content);
 
             if (!parsed || !Array.isArray(parsed.scores)) {
@@ -309,12 +311,14 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
                 system: systemPrompt,
                 messages: [
                     { role: "user", content: userPrompt },
+                    { role: "assistant", content: "{" },
                 ],
             });
 
-            const content = response.content[0]?.type === "text"
-                ? response.content[0].text.trim()
+            const rawText = response.content[0]?.type === "text"
+                ? response.content[0].text
                 : "";
+            const content = ("{" + rawText).trim();
             const parsed = parseJsonPayload(content);
             if (!parsed) {
                 logger.warn("Claude response was not valid JSON", {

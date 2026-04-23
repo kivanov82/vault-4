@@ -17,6 +17,11 @@ export type DepositPlanOptions = {
     lowCount?: number;
     highTotalPct?: number;
     lowTotalPct?: number;
+    /**
+     * If provided, skip the (expensive) Claude ranking call and reuse this set.
+     * Used by the rebalance rebuild pass after withdrawals settle.
+     */
+    recommendations?: RecommendationSet;
 };
 
 export type DepositTarget = {
@@ -110,10 +115,20 @@ export class DepositService {
             refreshCandidates: options.refreshCandidates,
         });
 
-        const recommendations = await VaultService.getRecommendations({
-            refresh: options.refreshRecommendations,
-            refreshCandidates: options.refreshCandidates,
-        });
+        const recommendations =
+            options.recommendations ??
+            (await VaultService.getRecommendations({
+                refresh: options.refreshRecommendations,
+                refreshCandidates: options.refreshCandidates,
+            }));
+        if (options.recommendations) {
+            logger.info("Reusing supplied recommendation set (skipping Claude ranking)", {
+                source: recommendations.source,
+                model: recommendations.model,
+                highCount: recommendations.highConfidence.length,
+                lowCount: recommendations.lowConfidence.length,
+            });
+        }
 
         const highSelected = recommendations.highConfidence.slice(0, highCount);
         const lowSelected = recommendations.lowConfidence.slice(0, lowCount);
@@ -359,7 +374,7 @@ export class DepositService {
             ? allFiltered.map(({ rec, confidence }) => {
                   const pct = Math.max(0, Number(rec.allocationPct) || 0);
                   const perVaultUsd = availableForDeposit * (pct / filteredAllocSum);
-                  const depositUsd = roundUsd(perVaultUsd);
+                  const depositUsd = floorUsd(perVaultUsd);
                   return {
                       vaultAddress: rec.vaultAddress as `0x${string}`,
                       name: rec.name,
@@ -526,7 +541,7 @@ function buildTargetFromAllocation(
     const perVaultUsd = groupCount > 0
         ? groupAllocationUsd / groupCount
         : 0;
-    const depositUsd = roundUsd(perVaultUsd);
+    const depositUsd = floorUsd(perVaultUsd);
     const targetPct = groupCount > 0 ? 100 / groupCount : 0;
 
     return {
@@ -585,6 +600,13 @@ function roundPct(value: number): number {
 
 function roundUsd(value: number): number {
     return Math.round(value * 100) / 100;
+}
+
+// Floor to cent for deposit sizes — rounding up can produce a per-target sum
+// that exceeds availableForDeposit and causes the last deposit to fail with
+// "Insufficient funds available to deposit."
+function floorUsd(value: number): number {
+    return Math.floor(value * 100) / 100;
 }
 
 async function classifyVaultDirections(

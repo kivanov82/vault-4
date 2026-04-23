@@ -226,6 +226,7 @@ export class RebalanceOrchestrator {
                     dryRun,
                     includeLocked,
                     sweepDust: true,
+                    reason: "hard-stop-loss",
                 });
                 withdrawals.push(result.action);
                 continue;
@@ -254,6 +255,7 @@ export class RebalanceOrchestrator {
                         dryRun,
                         includeLocked,
                         sweepDust: true,
+                        reason: "stop-loss",
                     });
                     withdrawals.push(result.action);
                     continue;
@@ -284,6 +286,7 @@ export class RebalanceOrchestrator {
                     dryRun,
                     includeLocked,
                     sweepDust: true,
+                    reason: "inactive-vault",
                 });
                 withdrawals.push(result.action);
                 continue;
@@ -323,6 +326,7 @@ export class RebalanceOrchestrator {
                 dryRun,
                 includeLocked,
                 sweepDust: true,
+                reason: "not-recommended",
             });
             withdrawals.push(result.action);
         }
@@ -342,12 +346,17 @@ export class RebalanceOrchestrator {
             VaultService.clearUserCaches();
         }
 
-        // Rebuild deposit plan after withdrawals to pick up freed slots
+        // Rebuild deposit plan after withdrawals to pick up freed slots and the
+        // freshly available perps balance — but reuse the original Claude-ranked
+        // recommendation set. Re-running Claude here would double Anthropic spend
+        // and add ~10-15 min per round, with no benefit (the same vaults are still
+        // the right targets; only the dollar amounts need recomputing).
         const depositPlan = hasSubmittedWithdrawals
             ? await DepositService.buildDepositPlan({
                   refreshCandidates: false,
                   refreshRecommendations: false,
                   maxActive: 10,
+                  recommendations: plan.recommendations,
               })
             : plan;
 
@@ -356,6 +365,26 @@ export class RebalanceOrchestrator {
                 previousTargets: plan.targets.length,
                 newTargets: depositPlan.targets.length,
             });
+        }
+
+        // Defense-in-depth: even with reuse, abort the deposit pass if the
+        // recommendations are heuristic. Heuristic deposits are too unstable.
+        if (depositPlan.recommendations.source !== "claude") {
+            logger.warn(
+                "Aborting deposit pass: recommendation source is heuristic, not deploying capital",
+                {
+                    source: depositPlan.recommendations.source,
+                    targetCount: depositPlan.targets.length,
+                }
+            );
+            return {
+                startedAt,
+                planTargets: plan.targets.length,
+                recommended,
+                tpWithdrawals,
+                withdrawals,
+                deposits: null,
+            };
         }
 
         const deposits = await DepositService.executeDepositPlan(depositPlan, {

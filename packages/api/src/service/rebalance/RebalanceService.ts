@@ -36,6 +36,8 @@ export type WithdrawVaultOptions = {
     dryRun?: boolean;
     usdBufferBps?: number;
     sweepDust?: boolean;
+    /** Tag attached to the resulting action for summary aggregation. */
+    reason?: string;
 };
 
 export type WithdrawVaultResult = {
@@ -161,6 +163,7 @@ export class RebalanceService {
             usdBufferBps,
             sweepDust,
             now: Date.now(),
+            reason: options.reason,
         });
         return { userAddress, dryRun, action };
     }
@@ -362,6 +365,7 @@ async function withdrawFromEquity(
         usdBufferBps: number;
         sweepDust: boolean;
         now: number;
+        reason?: string;
     }
 ): Promise<VaultTransferAction> {
     const isLocked =
@@ -400,6 +404,7 @@ async function withdrawFromEquity(
             lockedUntilTimestamp: equity.lockedUntilTimestamp,
             usdMicros: targetMicros,
             status: "prepared",
+            reason: options.reason,
         };
     }
 
@@ -412,6 +417,7 @@ async function withdrawFromEquity(
             lockedUntilTimestamp: equity.lockedUntilTimestamp,
             usdMicros: result.actualUsdMicros ?? targetMicros,
             status: "submitted",
+            reason: options.reason,
         };
     }
 
