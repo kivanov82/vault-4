@@ -1,6 +1,7 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useState } from "react"
+import { useQuery } from "@tanstack/react-query"
 import { BlinkingLabel } from "./blinking-label"
 import { TerminalSkeletonLine } from "./terminal-skeleton"
 
@@ -62,10 +63,6 @@ function roeColorClass(roe: number | null): string {
 
 export function PositionsTable() {
   const [activeTab, setActiveTab] = useState<"positions" | "history">("positions")
-  const [positionsData, setPositionsData] = useState<PositionsResponse | null>(null)
-  const [historyData, setHistoryData] = useState<HistoryResponse | null>(null)
-  const [loadingPositions, setLoadingPositions] = useState(false)
-  const [loadingHistory, setLoadingHistory] = useState(false)
   const [historyPage, setHistoryPage] = useState(1)
   const [sortConfig, setSortConfig] = useState<{
     key: "asset" | "size" | "amount" | "pnl" | "roe"
@@ -77,45 +74,24 @@ export function PositionsTable() {
     { id: "history" as const, label: "HISTORY" },
   ]
 
-  useEffect(() => {
-    let active = true
-    const loadPositions = async () => {
-      setLoadingPositions(true)
-      try {
-        const positionsRes = await fetch(`${API_BASE}/api/positions`)
-        if (positionsRes.ok) {
-          const payload = (await positionsRes.json()) as PositionsResponse
-          if (active) setPositionsData(payload)
-        }
-      } finally {
-        if (active) setLoadingPositions(false)
-      }
-    }
+  const { data: positionsData, isLoading: loadingPositions } = useQuery<PositionsResponse>({
+    queryKey: ["positions"],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE}/api/positions`)
+      if (!res.ok) throw new Error("API error")
+      return res.json()
+    },
+  })
 
-    loadPositions()
-
-    return () => { active = false }
-  }, [])
-
-  useEffect(() => {
-    let active = true
-    const loadHistory = async () => {
-      setLoadingHistory(true)
-      try {
-        const historyRes = await fetch(`${API_BASE}/api/history?page=${historyPage}&pageSize=15`)
-        if (historyRes.ok) {
-          const payload = (await historyRes.json()) as HistoryResponse
-          if (active) setHistoryData(payload)
-        }
-      } finally {
-        if (active) setLoadingHistory(false)
-      }
-    }
-
-    loadHistory()
-
-    return () => { active = false }
-  }, [historyPage])
+  const { data: historyData, isLoading: loadingHistory } = useQuery<HistoryResponse>({
+    queryKey: ["history", historyPage],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE}/api/history?page=${historyPage}&pageSize=15`)
+      if (!res.ok) throw new Error("API error")
+      return res.json()
+    },
+    placeholderData: (prev) => prev,
+  })
 
   const positions = positionsData?.positions ?? []
   const history = historyData?.entries ?? []

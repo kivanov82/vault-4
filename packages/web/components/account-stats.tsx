@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useQuery } from "@tanstack/react-query"
 import { BlinkingLabel } from "./blinking-label"
 import { TerminalSkeletonLine } from "./terminal-skeleton"
 import { ConnectionError } from "./connection-error"
@@ -16,38 +16,22 @@ type PositionsResponse = {
 const API_BASE = process.env.NEXT_PUBLIC_VAULT_API_BASE_URL ?? "http://localhost:3000"
 
 export function AccountStats() {
-  const [data, setData] = useState<PositionsResponse | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(false)
-  const [retryKey, setRetryKey] = useState(0)
-
-  useEffect(() => {
-    let active = true
-    const load = async () => {
-      setLoading(true)
-      setError(false)
-      try {
-        const res = await fetch(`${API_BASE}/api/positions`)
-        if (!res.ok) throw new Error("API error")
-        const payload = (await res.json()) as PositionsResponse
-        if (active) setData(payload)
-      } catch {
-        if (active) setError(true)
-      } finally {
-        if (active) setLoading(false)
-      }
-    }
-    load()
-    return () => { active = false }
-  }, [retryKey])
+  const { data, isLoading: loading, isError, refetch } = useQuery<PositionsResponse>({
+    queryKey: ["positions"],
+    queryFn: async () => {
+      const res = await fetch(`${API_BASE}/api/positions`)
+      if (!res.ok) throw new Error("API error")
+      return res.json()
+    },
+  })
 
   const totalInvested = data?.totalInvestedUsd ?? 0
   const netPnl = data?.netPnlUsd ?? 0
   const totalEquity = totalInvested + netPnl
   const roePct = totalInvested > 0 ? (netPnl / totalInvested) * 100 : 0
 
-  if (error && !data) {
-    return <ConnectionError onRetry={() => setRetryKey((k) => k + 1)} />
+  if (isError && !data) {
+    return <ConnectionError onRetry={() => refetch()} />
   }
 
   return (

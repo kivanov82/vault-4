@@ -1,6 +1,7 @@
 "use client"
 
 import { useMemo, useState, useEffect, useRef } from "react"
+import { useQuery } from "@tanstack/react-query"
 import { Area, AreaChart, ResponsiveContainer, XAxis, YAxis, Tooltip } from "recharts"
 import { BlinkingLabel } from "./blinking-label"
 import { LiveDataTicker } from "./live-data-ticker"
@@ -57,9 +58,6 @@ export function PnlChart() {
   const [chartMode, setChartMode] = useState<"PNL" | "ACC_VALUE">("PNL")
   const [timePeriod, setTimePeriod] = useState<"1M" | "7D" | "30D" | "ALL">("30D")
   const [animationKey, setAnimationKey] = useState(0)
-  const [portfolio, setPortfolio] = useState<PortfolioResponse | null>(null)
-  const [chartError, setChartError] = useState(false)
-  const [retryKey, setRetryKey] = useState(0)
   const isMobile = useIsMobile()
   const [liveSeries, setLiveSeries] = useState<{ pnl: (number | null)[]; acc: (number | null)[] }>({
     pnl: [],
@@ -67,22 +65,14 @@ export function PnlChart() {
   })
   const liveCursorRef = useRef(0)
 
-  useEffect(() => {
-    let active = true
-    const load = async () => {
-      setChartError(false)
-      try {
-        const response = await fetch(`${API_BASE}/api/portfolio`)
-        if (!response.ok) throw new Error("API error")
-        const payload = (await response.json()) as PortfolioResponse
-        if (active) setPortfolio(payload)
-      } catch {
-        if (active) setChartError(true)
-      }
-    }
-    load()
-    return () => { active = false }
-  }, [retryKey])
+  const { data: portfolio, isError: chartError, refetch: refetchPortfolio } = useQuery<PortfolioResponse>({
+    queryKey: ["portfolio"],
+    queryFn: async () => {
+      const response = await fetch(`${API_BASE}/api/portfolio`)
+      if (!response.ok) throw new Error("API error")
+      return response.json()
+    },
+  })
 
   useEffect(() => {
     if (timePeriod !== "1M") return
@@ -207,7 +197,7 @@ export function PnlChart() {
       <div className="h-48 md:h-56 chart-glow">
         {chartError && !portfolio ? (
           <div className="w-full h-full flex items-center justify-center">
-            <ConnectionError onRetry={() => setRetryKey((k) => k + 1)} />
+            <ConnectionError onRetry={() => refetchPortfolio()} />
           </div>
         ) : !portfolio && timePeriod !== "1M" ? (
           <TerminalSkeletonBlock className="w-full h-full flex items-center justify-center">

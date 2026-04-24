@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useState, useRef } from "react"
+import { useQuery } from "@tanstack/react-query"
 import { BlinkingLabel } from "./blinking-label"
 import { TerminalSkeletonLine } from "./terminal-skeleton"
 import { ConnectionError } from "./connection-error"
@@ -41,31 +42,16 @@ function useCountUp(target: number | null, duration = 1200) {
 type PnlMode = "ANNUALIZED" | "30D"
 
 export function PerformanceMetrics() {
-  const [metrics, setMetrics] = useState<MetricsResponse | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState(false)
-  const [retryKey, setRetryKey] = useState(0)
   const [pnlMode, setPnlMode] = useState<PnlMode>("ANNUALIZED")
-
-  useEffect(() => {
-    let active = true
-    const load = async () => {
-      setLoading(true)
-      setError(false)
-      try {
-        const response = await fetch(`${API_BASE}/api/metrics`)
-        if (!response.ok) throw new Error("API error")
-        const payload = (await response.json()) as MetricsResponse
-        if (active) setMetrics(payload)
-      } catch {
-        if (active) setError(true)
-      } finally {
-        if (active) setLoading(false)
-      }
-    }
-    load()
-    return () => { active = false }
-  }, [retryKey])
+  const { data: metrics, isLoading: loading, isError, refetch } = useQuery<MetricsResponse>({
+    queryKey: ["metrics"],
+    queryFn: async () => {
+      const response = await fetch(`${API_BASE}/api/metrics`)
+      if (!response.ok) throw new Error("API error")
+      return response.json()
+    },
+  })
+  const error = isError && !metrics
 
   const tvl = useCountUp(metrics?.tvlUsd ?? null)
   const annualizedRaw = metrics?.pnlChange60dPct != null
@@ -111,8 +97,8 @@ export function PerformanceMetrics() {
     },
   ]
 
-  if (error && !metrics) {
-    return <ConnectionError onRetry={() => setRetryKey((k) => k + 1)} />
+  if (error) {
+    return <ConnectionError onRetry={() => refetch()} />
   }
 
   return (

@@ -19,6 +19,7 @@ export default function Providers({ children }: { children: React.ReactNode }) {
         defaultOptions: {
           queries: {
             queryKeyHashFn: bigIntSafeHashKey,
+            staleTime: 60_000,
           },
         },
       })
