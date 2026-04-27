@@ -40,6 +40,82 @@ const PROMPT_PATH = path.join(__dirname, "prompts", "vault-ranking.md");
 const SCORING_PROMPT_PATH = path.join(__dirname, "prompts", "vault-scoring.md");
 const DATA_DELAY_MS = Number(process.env.HYPERLIQUID_DATA_REQUEST_DELAY_MS ?? 200);
 
+const SCORING_TOOL = {
+    name: "submit_vault_scores",
+    description: "Submit a 0-100 score for every vault in this batch. Score all vaults, do not skip any.",
+    input_schema: {
+        type: "object" as const,
+        properties: {
+            scores: {
+                type: "array",
+                items: {
+                    type: "object",
+                    properties: {
+                        address: { type: "string", description: "Vault address (0x...)" },
+                        name: { type: "string" },
+                        score: { type: "number", description: "0-100 score" },
+                        reason: { type: "string", description: "Brief rationale" },
+                    },
+                    required: ["address", "score"],
+                },
+            },
+        },
+        required: ["scores"],
+    },
+} as const;
+
+const RANKING_TOOL = {
+    name: "submit_vault_ranking",
+    description: "Submit final barbell ranking and per-vault allocations.",
+    input_schema: {
+        type: "object" as const,
+        properties: {
+            regime: {
+                type: "object",
+                properties: {
+                    label: { type: "string", description: "risk-off | neutral | risk-on" },
+                    notes: { type: "string" },
+                },
+            },
+            top10: {
+                type: "array",
+                items: {
+                    type: "object",
+                    properties: {
+                        rank: { type: "number" },
+                        address: { type: "string" },
+                        score_market: { type: "number" },
+                        why_now: { type: "string" },
+                    },
+                    required: ["rank", "address"],
+                },
+            },
+            suggested_allocations: {
+                type: "object",
+                properties: {
+                    total_pct: { type: "number" },
+                    high_pct: { type: "number" },
+                    low_pct: { type: "number" },
+                    targets: {
+                        type: "array",
+                        items: {
+                            type: "object",
+                            properties: {
+                                rank: { type: "number" },
+                                vaultAddress: { type: "string" },
+                                confidence: { type: "string", description: "high | low" },
+                                allocation_pct: { type: "number" },
+                            },
+                            required: ["vaultAddress", "confidence", "allocation_pct"],
+                        },
+                    },
+                },
+            },
+        },
+        required: ["top10"],
+    },
+} as const;
+
 type ScoredVault = {
     vaultAddress: string;
     name: string;
@@ -198,17 +274,18 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
                 max_tokens: SCORING_MAX_TOKENS,
                 temperature: DEFAULT_TEMPERATURE,
                 system: systemPrompt,
+                tools: [SCORING_TOOL as any],
+                tool_choice: { type: "tool", name: SCORING_TOOL.name },
                 messages: [
                     { role: "user", content: userPrompt },
-                    { role: "assistant", content: "{" },
                 ],
             });
 
-            const rawText = response.content[0]?.type === "text"
-                ? response.content[0].text
-                : "";
-            const content = ("{" + rawText).trim();
-            const parsed = parseJsonPayload(content);
+            const toolUse = response.content.find(
+                (b: any) => b.type === "tool_use" && b.name === SCORING_TOOL.name
+            ) as any;
+            const parsed = toolUse?.input ?? null;
+            const content = parsed ? JSON.stringify(parsed) : "";
 
             if (!parsed || !Array.isArray(parsed.scores)) {
                 logger.warn("Batch scoring response invalid", {
@@ -309,17 +386,18 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
                 max_tokens: RANKING_MAX_TOKENS,
                 temperature: DEFAULT_TEMPERATURE,
                 system: systemPrompt,
+                tools: [RANKING_TOOL as any],
+                tool_choice: { type: "tool", name: RANKING_TOOL.name },
                 messages: [
                     { role: "user", content: userPrompt },
-                    { role: "assistant", content: "{" },
                 ],
             });
 
-            const rawText = response.content[0]?.type === "text"
-                ? response.content[0].text
-                : "";
-            const content = ("{" + rawText).trim();
-            const parsed = parseJsonPayload(content);
+            const toolUse = response.content.find(
+                (b: any) => b.type === "tool_use" && b.name === RANKING_TOOL.name
+            ) as any;
+            const parsed = toolUse?.input ?? null;
+            const content = parsed ? JSON.stringify(parsed) : "";
             if (!parsed) {
                 logger.warn("Claude response was not valid JSON", {
                     responsePreview: content.slice(0, 500),
