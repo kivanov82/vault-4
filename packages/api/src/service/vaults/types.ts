@@ -196,6 +196,8 @@ export type PlatformMetricsResponse = {
     tvlChange30dUsd: number | null;
     pnlChange30dPct: number | null;
     pnlChange60dPct: number | null;
+    pnlChangeInceptionPct: number | null;
+    daysSinceInception: number;
     winRatePct: number | null;
     maxDrawdownPct: number | null;
     since: string;

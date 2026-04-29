@@ -691,6 +691,16 @@ export class VaultService {
                 : null;
         const pnlChange30dPct = calcPnlPct(updates, MIN_POSITION_USD, 30, positions.positions);
         const pnlChange60dPct = calcPnlPct(updates, MIN_POSITION_USD, 60, positions.positions);
+        const daysSinceInception = Math.max(
+            1,
+            Math.floor((now - LAUNCH_DATE_MS) / MS_PER_DAY)
+        );
+        const pnlChangeInceptionPct = calcPnlPct(
+            updates,
+            MIN_POSITION_USD,
+            daysSinceInception,
+            positions.positions
+        );
         const maxDrawdownPct = await calcProRataMaxDrawdownPct(vaults.items, updates, MIN_POSITION_USD);
         const winRatePct = calcWinRatePct(updates, LAUNCH_DATE_MS, MIN_POSITION_USD);
 
@@ -703,6 +713,9 @@ export class VaultService {
                 pnlChange30dPct !== null ? round(pnlChange30dPct, 4) : null,
             pnlChange60dPct:
                 pnlChange60dPct !== null ? round(pnlChange60dPct, 4) : null,
+            pnlChangeInceptionPct:
+                pnlChangeInceptionPct !== null ? round(pnlChangeInceptionPct, 4) : null,
+            daysSinceInception,
             winRatePct: winRatePct !== null ? round(winRatePct, 4) : null,
             maxDrawdownPct:
                 maxDrawdownPct !== null ? round(maxDrawdownPct, 4) : null,
