@@ -113,4 +113,7 @@ Vercel. Set Root Directory to `packages/web`.
 - `next.config.mjs` has `ignoreBuildErrors: true` — TypeScript errors won't block builds
 - Action buttons are intentionally locked (beta) — they use `terminal-button-locked` class
 - `account-stats.tsx` fetches real data from `/api/positions` — no `isConnected` prop needed
-- Annualized performance = compound annualization of 60D PnL (computed client-side from `pnlChange60dPct`)
+- Performance metric has three modes (toggle in `performance-metrics.tsx`):
+  - `ITD` (default) — compound-annualized inception-to-date PnL: `(1 + pnlChangeInceptionPct/100)^(365/daysSinceInception) - 1`
+  - `60D_ANNUAL` — linear extrapolation: `pnlChange60dPct * 6`
+  - `30D` — raw 30-day PnL %, not annualized
