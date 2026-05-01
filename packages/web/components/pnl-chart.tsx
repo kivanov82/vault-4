@@ -81,7 +81,7 @@ export function PnlChart() {
     setLiveSeries({ pnl: Array(60).fill(null), acc: Array(60).fill(null) })
     const tick = async () => {
       try {
-        const response = await fetch(`${API_BASE}/api/portfolio?refresh=true`)
+        const response = await fetch(`${API_BASE}/api/portfolio/live`)
         if (!response.ok) return
         const payload = (await response.json()) as PortfolioResponse
         if (!active) return

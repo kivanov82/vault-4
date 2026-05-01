@@ -1,6 +1,7 @@
 import express from "express";
 import { Vault4 } from "./service/Vault4";
 import { VaultService } from "./service/vaults/VaultService";
+import { PlatformSnapshotService } from "./service/vaults/PlatformSnapshotService";
 import { VaultContractService } from "./service/settlement/VaultContractService";
 import { SettlementScheduler } from "./service/settlement/SettlementScheduler";
 import { ArticleService } from "./service/social/ArticleService";
@@ -34,8 +35,11 @@ app.get("/health", (req, res) => {
 
 app.get("/api/positions", async (req, res) => {
     try {
-        const refresh = String(req.query.refresh ?? "false").toLowerCase() === "true";
-        const positions = await VaultService.getPlatformPositions({ refresh });
+        const positions = PlatformSnapshotService.getPositions();
+        if (!positions) {
+            res.status(503).json({ error: "Snapshot not ready" });
+            return;
+        }
         res.json(positions);
     } catch (error: any) {
         logger.error("Failed to fetch platform positions", {
@@ -47,14 +51,13 @@ app.get("/api/positions", async (req, res) => {
 
 app.get("/api/history", async (req, res) => {
     try {
-        const refresh = String(req.query.refresh ?? "false").toLowerCase() === "true";
         const page = Number(req.query.page ?? 1);
         const pageSize = Number(req.query.pageSize ?? 15);
-        const history = await VaultService.getPlatformHistory({
-            refresh,
-            page,
-            pageSize,
-        });
+        const history = PlatformSnapshotService.getHistory(page, pageSize);
+        if (!history) {
+            res.status(503).json({ error: "Snapshot not ready" });
+            return;
+        }
         res.json(history);
     } catch (error: any) {
         logger.error("Failed to fetch platform history", {
@@ -66,8 +69,7 @@ app.get("/api/history", async (req, res) => {
 
 app.get("/api/portfolio", async (req, res) => {
     try {
-        const refresh = String(req.query.refresh ?? "false").toLowerCase() === "true";
-        const portfolio = await VaultService.getPlatformPortfolio({ refresh });
+        const portfolio = PlatformSnapshotService.getPortfolio();
         if (!portfolio) {
             res.status(404).json({ error: "Portfolio not found" });
             return;
@@ -81,10 +83,29 @@ app.get("/api/portfolio", async (req, res) => {
     }
 });
 
+app.get("/api/portfolio/live", async (req, res) => {
+    try {
+        const portfolio = await VaultService.getPlatformPortfolio({ refresh: true });
+        if (!portfolio) {
+            res.status(404).json({ error: "Portfolio not found" });
+            return;
+        }
+        res.json(portfolio);
+    } catch (error: any) {
+        logger.error("Failed to fetch live portfolio", {
+            message: error?.message,
+        });
+        res.status(500).json({ error: "Failed to fetch live portfolio" });
+    }
+});
+
 app.get("/api/metrics", async (req, res) => {
     try {
-        const refresh = String(req.query.refresh ?? "false").toLowerCase() === "true";
-        const metrics = await VaultService.getPlatformPerformanceMetrics({ refresh });
+        const metrics = PlatformSnapshotService.getMetrics();
+        if (!metrics) {
+            res.status(503).json({ error: "Snapshot not ready" });
+            return;
+        }
         res.json(metrics);
     } catch (error: any) {
         logger.error("Failed to fetch platform metrics", {
