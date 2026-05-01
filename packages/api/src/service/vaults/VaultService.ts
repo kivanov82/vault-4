@@ -75,6 +75,10 @@ const USER_PORTFOLIO_CACHE_TTL_MS = readNumberEnv(
     process.env.USER_PORTFOLIO_CACHE_TTL_MS,
     2 * 60 * 1000
 );
+const USER_HISTORY_CACHE_TTL_MS = readNumberEnv(
+    process.env.USER_HISTORY_CACHE_TTL_MS,
+    2 * 60 * 1000
+);
 const MIN_POSITION_USD = readNumberEnv(process.env.MIN_POSITION_USD, 1);
 const LAUNCH_DATE_ISO =
     process.env.LAUNCH_DATE ?? "2026-01-06T22:17:00+01:00";
@@ -103,10 +107,15 @@ export class VaultService {
         string,
         Cached<UserPortfolioSummary | null>
     > = new Map();
+    private static userHistoryEntriesCache: Map<
+        string,
+        Cached<PlatformHistoryEntry[]>
+    > = new Map();
 
     static clearUserCaches(): void {
         this.userVaultsCache.clear();
         this.userPortfolioCache.clear();
+        this.userHistoryEntriesCache.clear();
     }
 
     static async getCandidates(options: CandidateOptions = {}): Promise<CandidatesResult> {
@@ -605,39 +614,52 @@ export class VaultService {
         if (!wallet) {
             throw new Error("WALLET is not set");
         }
-        const updates = await HyperliquidConnector.getUserVaultLedgerUpdates(wallet);
-        const filtered = updates.filter(
-            (entry) =>
-                Number.isFinite(entry.time) &&
-                entry.time >= LAUNCH_DATE_MS &&
-                Math.abs(entry.usdc) >= MIN_POSITION_USD
-        );
-        const vaultNames = await fetchVaultNames(
-            filtered.map((entry) => entry.vault)
-        );
-        const entries: PlatformHistoryEntry[] = filtered.map((entry) => {
-            const amountUsd = Number.isFinite(entry.usdc)
-                ? round(entry.usdc, 6)
-                : null;
-            const realized =
-                entry.type === "vaultWithdraw" &&
-                Number.isFinite(entry.netWithdrawnUsd) &&
-                Number.isFinite(entry.basisUsd)
-                    ? round(
-                          Number(entry.netWithdrawnUsd) - Number(entry.basisUsd),
-                          6
-                      )
+        const key = wallet.toLowerCase();
+        const now = Date.now();
+        const cached = this.userHistoryEntriesCache.get(key);
+        let entries: PlatformHistoryEntry[];
+        if (
+            !options.refresh &&
+            cached &&
+            now - cached.fetchedAt < USER_HISTORY_CACHE_TTL_MS
+        ) {
+            entries = cached.result;
+        } else {
+            const updates = await HyperliquidConnector.getUserVaultLedgerUpdates(wallet);
+            const filtered = updates.filter(
+                (entry) =>
+                    Number.isFinite(entry.time) &&
+                    entry.time >= LAUNCH_DATE_MS &&
+                    Math.abs(entry.usdc) >= MIN_POSITION_USD
+            );
+            const vaultNames = await fetchVaultNames(
+                filtered.map((entry) => entry.vault)
+            );
+            entries = filtered.map((entry) => {
+                const amountUsd = Number.isFinite(entry.usdc)
+                    ? round(entry.usdc, 6)
                     : null;
-            return {
-                time: entry.time,
-                type: entry.type,
-                vaultAddress: entry.vault,
-                vaultName: vaultNames.get(entry.vault.toLowerCase()),
-                amountUsd,
-                realizedPnlUsd: realized,
-            };
-        });
-        entries.sort((a, b) => b.time - a.time);
+                const realized =
+                    entry.type === "vaultWithdraw" &&
+                    Number.isFinite(entry.netWithdrawnUsd) &&
+                    Number.isFinite(entry.basisUsd)
+                        ? round(
+                              Number(entry.netWithdrawnUsd) - Number(entry.basisUsd),
+                              6
+                          )
+                        : null;
+                return {
+                    time: entry.time,
+                    type: entry.type,
+                    vaultAddress: entry.vault,
+                    vaultName: vaultNames.get(entry.vault.toLowerCase()),
+                    amountUsd,
+                    realizedPnlUsd: realized,
+                };
+            });
+            entries.sort((a, b) => b.time - a.time);
+            this.userHistoryEntriesCache.set(key, { fetchedAt: now, result: entries });
+        }
         const pageSize = clampInt(options.pageSize ?? 15, 1, 100);
         const total = entries.length;
         const totalPages = Math.max(1, Math.ceil(total / pageSize));

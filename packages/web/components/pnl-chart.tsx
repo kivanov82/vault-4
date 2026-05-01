@@ -208,7 +208,7 @@ export function PnlChart() {
           </TerminalSkeletonBlock>
         ) : (
         <ResponsiveContainer width="100%" height="100%">
-          <AreaChart key={animationKey} data={data} margin={{ top: 5, right: 5, left: isMobile ? -30 : -20, bottom: 0 }}>
+          <AreaChart key={animationKey} data={data} margin={{ top: 5, right: 5, left: isMobile ? 0 : -20, bottom: 0 }}>
             <defs>
               <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
                 <stop offset="5%" stopColor={strokeColor} stopOpacity={0.4} />
@@ -232,7 +232,7 @@ export function PnlChart() {
             />
             <YAxis
               domain={[axisDomain.min, axisDomain.max]}
-              width={isMobile ? 52 : 72}
+              width={isMobile ? 60 : 72}
               tick={{ fill: strokeColor, fontSize: isMobile ? 9 : 10 }}
               axisLine={{ stroke: `${strokeColor}40` }}
               tickLine={{ stroke: `${strokeColor}40` }}

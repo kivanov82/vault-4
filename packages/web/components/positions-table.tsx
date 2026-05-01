@@ -86,10 +86,11 @@ export function PositionsTable() {
   const { data: historyData, isLoading: loadingHistory } = useQuery<HistoryResponse>({
     queryKey: ["history", historyPage],
     queryFn: async () => {
-      const res = await fetch(`${API_BASE}/api/history?page=${historyPage}&pageSize=15`)
+      const res = await fetch(`${API_BASE}/api/history?page=${historyPage}&pageSize=50`)
       if (!res.ok) throw new Error("API error")
       return res.json()
     },
+    enabled: activeTab === "history",
     placeholderData: (prev) => prev,
   })
 
