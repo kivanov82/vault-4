@@ -132,7 +132,8 @@ export function PnlChart() {
   const minValue = numericValues.length ? Math.min(...(numericValues as number[])) : 0
   const maxValue = numericValues.length ? Math.max(...(numericValues as number[])) : 0
   const lastLiveValue = timePeriod === "1M" ? findLastValue(data) : null
-  const axisDomain = computeAxisDomain(minValue, maxValue, timePeriod, lastLiveValue)
+  const axisDomain = computeAxisDomain(minValue, maxValue, timePeriod, lastLiveValue, chartMode === "PNL")
+  const xTicks = pickEvenTicks(data.map((d) => d.label), 5)
 
   const strokeColor = chartMode === "PNL" ? "#00ff41" : "#00d4ff"
   const gradientId = chartMode === "PNL" ? "pnlGradient" : "accGradient"
@@ -228,7 +229,8 @@ export function PnlChart() {
               tick={{ fill: strokeColor, fontSize: 10 }}
               axisLine={{ stroke: `${strokeColor}40` }}
               tickLine={{ stroke: `${strokeColor}40` }}
-              interval="preserveStartEnd"
+              ticks={xTicks}
+              interval={0}
             />
             <YAxis
               domain={[axisDomain.min, axisDomain.max]}
@@ -326,6 +328,7 @@ function writeLivePoint(points: (number | null)[], index: number, value: number)
 
 function formatAxisValue(value: number, includeSign: boolean) {
   if (!Number.isFinite(value)) return "--"
+  if (value === 0) return "$0"
   const abs = Math.abs(value)
   let decimals = 0
   if (abs < 1) decimals = 4
@@ -343,6 +346,7 @@ function computeAxisDomain(
   max: number,
   period: "1M" | "7D" | "30D" | "ALL",
   lastValue: number | null,
+  isPnl: boolean,
 ): { min: number; max: number } {
   if (period === "1M" && Number.isFinite(lastValue)) {
     const base = Math.abs(lastValue as number)
@@ -350,6 +354,16 @@ function computeAxisDomain(
     return { min: (lastValue as number) - buffer, max: (lastValue as number) + buffer }
   }
   if (!Number.isFinite(min) || !Number.isFinite(max)) return { min: -1, max: 1 }
+  if (isPnl) {
+    const lo = Math.min(0, min)
+    const hi = Math.max(0, max)
+    if (lo === hi) return { min: -1, max: 1 }
+    const buffer = Math.max(1, (hi - lo) * 0.1)
+    return {
+      min: lo < 0 ? lo - buffer : 0,
+      max: hi > 0 ? hi + buffer : 0,
+    }
+  }
   if (min === max) {
     const buffer = Math.max(1, Math.abs(min) * 0.02)
     return { min: min - buffer, max: max + buffer }
@@ -357,6 +371,16 @@ function computeAxisDomain(
   const range = Math.max(1, Math.abs(max - min))
   const buffer = range * 0.1
   return { min: min - buffer, max: max + buffer }
+}
+
+function pickEvenTicks(labels: string[], count: number): string[] {
+  if (labels.length <= count) return labels.slice()
+  const result: string[] = []
+  const step = (labels.length - 1) / (count - 1)
+  for (let i = 0; i < count; i += 1) {
+    result.push(labels[Math.round(i * step)])
+  }
+  return Array.from(new Set(result))
 }
 
 function findLastValue(points: ChartPoint[]): number | null {
