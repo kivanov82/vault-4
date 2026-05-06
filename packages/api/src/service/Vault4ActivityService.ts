@@ -24,9 +24,15 @@ const ONE = BigInt(1);
 // a day) so a 10-minute cadence is plenty without burning RPC quota.
 const REFRESH_INTERVAL_MS = Number(process.env.ACTIVITY_TICK_MS ?? 10 * 60_000);
 // Minimum gap between consecutive RPC calls. Public Hyperliquid RPC enforces
-// a strict request-rate cap. 750ms ≈ 1.3 r/s — comfortably under what the
-// shared endpoint will tolerate alongside other services hitting the same RPC.
-const RPC_MIN_GAP_MS = Number(process.env.HYPEREVM_RPC_GAP_MS ?? 750);
+// a strict request-rate cap shared with VaultService/HyperliquidConnector hitting
+// the same host — 750ms wasn't enough in practice (saw "Request exceeds defined
+// limit" even after 14s of retry backoff). 1500ms ≈ 0.67 r/s leaves headroom for
+// the other services on this IP.
+const RPC_MIN_GAP_MS = Number(process.env.HYPEREVM_RPC_GAP_MS ?? 1500);
+// Cap pending retry queue so a sustained outage doesn't grow it unbounded.
+const MAX_PENDING_RETRIES = 100;
+// Per-tick budget for replaying failed chunks before extending the back-scan.
+const RETRIES_PER_TICK = 4;
 
 // Bound serial chunk fetching so a fresh boot doesn't OOM the container.
 // Each tick extends the window by a few more chunks. Full 90d coverage builds up over hours.
@@ -97,6 +103,12 @@ export class Vault4ActivityService {
     private static targetOldestBlock = ZERO;
     private static initPromise: Promise<void> | null = null;
     private static interval: NodeJS.Timeout | null = null;
+    /**
+     * Block ranges where at least one RPC call inside the chunk returned null
+     * (rate-limited past all retries). Replayed at the start of the next tick
+     * so events aren't permanently dropped when the public RPC throttles us.
+     */
+    private static pendingRetries: Array<[bigint, bigint]> = [];
 
     private static getClient() {
         if (!this.client) {
@@ -200,6 +212,16 @@ export class Vault4ActivityService {
         const latest = await this.rpcCall(() => client.getBlockNumber());
         if (latest === null) return;
 
+        // 0. Replay chunks that hit the rate limit on a previous pass before
+        //    we expand the indexed window — otherwise rate-limited holes get
+        //    stranded behind scannedFromBlock and never re-scanned.
+        if (this.pendingRetries.length > 0) {
+            const toRetry = this.pendingRetries.splice(0, RETRIES_PER_TICK);
+            for (const [from, to] of toRetry) {
+                await this.scanRange(from, to);
+            }
+        }
+
         // 1. New events at the head
         if (latest > this.indexedThroughBlock) {
             await this.scanRange(this.indexedThroughBlock + ONE, latest);
@@ -220,6 +242,11 @@ export class Vault4ActivityService {
         }
     }
 
+    private static queueRetry(from: bigint, to: bigint) {
+        if (this.pendingRetries.length >= MAX_PENDING_RETRIES) return;
+        this.pendingRetries.push([from, to]);
+    }
+
     private static async scanRange(fromBlock: bigint, toBlock: bigint) {
         if (!VAULT4FUND_ADDRESS) return;
         const client = this.getClient();
@@ -236,6 +263,10 @@ export class Vault4ActivityService {
         // All RPC calls are serialized + spaced to stay under the public RPC's
         // request-rate cap (separate from the 1000-block range cap).
         for (const [from, to] of chunks) {
+            // If any RPC inside this chunk gives up after retries, queue the
+            // whole chunk to be replayed next tick — otherwise dropped events
+            // never come back (the back-scan only moves outward).
+            let chunkOk = true;
             try {
                 const events = [
                     { type: "DEPOSIT" as ActivityType, abi: DEPOSIT_QUEUED },
@@ -249,10 +280,14 @@ export class Vault4ActivityService {
                     const logs = await this.rpcCall(() =>
                         client.getLogs({ address: VAULT4FUND_ADDRESS!, event: abi, fromBlock: from, toBlock: to }),
                     );
-                    if (logs) for (const log of logs) allLogs.push({ type, log });
+                    if (logs === null) chunkOk = false;
+                    else for (const log of logs) allLogs.push({ type, log });
                 }
 
-                if (allLogs.length === 0) continue;
+                if (allLogs.length === 0) {
+                    if (!chunkOk) this.queueRetry(from, to);
+                    continue;
+                }
 
                 // Resolve block timestamps (one call per unique block, serialized)
                 const uniqueBlocks = Array.from(new Set(allLogs.map(({ log }) => log.blockNumber as bigint)));
@@ -260,6 +295,7 @@ export class Vault4ActivityService {
                 for (const bn of uniqueBlocks) {
                     const block = await this.rpcCall(() => client.getBlock({ blockNumber: bn }));
                     if (block) blockTs.set(bn, Number(block.timestamp));
+                    else chunkOk = false;
                 }
 
                 for (const { type, log } of allLogs) {
@@ -282,16 +318,17 @@ export class Vault4ActivityService {
                     newEntries.push(entry);
                 }
             } catch (err: any) {
+                chunkOk = false;
                 logger.warn("Vault4ActivityService scanRange chunk failed", {
                     from: Number(from),
                     to: Number(to),
                     msg: err?.message,
                 });
-                // Pause briefly on rate-limit errors before continuing.
                 if (err?.message?.includes("rate")) {
                     await new Promise((r) => setTimeout(r, 2000));
                 }
             }
+            if (!chunkOk) this.queueRetry(from, to);
         }
 
         if (newEntries.length === 0) return;
