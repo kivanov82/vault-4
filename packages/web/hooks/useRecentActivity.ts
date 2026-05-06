@@ -40,8 +40,8 @@ export interface ActivityPage {
 export function useRecentActivity(page: number, pageSize: number) {
   return useQuery<ActivityPage>({
     queryKey: ["recent-activity", page, pageSize],
-    // Backend ticks every ~10 min — no value in polling faster than that.
-    refetchInterval: 10 * 60_000,
+    // No polling. Backend ticks every ~10 min, deposits are infrequent —
+    // refetch happens naturally on mount / window focus / pagination click.
     staleTime: 5 * 60_000,
     queryFn: async () => {
       const url = `${API_BASE}/api/activity?page=${page}&pageSize=${pageSize}`
