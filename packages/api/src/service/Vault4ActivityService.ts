@@ -19,8 +19,14 @@ const NINETY_DAYS_BLOCKS = BigInt(90 * 24 * 60 * 60);
 const CHUNK_SIZE = BigInt(999);
 const ZERO = BigInt(0);
 const ONE = BigInt(1);
-// Refresh every ~60s so new deposits appear without spamming the RPC.
-const REFRESH_INTERVAL_MS = 60_000;
+// Tick interval — how often we poll the RPC for new events + extend the
+// historical back-scan. Deposits/withdrawals are infrequent (settlement once
+// a day) so a 10-minute cadence is plenty without burning RPC quota.
+const REFRESH_INTERVAL_MS = Number(process.env.ACTIVITY_TICK_MS ?? 10 * 60_000);
+// Minimum gap between consecutive RPC calls. Public Hyperliquid RPC enforces
+// a strict request-rate cap. 750ms ≈ 1.3 r/s — comfortably under what the
+// shared endpoint will tolerate alongside other services hitting the same RPC.
+const RPC_MIN_GAP_MS = Number(process.env.HYPEREVM_RPC_GAP_MS ?? 750);
 
 // Bound serial chunk fetching so a fresh boot doesn't OOM the container.
 // Each tick extends the window by a few more chunks. Full 90d coverage builds up over hours.
@@ -102,6 +108,45 @@ export class Vault4ActivityService {
         return this.client;
     }
 
+    /**
+     * Throttled, retry-on-rate-limit RPC wrapper.
+     * - Enforces a global minimum gap between any two RPC calls.
+     * - On "Request exceeds defined limit" / "rate limited" / 429 / 503, sleeps
+     *   exponentially (2s, 4s, 8s) up to 4 attempts before giving up.
+     */
+    private static lastRpcCallAt = 0;
+    private static async rpcCall<T>(fn: () => Promise<T>): Promise<T | null> {
+        const attempts = 4;
+        for (let i = 0; i < attempts; i++) {
+            const sinceLast = Date.now() - this.lastRpcCallAt;
+            if (sinceLast < RPC_MIN_GAP_MS) {
+                await new Promise((r) => setTimeout(r, RPC_MIN_GAP_MS - sinceLast));
+            }
+            this.lastRpcCallAt = Date.now();
+            try {
+                return await fn();
+            } catch (err: any) {
+                const msg = err?.message ?? String(err);
+                const retryable =
+                    msg.includes("Request exceeds defined limit") ||
+                    msg.includes("rate limited") ||
+                    msg.includes("429") ||
+                    msg.includes("502") ||
+                    msg.includes("503") ||
+                    msg.includes("ETIMEDOUT") ||
+                    msg.includes("ECONNRESET");
+                if (i < attempts - 1 && retryable) {
+                    const backoff = 2000 * Math.pow(2, i); // 2s, 4s, 8s
+                    await new Promise((r) => setTimeout(r, backoff));
+                    continue;
+                }
+                logger.warn("Vault4ActivityService rpcCall failed", { msg, attempt: i + 1 });
+                return null;
+            }
+        }
+        return null;
+    }
+
     /** Kick off background indexing. Safe to call multiple times. */
     static start() {
         if (!VAULT4FUND_ADDRESS) {
@@ -125,7 +170,8 @@ export class Vault4ActivityService {
     private static async runInitialScan() {
         if (!VAULT4FUND_ADDRESS) return;
         const client = this.getClient();
-        const latest = await client.getBlockNumber();
+        const latest = await this.rpcCall(() => client.getBlockNumber());
+        if (latest === null) return;
         this.indexedThroughBlock = latest;
         this.targetOldestBlock = latest > NINETY_DAYS_BLOCKS ? latest - NINETY_DAYS_BLOCKS : ZERO;
 
@@ -151,7 +197,8 @@ export class Vault4ActivityService {
     private static async tick() {
         if (!VAULT4FUND_ADDRESS) return;
         const client = this.getClient();
-        const latest = await client.getBlockNumber();
+        const latest = await this.rpcCall(() => client.getBlockNumber());
+        if (latest === null) return;
 
         // 1. New events at the head
         if (latest > this.indexedThroughBlock) {
@@ -159,9 +206,11 @@ export class Vault4ActivityService {
             this.indexedThroughBlock = latest;
         }
 
-        // 2. Extend back-scan up to 5 chunks per tick until we cover 90 days
+        // 2. Extend back-scan up to 2 chunks per tick (~2k blocks) until we
+        //    cover 90 days. Slow on purpose — each chunk is 5+ RPC calls and
+        //    the public Hyperliquid RPC is shared with the rest of the API.
         if (this.scannedFromBlock > this.targetOldestBlock) {
-            const extendBy = BigInt(5) * CHUNK_SIZE;
+            const extendBy = BigInt(2) * CHUNK_SIZE;
             const newFrom =
                 this.scannedFromBlock > this.targetOldestBlock + extendBy
                     ? this.scannedFromBlock - extendBy
@@ -184,37 +233,33 @@ export class Vault4ActivityService {
         }
 
         const newEntries: ActivityEntry[] = [];
-        // Sequential to avoid public-RPC rate limits.
+        // All RPC calls are serialized + spaced to stay under the public RPC's
+        // request-rate cap (separate from the 1000-block range cap).
         for (const [from, to] of chunks) {
             try {
-                const [d, w, i, dc, wc] = await Promise.all([
-                    client.getLogs({ address: VAULT4FUND_ADDRESS, event: DEPOSIT_QUEUED, fromBlock: from, toBlock: to }),
-                    client.getLogs({ address: VAULT4FUND_ADDRESS, event: WITHDRAW_QUEUED, fromBlock: from, toBlock: to }),
-                    client.getLogs({ address: VAULT4FUND_ADDRESS, event: INSTANT_WITHDRAW, fromBlock: from, toBlock: to }),
-                    client.getLogs({ address: VAULT4FUND_ADDRESS, event: DEPOSIT_CANCELLED, fromBlock: from, toBlock: to }),
-                    client.getLogs({ address: VAULT4FUND_ADDRESS, event: WITHDRAW_CANCELLED, fromBlock: from, toBlock: to }),
-                ]);
-
-                const allLogs: Array<{ type: ActivityType; log: any }> = [
-                    ...d.map((log) => ({ type: "DEPOSIT" as ActivityType, log })),
-                    ...w.map((log) => ({ type: "WITHDRAW" as ActivityType, log })),
-                    ...i.map((log) => ({ type: "INSTANT_WITHDRAW" as ActivityType, log })),
-                    ...dc.map((log) => ({ type: "DEPOSIT_CANCELLED" as ActivityType, log })),
-                    ...wc.map((log) => ({ type: "WITHDRAW_CANCELLED" as ActivityType, log })),
+                const events = [
+                    { type: "DEPOSIT" as ActivityType, abi: DEPOSIT_QUEUED },
+                    { type: "WITHDRAW" as ActivityType, abi: WITHDRAW_QUEUED },
+                    { type: "INSTANT_WITHDRAW" as ActivityType, abi: INSTANT_WITHDRAW },
+                    { type: "DEPOSIT_CANCELLED" as ActivityType, abi: DEPOSIT_CANCELLED },
+                    { type: "WITHDRAW_CANCELLED" as ActivityType, abi: WITHDRAW_CANCELLED },
                 ];
+                const allLogs: Array<{ type: ActivityType; log: any }> = [];
+                for (const { type, abi } of events) {
+                    const logs = await this.rpcCall(() =>
+                        client.getLogs({ address: VAULT4FUND_ADDRESS!, event: abi, fromBlock: from, toBlock: to }),
+                    );
+                    if (logs) for (const log of logs) allLogs.push({ type, log });
+                }
 
                 if (allLogs.length === 0) continue;
 
-                // Resolve block timestamps (one call per unique block)
+                // Resolve block timestamps (one call per unique block, serialized)
                 const uniqueBlocks = Array.from(new Set(allLogs.map(({ log }) => log.blockNumber as bigint)));
                 const blockTs = new Map<bigint, number>();
                 for (const bn of uniqueBlocks) {
-                    try {
-                        const block = await client.getBlock({ blockNumber: bn });
-                        blockTs.set(bn, Number(block.timestamp));
-                    } catch (err: any) {
-                        logger.warn("getBlock failed", { block: bn.toString(), msg: err?.message });
-                    }
+                    const block = await this.rpcCall(() => client.getBlock({ blockNumber: bn }));
+                    if (block) blockTs.set(bn, Number(block.timestamp));
                 }
 
                 for (const { type, log } of allLogs) {
