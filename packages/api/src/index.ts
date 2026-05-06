@@ -34,6 +34,62 @@ app.get("/health", (req, res) => {
     res.json({ ok: true, service: "vault-4", timestamp: new Date().toISOString() });
 });
 
+// ── Discovery: x402 + OpenAPI ───────────────────────────────────────────
+// x402 agents probe /.well-known/x402 to find payable endpoints.
+app.get("/.well-known/x402", (req, res) => {
+    const wallet = process.env.X402_WALLET ?? process.env.WALLET ?? null;
+    res.json({
+        version: "0.1",
+        name: "VAULT-4 API",
+        description: "AI-managed fund-of-vaults on Hyperliquid. Premium endpoint exposes per-vault AI scores, allocation rationale, and PnL breakdown.",
+        receiver: wallet,
+        facilitator: "https://x402.org/facilitator",
+        endpoints: wallet
+            ? [
+                {
+                    path: "/api/strategy/premium",
+                    method: "GET",
+                    price: "$0.01",
+                    network: "base",
+                    description: "VAULT-4 premium strategy: AI vault scores, allocation rationale, and performance history.",
+                    schema: {
+                        fund: "object",
+                        allocations: "array",
+                        totalPositions: "number",
+                        netPnlUsd: "number",
+                    },
+                },
+            ]
+            : [],
+    });
+});
+
+// Minimal OpenAPI 3.0 manifest for indexers / API browsers.
+app.get("/openapi.json", (req, res) => {
+    res.json({
+        openapi: "3.0.0",
+        info: {
+            title: "VAULT-4 API",
+            version: "1.0.0",
+            description: "Public read-only data + paid premium strategy endpoint for the VAULT-4 fund-of-vaults on Hyperliquid.",
+        },
+        servers: [{ url: "https://vault-4-s6qnbk6izq-ew.a.run.app" }],
+        paths: {
+            "/health": { get: { summary: "Health check", responses: { "200": { description: "OK" } } } },
+            "/api/positions": { get: { summary: "Current vault positions" } },
+            "/api/portfolio": { get: { summary: "Aggregated portfolio summary" } },
+            "/api/portfolio/live": { get: { summary: "Live portfolio (HL clearinghouse)" } },
+            "/api/metrics": { get: { summary: "Platform metrics: TVL, PnL %, win rate, max drawdown" } },
+            "/api/history": { get: { summary: "Paginated transaction history", parameters: [{ name: "page", in: "query", schema: { type: "integer" } }, { name: "pageSize", in: "query", schema: { type: "integer" } }] } },
+            "/api/contract": { get: { summary: "On-chain Vault4Fund contract state" } },
+            "/api/activity": { get: { summary: "Recent on-chain deposits/withdrawals (all wallets, ~90d)" } },
+            "/api/strategy": { get: { summary: "Free public strategy summary" } },
+            "/api/strategy/premium": { get: { summary: "Paid (x402) — full per-vault AI scores + allocation rationale", "x-x402-price": "$0.01" } },
+            "/.well-known/x402": { get: { summary: "x402 payable-endpoints manifest" } },
+        },
+    });
+});
+
 app.get("/api/positions", async (req, res) => {
     try {
         const positions = PlatformSnapshotService.getPositions();
