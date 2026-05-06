@@ -2,6 +2,7 @@ import type React from "react"
 import type { Metadata } from "next"
 import { Fira_Code } from "next/font/google"
 import { Analytics } from "@vercel/analytics/next"
+import { SpeedInsights } from "@vercel/speed-insights/next"
 import Providers from "./providers"
 import "./globals.css"
 
@@ -97,6 +98,7 @@ export default function RootLayout({
           <div className="crt-effect">{children}</div>
         </Providers>
         <Analytics />
+        <SpeedInsights />
       </body>
     </html>
   )
