@@ -22,8 +22,9 @@ const ONE = BigInt(1);
 // Refresh every ~60s so new deposits appear without spamming the RPC.
 const REFRESH_INTERVAL_MS = 60_000;
 
-// Bound serial chunk fetching so a fresh boot doesn't hang for minutes.
-const MAX_INITIAL_CHUNKS = 200; // ~800k blocks ≈ 9 days. Extends over time as tick() runs.
+// Bound serial chunk fetching so a fresh boot doesn't OOM the container.
+// Each tick extends the window by a few more chunks. Full 90d coverage builds up over hours.
+const MAX_INITIAL_CHUNKS = 20; // ~80k blocks ≈ 22 hours. Conservative — extends on tick().
 
 // ── Events ──────────────────────────────────────────────────────────────
 

@@ -322,6 +322,7 @@ app.get("/api/contract", async (req, res) => {
 
 // Recent on-chain activity (deposits, withdrawals — all wallets)
 app.get("/api/activity", (req, res) => {
+    Vault4ActivityService.start(); // lazy: kick off background indexer on first hit
     const page = Number(req.query.page ?? 1);
     const pageSize = Number(req.query.pageSize ?? 10);
     res.json(Vault4ActivityService.list(page, pageSize));
@@ -330,7 +331,8 @@ app.get("/api/activity", (req, res) => {
 app.listen(port, () => {
     Vault4.init();
     SettlementScheduler.start();
-    Vault4ActivityService.start();
+    // Vault4ActivityService.start() is invoked lazily on first /api/activity hit
+    // to keep cold-start memory low.
 });
 
 export default app;
