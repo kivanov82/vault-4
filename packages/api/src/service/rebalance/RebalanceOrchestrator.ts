@@ -33,6 +33,19 @@ const DEFAULT_WITHDRAWAL_DELAY_MS = Number(
 );
 
 export class RebalanceOrchestrator {
+    /**
+     * Latest Claude-sourced recommendation set, updated each rebalance round.
+     * Read by /api/strategy/premium so paid clients can see top picks without
+     * triggering a fresh Claude run on the request path.
+     */
+    private static latestRecommendations: Awaited<ReturnType<typeof VaultService.getRecommendations>> | null = null;
+    private static latestRecommendationsAt: string | null = null;
+
+    static getLatestRecommendations() {
+        if (!this.latestRecommendations) return null;
+        return { recommendations: this.latestRecommendations, generatedAt: this.latestRecommendationsAt };
+    }
+
     static async runRound(
         options: RebalanceRoundOptions = {}
     ): Promise<RebalanceRoundResult> {
@@ -54,6 +67,12 @@ export class RebalanceOrchestrator {
             refreshRecommendations: options.refreshRecommendations,
             maxActive: 10,
         });
+
+        // Persist the latest Claude recommendations for the premium endpoint to read.
+        if (plan.recommendations.source === "claude") {
+            this.latestRecommendations = plan.recommendations;
+            this.latestRecommendationsAt = startedAt;
+        }
 
         // If Claude ranking failed and we fell back to heuristic, abort rebalancing.
         // Heuristic scoring is unstable across cycles and causes unnecessary churn.

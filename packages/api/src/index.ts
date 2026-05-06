@@ -5,6 +5,7 @@ import { PlatformSnapshotService } from "./service/vaults/PlatformSnapshotServic
 import { VaultContractService } from "./service/settlement/VaultContractService";
 import { SettlementScheduler } from "./service/settlement/SettlementScheduler";
 import { Vault4ActivityService } from "./service/Vault4ActivityService";
+import { PremiumSnapshotService } from "./service/PremiumSnapshotService";
 import { ArticleService } from "./service/social/ArticleService";
 import { XPostService } from "./service/social/XPostService";
 import { paymentMiddleware } from "x402-express";
@@ -49,14 +50,18 @@ app.get("/.well-known/x402", (req, res) => {
                 {
                     path: "/api/strategy/premium",
                     method: "GET",
-                    price: "$0.01",
+                    price: "$0.05",
                     network: "base",
-                    description: "VAULT-4 premium strategy: AI vault scores, allocation rationale, and performance history.",
+                    description: "VAULT-4 premium snapshot: current allocations + ROE, market sentiment overlay (BTC/ETH funding, fear/greed, OI), full candidate vault list, and our top picks. Refreshed every 5 minutes.",
                     schema: {
                         fund: "object",
-                        allocations: "array",
-                        totalPositions: "number",
-                        netPnlUsd: "number",
+                        currentAllocations: "array",
+                        marketSentiment: "object",
+                        candidates: "array",
+                        candidateCount: "number",
+                        topPicks: "array",
+                        topPicksGeneratedAt: "string",
+                        updatedAt: "string",
                     },
                 },
             ]
@@ -84,7 +89,7 @@ app.get("/openapi.json", (req, res) => {
             "/api/contract": { get: { summary: "On-chain Vault4Fund contract state" } },
             "/api/activity": { get: { summary: "Recent on-chain deposits/withdrawals (all wallets, ~90d)" } },
             "/api/strategy": { get: { summary: "Free public strategy summary" } },
-            "/api/strategy/premium": { get: { summary: "Paid (x402) — full per-vault AI scores + allocation rationale", "x-x402-price": "$0.01" } },
+            "/api/strategy/premium": { get: { summary: "Paid (x402) — current allocations, sentiment overlay, full candidate list, and top picks", "x-x402-price": "$0.05" } },
             "/.well-known/x402": { get: { summary: "x402 payable-endpoints manifest" } },
         },
     });
@@ -223,15 +228,19 @@ if (x402Wallet) {
         x402Wallet,
         {
             "GET /api/strategy/premium": {
-                price: "$0.01",
+                price: "$0.05",
                 network: "base",
                 config: {
-                    description: "VAULT-4 premium strategy: AI vault scores, allocation rationale, and performance history",
+                    description: "VAULT-4 premium snapshot: current allocations, market sentiment overlay, full candidate vault list, and ranked top picks. Refreshed every 5 minutes.",
                     outputSchema: {
                         fund: "object",
-                        allocations: "array",
-                        totalPositions: "number",
-                        netPnlUsd: "number",
+                        currentAllocations: "array",
+                        marketSentiment: "object",
+                        candidates: "array",
+                        candidateCount: "number",
+                        topPicks: "array",
+                        topPicksGeneratedAt: "string",
+                        updatedAt: "string",
                     },
                 },
             },
@@ -241,41 +250,8 @@ if (x402Wallet) {
 
     app.get("/api/strategy/premium", x402Protected, async (req, res) => {
         try {
-            const [positions, contractState] = await Promise.all([
-                VaultService.getPlatformPositions({ refresh: true }),
-                VaultContractService.getContractState(),
-            ]);
-
-            const allocations = positions.positions
-                .filter((p) => (p.amountUsd ?? 0) > 1)
-                .sort((a, b) => (b.amountUsd ?? 0) - (a.amountUsd ?? 0))
-                .map((p) => ({
-                    vault: p.vaultName ?? p.vaultAddress,
-                    vaultAddress: p.vaultAddress,
-                    allocationUsd: p.amountUsd,
-                    allocationPct: p.sizePct,
-                    pnlUsd: p.pnlUsd,
-                    roePct: p.roePct,
-                }));
-
-            res.json({
-                fund: {
-                    name: "VAULT-4",
-                    contract: process.env.VAULT4FUND_ADDRESS,
-                    chain: "HyperEVM (999)",
-                    epoch: contractState.epoch,
-                    sharePrice: contractState.sharePrice,
-                    tvlUsd: contractState.totalAssets,
-                    deployedToL1: contractState.deployedToL1,
-                    idleUsdc: contractState.idleUsdc,
-                    pendingDepositsUsd: contractState.pendingDeposits,
-                    pendingWithdrawsShares: contractState.pendingWithdraws,
-                },
-                allocations,
-                totalPositions: positions.totalPositions,
-                netPnlUsd: positions.netPnlUsd,
-                updatedAt: new Date().toISOString(),
-            });
+            const payload = await PremiumSnapshotService.get();
+            res.json(payload);
         } catch (error: any) {
             logger.error("Failed to build premium strategy", { message: error?.message });
             res.status(500).json({ error: "Failed to fetch premium strategy data" });
