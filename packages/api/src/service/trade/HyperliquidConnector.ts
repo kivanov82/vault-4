@@ -232,7 +232,7 @@ export class HyperliquidConnector {
             return cached.details;
         }
         const client = this.getPublicClient();
-        const attempts = 2;
+        const attempts = 4;
         for (let attempt = 0; attempt < attempts; attempt += 1) {
             try {
                 const details = await client.vaultDetails({ vaultAddress });
@@ -246,15 +246,28 @@ export class HyperliquidConnector {
             } catch (error: any) {
                 const message = error?.message ?? String(error);
                 const retryable =
-                    message.includes("429") || message.includes("rate limited");
+                    message.includes("429") ||
+                    message.includes("rate limited") ||
+                    message.includes("ECONNRESET") ||
+                    message.includes("ETIMEDOUT") ||
+                    message.includes("502") ||
+                    message.includes("503");
+                if (attempt < attempts - 1 && retryable) {
+                    // Exponential backoff: 1s, 2s, 4s
+                    const backoffMs = 1000 * Math.pow(2, attempt);
+                    logger.warn("Failed to fetch vault details, retrying", {
+                        vaultAddress,
+                        message,
+                        attempt: attempt + 1,
+                        backoffMs,
+                    });
+                    await sleep(backoffMs);
+                    continue;
+                }
                 logger.warn("Failed to fetch vault details", {
                     vaultAddress,
                     message,
                 });
-                if (attempt < attempts - 1 && retryable) {
-                    await sleep(400 * (attempt + 1));
-                    continue;
-                }
                 break;
             }
         }

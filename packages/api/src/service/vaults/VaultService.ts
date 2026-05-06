@@ -194,6 +194,11 @@ export class VaultService {
         const limited =
             CANDIDATE_LIMIT > 0 ? prefiltered.slice(0, CANDIDATE_LIMIT) : prefiltered;
 
+        // Inter-call delay against Hyperliquid INFO API. Tunable; default 600ms is
+        // conservative enough to avoid 429 storms on warmup with ~80 candidates.
+        const HL_API_DELAY_MS = Number(process.env.HL_API_DELAY_MS ?? 600);
+        const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
         const candidates: VaultCandidate[] = [];
         for (const entry of limited) {
             const details = await HyperliquidConnector.getVaultDetails(
@@ -208,8 +213,7 @@ export class VaultService {
                     ? details.allowDeposits
                     : null;
 
-            //wait a bit to avoid rate limits
-            await new Promise((resolve) => setTimeout(resolve, 200));
+            await sleep(HL_API_DELAY_MS);
 
             const tradesLast7d =
                 filters.minTrades7d > 0
@@ -219,11 +223,13 @@ export class VaultService {
                       )
                     : null;
 
-            // Check for active positions
-            await new Promise((resolve) => setTimeout(resolve, 200));
+            await sleep(HL_API_DELAY_MS);
             const accountSummary = await HyperliquidConnector.getVaultAccountSummary(
                 entry.summary.vaultAddress
             );
+            // Final inter-candidate spacer so the next iteration doesn't fire
+            // back-to-back after the third call.
+            await sleep(HL_API_DELAY_MS);
             const currentPositions = Array.isArray(accountSummary?.assetPositions)
                 ? accountSummary.assetPositions.length
                 : 0;

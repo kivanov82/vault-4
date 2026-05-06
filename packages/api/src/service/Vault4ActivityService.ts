@@ -15,8 +15,8 @@ const hyperEvm = defineChain({
 
 // HyperEVM produces a small block ~every second.
 const NINETY_DAYS_BLOCKS = BigInt(90 * 24 * 60 * 60);
-// Public RPCs cap eth_getLogs ranges; stay well under.
-const CHUNK_SIZE = BigInt(4_000);
+// Hyperliquid RPC caps eth_getLogs at 1000 blocks per request.
+const CHUNK_SIZE = BigInt(999);
 const ZERO = BigInt(0);
 const ONE = BigInt(1);
 // Refresh every ~60s so new deposits appear without spamming the RPC.
@@ -24,7 +24,8 @@ const REFRESH_INTERVAL_MS = 60_000;
 
 // Bound serial chunk fetching so a fresh boot doesn't OOM the container.
 // Each tick extends the window by a few more chunks. Full 90d coverage builds up over hours.
-const MAX_INITIAL_CHUNKS = 20; // ~80k blocks ≈ 22 hours. Conservative — extends on tick().
+// 30 chunks × 999 blocks ≈ 8 hours initial coverage. Extends on tick.
+const MAX_INITIAL_CHUNKS = 30;
 
 // ── Events ──────────────────────────────────────────────────────────────
 
