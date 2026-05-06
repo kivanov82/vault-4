@@ -10,6 +10,7 @@ import { PositionsTable } from "./positions-table"
 import { PerformanceMetrics } from "./performance-metrics"
 import { InvestPanel } from "./invest-panel"
 import { QueueStatus } from "./queue-status"
+import { RecentActivity } from "./recent-activity"
 import { CyclingTextPanel } from "./cycling-text-panel"
 import { MatrixRain } from "./matrix-rain"
 import { AmbientGlow } from "./ambient-glow"
@@ -96,6 +97,9 @@ export function TerminalPortfolio() {
               </section>
               <section className="boot-section boot-delay-5" aria-label="Queue status">
                 <QueueStatus />
+              </section>
+              <section className="boot-section boot-delay-5" aria-label="Recent activity">
+                <RecentActivity />
               </section>
             </div>
           )}

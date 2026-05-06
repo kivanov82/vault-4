@@ -4,6 +4,7 @@ import { VaultService } from "./service/vaults/VaultService";
 import { PlatformSnapshotService } from "./service/vaults/PlatformSnapshotService";
 import { VaultContractService } from "./service/settlement/VaultContractService";
 import { SettlementScheduler } from "./service/settlement/SettlementScheduler";
+import { Vault4ActivityService } from "./service/Vault4ActivityService";
 import { ArticleService } from "./service/social/ArticleService";
 import { XPostService } from "./service/social/XPostService";
 import { paymentMiddleware } from "x402-express";
@@ -319,9 +320,17 @@ app.get("/api/contract", async (req, res) => {
     }
 });
 
+// Recent on-chain activity (deposits, withdrawals — all wallets)
+app.get("/api/activity", (req, res) => {
+    const page = Number(req.query.page ?? 1);
+    const pageSize = Number(req.query.pageSize ?? 10);
+    res.json(Vault4ActivityService.list(page, pageSize));
+});
+
 app.listen(port, () => {
     Vault4.init();
     SettlementScheduler.start();
+    Vault4ActivityService.start();
 });
 
 export default app;

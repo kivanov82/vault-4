@@ -67,16 +67,18 @@ export function QueueStatus() {
   const isCancelling = cancelDeposit.isPending || cancelDeposit.isConfirming ||
     cancelWithdraw.isPending || cancelWithdraw.isConfirming
 
+  const userWithdrawUsdc = userWithdrawShares * fund.sharePrice
+
   return (
-    <div className="terminal-border-amber p-3">
+    <div className="terminal-border-amber p-3 sm:p-4">
       <BlinkingLabel text="PENDING REQUESTS" prefix="!" color="amber" as="h2" />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-3">
         {userDeposits.length > 0 && (
-          <div className="terminal-border-inset p-2">
-            <span className="text-[10px] text-[color:var(--terminal-amber-dim)] block">PENDING_DEPOSITS</span>
-            <div className="flex items-center justify-between mt-0.5">
-              <span className="text-sm font-semibold text-[color:var(--terminal-amber)]">
+          <div className="terminal-border-inset p-2.5">
+            <span className="text-xs text-[color:var(--terminal-amber-dim)] block">PENDING_DEPOSITS</span>
+            <div className="flex items-center justify-between mt-1">
+              <span className="text-base font-semibold text-[color:var(--terminal-amber)]">
                 ${userDepositUsdc.toFixed(2)}
               </span>
               <div className="flex gap-1">
@@ -85,7 +87,7 @@ export function QueueStatus() {
                     key={e.index}
                     onClick={() => cancelDeposit.cancel(BigInt(e.index))}
                     disabled={isCancelling}
-                    className="text-[10px] text-destructive hover:text-destructive/80 transition-colors font-semibold"
+                    className="text-xs text-destructive hover:text-destructive/80 transition-colors font-semibold"
                   >
                     {isCancelling ? "[...]" : "[CANCEL]"}
                   </button>
@@ -95,11 +97,11 @@ export function QueueStatus() {
           </div>
         )}
         {userWithdraws.length > 0 && (
-          <div className="terminal-border-inset p-2">
-            <span className="text-[10px] text-[color:var(--terminal-amber-dim)] block">PENDING_WITHDRAWALS</span>
-            <div className="flex items-center justify-between mt-0.5">
-              <span className="text-sm font-semibold text-[color:var(--terminal-amber)]">
-                {userWithdrawShares.toFixed(2)} shares
+          <div className="terminal-border-inset p-2.5">
+            <span className="text-xs text-[color:var(--terminal-amber-dim)] block">PENDING_WITHDRAWALS</span>
+            <div className="flex items-center justify-between mt-1">
+              <span className="text-base font-semibold text-[color:var(--terminal-amber)]">
+                ≈ ${userWithdrawUsdc.toFixed(2)}
               </span>
               <div className="flex gap-1">
                 {userWithdraws.map((e) => (
@@ -107,7 +109,7 @@ export function QueueStatus() {
                     key={e.index}
                     onClick={() => cancelWithdraw.cancel(BigInt(e.index))}
                     disabled={isCancelling}
-                    className="text-[10px] text-destructive hover:text-destructive/80 transition-colors font-semibold"
+                    className="text-xs text-destructive hover:text-destructive/80 transition-colors font-semibold"
                   >
                     {isCancelling ? "[...]" : "[CANCEL]"}
                   </button>
@@ -119,7 +121,7 @@ export function QueueStatus() {
       </div>
 
       {(cancelDeposit.isSuccess || cancelWithdraw.isSuccess) && (
-        <div className="mt-2 text-[10px] text-[color:var(--terminal-green-bright)]">
+        <div className="mt-2 text-xs text-[color:var(--terminal-green-bright)]">
           REQUEST_CANCELLED
         </div>
       )}
