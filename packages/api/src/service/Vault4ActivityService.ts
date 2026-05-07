@@ -1,61 +1,30 @@
-import { createPublicClient, defineChain, formatUnits, http, parseAbiItem } from "viem";
+import { formatUnits } from "viem";
 import { logger } from "./utils/logger";
 
 // ── Config ──────────────────────────────────────────────────────────────
 
 const VAULT4FUND_ADDRESS = process.env.VAULT4FUND_ADDRESS as `0x${string}` | undefined;
-const HYPEREVM_RPC_URL = process.env.HYPEREVM_RPC_URL ?? "https://rpc.hyperliquid.xyz/evm";
-
-const hyperEvm = defineChain({
-    id: 999,
-    name: "HyperEVM",
-    nativeCurrency: { name: "HYPE", symbol: "HYPE", decimals: 18 },
-    rpcUrls: { default: { http: [HYPEREVM_RPC_URL] } },
-});
-
-// HyperEVM produces a small block ~every second.
-const NINETY_DAYS_BLOCKS = BigInt(90 * 24 * 60 * 60);
-// Hyperliquid RPC caps eth_getLogs at 1000 blocks per request.
-const CHUNK_SIZE = BigInt(999);
-const ZERO = BigInt(0);
-const ONE = BigInt(1);
-// Tick interval — how often we poll the RPC for new events + extend the
-// historical back-scan. Deposits/withdrawals are infrequent (settlement once
-// a day) so a 10-minute cadence is plenty without burning RPC quota.
+// Hyperscan is HyperEVM's Blockscout-style explorer. Pulling logs from its
+// indexed REST API avoids the public-RPC eth_getLogs rate-limit problem
+// entirely — one HTTP call per page, server already did the indexing.
+const HYPERSCAN_API_BASE = process.env.HYPERSCAN_API_BASE ?? "https://www.hyperscan.com/api/v2";
+// Tick cadence — deposits/withdrawals are infrequent (settlement once a day)
+// so 10 minutes is plenty.
 const REFRESH_INTERVAL_MS = Number(process.env.ACTIVITY_TICK_MS ?? 10 * 60_000);
-// Minimum gap between consecutive RPC calls. Public Hyperliquid RPC enforces
-// a strict request-rate cap shared with VaultService/HyperliquidConnector hitting
-// the same host — 750ms wasn't enough in practice (saw "Request exceeds defined
-// limit" even after 14s of retry backoff). 1500ms ≈ 0.67 r/s leaves headroom for
-// the other services on this IP.
-const RPC_MIN_GAP_MS = Number(process.env.HYPEREVM_RPC_GAP_MS ?? 1500);
-// Cap pending retry queue so a sustained outage doesn't grow it unbounded.
-const MAX_PENDING_RETRIES = 100;
-// Per-tick budget for replaying failed chunks before extending the back-scan.
-const RETRIES_PER_TICK = 4;
+// Hard cap on pages walked per refresh in case pagination ever loops.
+const MAX_PAGES_PER_REFRESH = 50;
+// HTTP timeout for a single Hyperscan request.
+const FETCH_TIMEOUT_MS = 15_000;
 
-// Bound serial chunk fetching so a fresh boot doesn't OOM the container.
-// Each tick extends the window by a few more chunks. Full 90d coverage builds up over hours.
-// 30 chunks × 999 blocks ≈ 8 hours initial coverage. Extends on tick.
-const MAX_INITIAL_CHUNKS = 30;
+// ── Event topics (keccak256 of the event signature) ─────────────────────
 
-// ── Events ──────────────────────────────────────────────────────────────
-
-const DEPOSIT_QUEUED = parseAbiItem(
-    "event DepositQueued(address indexed investor, uint256 assets, uint256 index)",
-);
-const WITHDRAW_QUEUED = parseAbiItem(
-    "event WithdrawQueued(address indexed investor, uint256 shares, uint256 index)",
-);
-const DEPOSIT_CANCELLED = parseAbiItem(
-    "event DepositCancelled(address indexed investor, uint256 assets, uint256 index)",
-);
-const WITHDRAW_CANCELLED = parseAbiItem(
-    "event WithdrawCancelled(address indexed investor, uint256 shares, uint256 index)",
-);
-const INSTANT_WITHDRAW = parseAbiItem(
-    "event InstantWithdraw(address indexed investor, uint256 shares, uint256 assets)",
-);
+const TOPIC_TO_TYPE: Record<string, ActivityType> = {
+    "0xff465791f48805b0254fc0e26cc605e27ef7706d8ee0cf018f8696f58db83679": "DEPOSIT",
+    "0x2816dbba0837d8d68f7bcead98695dd98db2cc1cb4066694ead56a12e795c488": "WITHDRAW",
+    "0xea6a5867aa6fded974ad8936ccc2cc7e154e2b0a31226d7a62c683af0fbae580": "DEPOSIT_CANCELLED",
+    "0x1575adcdc526a67d3f6e771cd9123208ea6b3f48534cbc0ceec405608cc58605": "WITHDRAW_CANCELLED",
+    "0xab2daf3c146ca6416cbccd2a86ed2ba995e171ef6319df14a38aef01403a9c96": "INSTANT_WITHDRAW",
+};
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -86,78 +55,33 @@ interface ListResponse {
     pageSize: number;
     /** Block number through which we have indexed. */
     indexedThroughBlock: number;
-    /** Approx % of the 90-day window we've actually scanned (0–100). */
+    /** 0 while the first refresh is running, 100 afterwards. */
     scannedPct: number;
+}
+
+interface HyperscanLog {
+    block_number: number;
+    block_timestamp: string; // ISO 8601, e.g. "2026-05-06T14:00:04.000000Z"
+    data: string; // 0x-prefixed hex, ABI-encoded non-indexed args
+    index: number;
+    topics: (string | null)[]; // topics[0] = event sig; topics[1..] = indexed args
+    transaction_hash: string;
+}
+
+interface HyperscanLogsPage {
+    items: HyperscanLog[];
+    next_page_params: Record<string, string | number> | null;
 }
 
 // ── Service ─────────────────────────────────────────────────────────────
 
 export class Vault4ActivityService {
-    private static client: ReturnType<typeof createPublicClient> | null = null;
     private static entries: ActivityEntry[] = [];
-    /** Newest block we have ingested, inclusive. */
-    private static indexedThroughBlock = ZERO;
-    /** Oldest block we have scanned. We extend backwards on each tick. */
-    private static scannedFromBlock = ZERO;
-    /** Target oldest block (90 days back). Extending backwards stops here. */
-    private static targetOldestBlock = ZERO;
+    /** Highest block_number we've ingested. Used to short-circuit pagination on tick. */
+    private static highestBlockSeen = 0;
+    private static initialized = false;
     private static initPromise: Promise<void> | null = null;
     private static interval: NodeJS.Timeout | null = null;
-    /**
-     * Block ranges where at least one RPC call inside the chunk returned null
-     * (rate-limited past all retries). Replayed at the start of the next tick
-     * so events aren't permanently dropped when the public RPC throttles us.
-     */
-    private static pendingRetries: Array<[bigint, bigint]> = [];
-
-    private static getClient() {
-        if (!this.client) {
-            this.client = createPublicClient({
-                chain: hyperEvm,
-                transport: http(HYPEREVM_RPC_URL, { timeout: 30_000 }),
-            });
-        }
-        return this.client;
-    }
-
-    /**
-     * Throttled, retry-on-rate-limit RPC wrapper.
-     * - Enforces a global minimum gap between any two RPC calls.
-     * - On "Request exceeds defined limit" / "rate limited" / 429 / 503, sleeps
-     *   exponentially (2s, 4s, 8s) up to 4 attempts before giving up.
-     */
-    private static lastRpcCallAt = 0;
-    private static async rpcCall<T>(fn: () => Promise<T>): Promise<T | null> {
-        const attempts = 4;
-        for (let i = 0; i < attempts; i++) {
-            const sinceLast = Date.now() - this.lastRpcCallAt;
-            if (sinceLast < RPC_MIN_GAP_MS) {
-                await new Promise((r) => setTimeout(r, RPC_MIN_GAP_MS - sinceLast));
-            }
-            this.lastRpcCallAt = Date.now();
-            try {
-                return await fn();
-            } catch (err: any) {
-                const msg = err?.message ?? String(err);
-                const retryable =
-                    msg.includes("Request exceeds defined limit") ||
-                    msg.includes("rate limited") ||
-                    msg.includes("429") ||
-                    msg.includes("502") ||
-                    msg.includes("503") ||
-                    msg.includes("ETIMEDOUT") ||
-                    msg.includes("ECONNRESET");
-                if (i < attempts - 1 && retryable) {
-                    const backoff = 2000 * Math.pow(2, i); // 2s, 4s, 8s
-                    await new Promise((r) => setTimeout(r, backoff));
-                    continue;
-                }
-                logger.warn("Vault4ActivityService rpcCall failed", { msg, attempt: i + 1 });
-                return null;
-            }
-        }
-        return null;
-    }
 
     /** Kick off background indexing. Safe to call multiple times. */
     static start() {
@@ -166,180 +90,166 @@ export class Vault4ActivityService {
             return;
         }
         if (this.initPromise) return;
-        this.initPromise = this.runInitialScan().catch((err) => {
-            logger.error("Vault4ActivityService initial scan failed", { message: err?.message });
-        });
+        this.initPromise = this.refresh({ full: true })
+            .then(() => {
+                this.initialized = true;
+                logger.info("Vault4ActivityService initial refresh complete", {
+                    entries: this.entries.length,
+                    highestBlock: this.highestBlockSeen,
+                });
+            })
+            .catch((err) => {
+                logger.error("Vault4ActivityService initial refresh failed", { message: err?.message });
+            });
         if (!this.interval) {
             this.interval = setInterval(() => {
-                this.tick().catch((err) => {
+                this.refresh({ full: false }).catch((err) => {
                     logger.warn("Vault4ActivityService tick failed", { message: err?.message });
                 });
             }, REFRESH_INTERVAL_MS);
         }
     }
 
-    /** Bound initial scan from latest block backwards. */
-    private static async runInitialScan() {
-        if (!VAULT4FUND_ADDRESS) return;
-        const client = this.getClient();
-        const latest = await this.rpcCall(() => client.getBlockNumber());
-        if (latest === null) return;
-        this.indexedThroughBlock = latest;
-        this.targetOldestBlock = latest > NINETY_DAYS_BLOCKS ? latest - NINETY_DAYS_BLOCKS : ZERO;
-
-        const initialOldest =
-            latest > BigInt(MAX_INITIAL_CHUNKS) * CHUNK_SIZE
-                ? latest - BigInt(MAX_INITIAL_CHUNKS) * CHUNK_SIZE
-                : this.targetOldestBlock;
-
-        await this.scanRange(initialOldest, latest);
-        this.scannedFromBlock = initialOldest;
-
-        logger.info("Vault4ActivityService initial scan complete", {
-            entries: this.entries.length,
-            from: Number(initialOldest),
-            to: Number(latest),
-        });
-    }
-
     /**
-     * Periodic tick: pull new events at the head, AND extend the back-scan
-     * by a few chunks so the 90-day window fills in over time.
+     * Pull logs from Hyperscan and merge into the in-memory store.
+     * - `full: true` walks every page (used on first run).
+     * - `full: false` stops as soon as a page contains a block we've already
+     *   indexed — incremental tail-fetch.
      */
-    private static async tick() {
+    private static async refresh({ full }: { full: boolean }) {
         if (!VAULT4FUND_ADDRESS) return;
-        const client = this.getClient();
-        const latest = await this.rpcCall(() => client.getBlockNumber());
-        if (latest === null) return;
-
-        // 0. Replay chunks that hit the rate limit on a previous pass before
-        //    we expand the indexed window — otherwise rate-limited holes get
-        //    stranded behind scannedFromBlock and never re-scanned.
-        if (this.pendingRetries.length > 0) {
-            const toRetry = this.pendingRetries.splice(0, RETRIES_PER_TICK);
-            for (const [from, to] of toRetry) {
-                await this.scanRange(from, to);
-            }
-        }
-
-        // 1. New events at the head
-        if (latest > this.indexedThroughBlock) {
-            await this.scanRange(this.indexedThroughBlock + ONE, latest);
-            this.indexedThroughBlock = latest;
-        }
-
-        // 2. Extend back-scan up to 2 chunks per tick (~2k blocks) until we
-        //    cover 90 days. Slow on purpose — each chunk is 5+ RPC calls and
-        //    the public Hyperliquid RPC is shared with the rest of the API.
-        if (this.scannedFromBlock > this.targetOldestBlock) {
-            const extendBy = BigInt(2) * CHUNK_SIZE;
-            const newFrom =
-                this.scannedFromBlock > this.targetOldestBlock + extendBy
-                    ? this.scannedFromBlock - extendBy
-                    : this.targetOldestBlock;
-            await this.scanRange(newFrom, this.scannedFromBlock - ONE);
-            this.scannedFromBlock = newFrom;
-        }
-    }
-
-    private static queueRetry(from: bigint, to: bigint) {
-        if (this.pendingRetries.length >= MAX_PENDING_RETRIES) return;
-        this.pendingRetries.push([from, to]);
-    }
-
-    private static async scanRange(fromBlock: bigint, toBlock: bigint) {
-        if (!VAULT4FUND_ADDRESS) return;
-        const client = this.getClient();
-
-        const chunks: Array<[bigint, bigint]> = [];
-        let cursor = fromBlock;
-        while (cursor <= toBlock) {
-            const end = cursor + CHUNK_SIZE - ONE > toBlock ? toBlock : cursor + CHUNK_SIZE - ONE;
-            chunks.push([cursor, end]);
-            cursor = end + ONE;
-        }
 
         const newEntries: ActivityEntry[] = [];
-        // All RPC calls are serialized + spaced to stay under the public RPC's
-        // request-rate cap (separate from the 1000-block range cap).
-        for (const [from, to] of chunks) {
-            // If any RPC inside this chunk gives up after retries, queue the
-            // whole chunk to be replayed next tick — otherwise dropped events
-            // never come back (the back-scan only moves outward).
-            let chunkOk = true;
-            try {
-                const events = [
-                    { type: "DEPOSIT" as ActivityType, abi: DEPOSIT_QUEUED },
-                    { type: "WITHDRAW" as ActivityType, abi: WITHDRAW_QUEUED },
-                    { type: "INSTANT_WITHDRAW" as ActivityType, abi: INSTANT_WITHDRAW },
-                    { type: "DEPOSIT_CANCELLED" as ActivityType, abi: DEPOSIT_CANCELLED },
-                    { type: "WITHDRAW_CANCELLED" as ActivityType, abi: WITHDRAW_CANCELLED },
-                ];
-                const allLogs: Array<{ type: ActivityType; log: any }> = [];
-                for (const { type, abi } of events) {
-                    const logs = await this.rpcCall(() =>
-                        client.getLogs({ address: VAULT4FUND_ADDRESS!, event: abi, fromBlock: from, toBlock: to }),
-                    );
-                    if (logs === null) chunkOk = false;
-                    else for (const log of logs) allLogs.push({ type, log });
-                }
+        let nextParams: Record<string, string | number> | null = null;
+        let pages = 0;
 
-                if (allLogs.length === 0) {
-                    if (!chunkOk) this.queueRetry(from, to);
+        do {
+            const page = await this.fetchPage(VAULT4FUND_ADDRESS, nextParams);
+            if (!page) break;
+            pages++;
+
+            let sawKnownBlock = false;
+            for (const item of page.items) {
+                if (!full && item.block_number <= this.highestBlockSeen) {
+                    sawKnownBlock = true;
                     continue;
                 }
-
-                // Resolve block timestamps (one call per unique block, serialized)
-                const uniqueBlocks = Array.from(new Set(allLogs.map(({ log }) => log.blockNumber as bigint)));
-                const blockTs = new Map<bigint, number>();
-                for (const bn of uniqueBlocks) {
-                    const block = await this.rpcCall(() => client.getBlock({ blockNumber: bn }));
-                    if (block) blockTs.set(bn, Number(block.timestamp));
-                    else chunkOk = false;
-                }
-
-                for (const { type, log } of allLogs) {
-                    const args = log.args as any;
-                    const ts = blockTs.get(log.blockNumber as bigint);
-                    if (ts === undefined) continue;
-                    const entry: ActivityEntry = {
-                        type,
-                        investor: args.investor,
-                        txHash: log.transactionHash,
-                        blockNumber: Number(log.blockNumber),
-                        timestamp: ts,
-                    };
-                    if (args.assets !== undefined) {
-                        entry.assets = Number(formatUnits(args.assets as bigint, 6));
-                    }
-                    if (args.shares !== undefined) {
-                        entry.shares = Number(formatUnits(args.shares as bigint, 6));
-                    }
-                    newEntries.push(entry);
-                }
-            } catch (err: any) {
-                chunkOk = false;
-                logger.warn("Vault4ActivityService scanRange chunk failed", {
-                    from: Number(from),
-                    to: Number(to),
-                    msg: err?.message,
-                });
-                if (err?.message?.includes("rate")) {
-                    await new Promise((r) => setTimeout(r, 2000));
-                }
+                const entry = this.decodeLog(item);
+                if (entry) newEntries.push(entry);
             }
-            if (!chunkOk) this.queueRetry(from, to);
-        }
 
+            // Hyperscan returns logs newest-first. On incremental refresh, once
+            // a page contains a block we already have, everything past it is older.
+            if (!full && sawKnownBlock) break;
+
+            nextParams = page.next_page_params;
+        } while (nextParams && pages < MAX_PAGES_PER_REFRESH);
+
+        if (pages >= MAX_PAGES_PER_REFRESH) {
+            logger.warn("Vault4ActivityService refresh hit MAX_PAGES_PER_REFRESH cap", { pages });
+        }
         if (newEntries.length === 0) return;
 
-        // Merge — dedupe by (txHash, type, investor) since chunks may overlap on retries
+        // Merge — dedupe by (txHash, type, investor) since incremental and
+        // full refreshes can overlap on the boundary block.
         const key = (e: ActivityEntry) => `${e.txHash}-${e.type}-${e.investor}`;
         const seen = new Set(this.entries.map(key));
         for (const e of newEntries) {
-            if (!seen.has(key(e))) this.entries.push(e);
+            if (!seen.has(key(e))) {
+                this.entries.push(e);
+                if (e.blockNumber > this.highestBlockSeen) this.highestBlockSeen = e.blockNumber;
+            }
         }
         this.entries.sort((a, b) => b.blockNumber - a.blockNumber);
+    }
+
+    private static async fetchPage(
+        address: `0x${string}`,
+        nextParams: Record<string, string | number> | null,
+    ): Promise<HyperscanLogsPage | null> {
+        const url = new URL(`${HYPERSCAN_API_BASE}/addresses/${address}/logs`);
+        if (nextParams) {
+            for (const [k, v] of Object.entries(nextParams)) {
+                url.searchParams.set(k, String(v));
+            }
+        }
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+        try {
+            const res = await fetch(url.toString(), { signal: ctrl.signal });
+            if (!res.ok) {
+                logger.warn("Vault4ActivityService Hyperscan non-OK", {
+                    url: url.toString(),
+                    status: res.status,
+                });
+                return null;
+            }
+            return (await res.json()) as HyperscanLogsPage;
+        } catch (err: any) {
+            logger.warn("Vault4ActivityService Hyperscan fetch failed", {
+                url: url.toString(),
+                msg: err?.message ?? String(err),
+            });
+            return null;
+        } finally {
+            clearTimeout(timer);
+        }
+    }
+
+    /**
+     * Decode a Hyperscan log into an ActivityEntry, or return null if the
+     * topic isn't one we care about / the payload is malformed.
+     *
+     * Event layouts (all share `address indexed investor` as topics[1]):
+     *   DepositQueued(investor, assets,  index)        → data = [assets, index]
+     *   WithdrawQueued(investor, shares, index)        → data = [shares, index]
+     *   DepositCancelled(investor, assets,  index)     → data = [assets, index]
+     *   WithdrawCancelled(investor, shares, index)     → data = [shares, index]
+     *   InstantWithdraw(investor, shares, assets)      → data = [shares, assets]
+     */
+    private static decodeLog(log: HyperscanLog): ActivityEntry | null {
+        const topic0 = log.topics[0];
+        if (!topic0) return null;
+        const type = TOPIC_TO_TYPE[topic0.toLowerCase()];
+        if (!type) return null;
+
+        const investorTopic = log.topics[1];
+        if (!investorTopic || investorTopic.length < 66) return null;
+        // Address is last 20 bytes of the 32-byte topic.
+        const investor = ("0x" + investorTopic.slice(26).toLowerCase()) as `0x${string}`;
+
+        const data = log.data.startsWith("0x") ? log.data.slice(2) : log.data;
+        if (data.length < 128) return null;
+        let word0: bigint;
+        let word1: bigint;
+        try {
+            word0 = BigInt("0x" + data.slice(0, 64));
+            word1 = BigInt("0x" + data.slice(64, 128));
+        } catch {
+            return null;
+        }
+
+        const ts = Math.floor(new Date(log.block_timestamp).getTime() / 1000);
+        if (!Number.isFinite(ts)) return null;
+
+        const entry: ActivityEntry = {
+            type,
+            investor,
+            txHash: log.transaction_hash as `0x${string}`,
+            blockNumber: log.block_number,
+            timestamp: ts,
+        };
+
+        if (type === "INSTANT_WITHDRAW") {
+            entry.shares = Number(formatUnits(word0, 6));
+            entry.assets = Number(formatUnits(word1, 6));
+        } else if (type === "DEPOSIT" || type === "DEPOSIT_CANCELLED") {
+            entry.assets = Number(formatUnits(word0, 6));
+        } else {
+            // WITHDRAW / WITHDRAW_CANCELLED
+            entry.shares = Number(formatUnits(word0, 6));
+        }
+        return entry;
     }
 
     static list(page = 1, pageSize = 10): ListResponse {
@@ -347,18 +257,13 @@ export class Vault4ActivityService {
         const safeSize = Math.min(50, Math.max(1, pageSize));
         const start = (safePage - 1) * safeSize;
         const slice = this.entries.slice(start, start + safeSize);
-        const totalRangeBlocks = this.indexedThroughBlock - this.targetOldestBlock;
-        const scannedBlocks = this.indexedThroughBlock - this.scannedFromBlock;
-        const scannedPct = totalRangeBlocks > ZERO
-            ? Math.min(100, Number((scannedBlocks * BigInt(100)) / totalRangeBlocks))
-            : 0;
         return {
             entries: slice,
             total: this.entries.length,
             page: safePage,
             pageSize: safeSize,
-            indexedThroughBlock: Number(this.indexedThroughBlock),
-            scannedPct,
+            indexedThroughBlock: this.highestBlockSeen,
+            scannedPct: this.initialized ? 100 : 0,
         };
     }
 }
