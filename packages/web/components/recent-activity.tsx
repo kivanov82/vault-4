@@ -150,7 +150,7 @@ function ActivityRow({ entry, sharePrice }: { entry: ActivityEntry; sharePrice: 
       </td>
       <td className="py-1.5 text-right">
         <a
-          href={`https://app.hyperliquid.xyz/explorer/tx/${entry.txHash}`}
+          href={`https://hypurrscan.io/evm/tx/${entry.txHash}`}
           target="_blank"
           rel="noopener noreferrer"
           className="text-[color:var(--terminal-cyan-dim)] hover:text-[color:var(--terminal-cyan)] transition-colors"

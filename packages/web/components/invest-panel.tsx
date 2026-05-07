@@ -354,7 +354,7 @@ export function InvestPanel() {
           <span>TX_CONFIRMED — {mode === "DEPOSIT" ? "deposit queued for settlement" : "withdrawal processed"}</span>
           {activeHash && (
             <a
-              href={`https://app.hyperliquid.xyz/explorer/tx/${activeHash}`}
+              href={`https://hypurrscan.io/evm/tx/${activeHash}`}
               target="_blank"
               rel="noopener noreferrer"
               className="text-[color:var(--terminal-cyan)] hover:underline"
