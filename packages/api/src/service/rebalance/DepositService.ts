@@ -75,7 +75,8 @@ const DEFAULT_HIGH_COUNT = readNumberEnv(process.env.DEPOSIT_HIGH_COUNT, 7);
 const DEFAULT_LOW_COUNT = readNumberEnv(process.env.DEPOSIT_LOW_COUNT, 3);
 const DEFAULT_HIGH_PCT = readNumberEnv(process.env.DEPOSIT_HIGH_PCT, 80);
 const DEFAULT_LOW_PCT = readNumberEnv(process.env.DEPOSIT_LOW_PCT, 20);
-// Max percentage of new deposits that can share the same directional bias (long or short)
+// Max percentage of the post-deposit portfolio (existing + new) that can share the
+// same directional bias (long or short). Neutrals don't count toward either side.
 const MAX_SAME_DIRECTION_PCT = readNumberEnv(process.env.MAX_SAME_DIRECTION_PCT, 60);
 
 export class DepositService {
@@ -238,34 +239,48 @@ export class DepositService {
             });
         }
 
-        // Directional concentration filter: ensure new deposits don't over-concentrate
-        // in a single direction (long/short). Classify each candidate and enforce limits.
+        // Seed the directional counters with current holdings so we can't pile more
+        // longs on top of an already-long book.
         const allCandidates = [
             ...slotLimitedHigh.map(v => ({ ...v, group: "high" as const })),
             ...slotLimitedLow.map(v => ({ ...v, group: "low" as const })),
         ];
-        const directionMap = await classifyVaultDirections(
-            allCandidates.map(c => c.vaultAddress)
-        );
+        const existingAddresses = significantEquities.map(e => e.vaultAddress.toLowerCase());
+        const [existingDirectionMap, directionMap] = await Promise.all([
+            classifyVaultDirections(existingAddresses),
+            classifyVaultDirections(allCandidates.map(c => c.vaultAddress)),
+        ]);
 
-        const maxSameDirection = Math.ceil(allCandidates.length * (MAX_SAME_DIRECTION_PCT / 100));
-        const directionCounts: Record<string, number> = { long: 0, short: 0, neutral: 0 };
+        const directionCounts: Record<DirectionalBias, number> = { long: 0, short: 0 };
+        for (const dir of existingDirectionMap.values()) {
+            if (dir !== "neutral") directionCounts[dir]++;
+        }
+        const existingLong = directionCounts.long;
+        const existingShort = directionCounts.short;
+
+        const totalPortfolioCount = existingAddresses.length + allCandidates.length;
+        const maxSameDirection = Math.ceil(totalPortfolioCount * (MAX_SAME_DIRECTION_PCT / 100));
         const accepted = new Set<string>();
 
         for (const candidate of allCandidates) {
             const dir = directionMap.get(candidate.vaultAddress.toLowerCase()) ?? "neutral";
-            if (dir === "neutral" || directionCounts[dir] < maxSameDirection) {
-                directionCounts[dir] += (dir !== "neutral" ? 1 : 0);
+            if (dir === "neutral") {
                 accepted.add(candidate.vaultAddress.toLowerCase());
-            } else {
+                continue;
+            }
+            if (directionCounts[dir] >= maxSameDirection) {
                 logger.info("Skipping vault (directional concentration limit)", {
                     vaultAddress: candidate.vaultAddress,
                     vaultName: candidate.name,
                     direction: dir,
                     currentCount: directionCounts[dir],
                     maxSameDirection,
+                    existingCount: dir === "long" ? existingLong : existingShort,
                 });
+                continue;
             }
+            directionCounts[dir]++;
+            accepted.add(candidate.vaultAddress.toLowerCase());
         }
 
         const limitedHighWithoutExposure = slotLimitedHigh.filter(
@@ -279,8 +294,10 @@ export class DepositService {
             logger.info("Directional concentration filter applied", {
                 before: allCandidates.length,
                 after: accepted.size,
-                directionCounts,
+                existingDirectionCounts: { long: existingLong, short: existingShort },
+                postDepositDirectionCounts: directionCounts,
                 maxSameDirection,
+                totalPortfolioCount,
             });
         }
 
@@ -609,10 +626,13 @@ function floorUsd(value: number): number {
     return Math.floor(value * 100) / 100;
 }
 
+type VaultDirection = "long" | "short" | "neutral";
+type DirectionalBias = Exclude<VaultDirection, "neutral">;
+
 async function classifyVaultDirections(
     vaultAddresses: string[]
-): Promise<Map<string, "long" | "short" | "neutral">> {
-    const result = new Map<string, "long" | "short" | "neutral">();
+): Promise<Map<string, VaultDirection>> {
+    const result = new Map<string, VaultDirection>();
     for (const addr of vaultAddresses) {
         try {
             const summary = await HyperliquidConnector.getVaultAccountSummary(addr);
