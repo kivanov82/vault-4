@@ -889,10 +889,25 @@ function deriveEntryUsd(
 }
 
 function buildLedgerByVault(
-    updates: { vault: string; type: string; usdc: number; time?: number }[],
+    updates: {
+        vault: string;
+        type: string;
+        usdc: number;
+        time?: number;
+        basisUsd?: number;
+    }[],
     minPositionUsd: number
 ): Map<string, LedgerSummary> {
-    const grouped = new Map<string, { vault: string; type: string; usdc: number; time: number }[]>();
+    const grouped = new Map<
+        string,
+        {
+            vault: string;
+            type: string;
+            usdc: number;
+            time: number;
+            basisUsd?: number;
+        }[]
+    >();
     for (const update of updates) {
         const vault = update.vault?.toLowerCase();
         if (!vault) continue;
@@ -904,6 +919,7 @@ function buildLedgerByVault(
             type: update.type,
             usdc: update.usdc,
             time,
+            basisUsd: update.basisUsd,
         });
         grouped.set(vault, bucket);
     }
@@ -920,7 +936,14 @@ function buildLedgerByVault(
                 current += entry.usdc;
             } else if (entry.type === "vaultWithdraw") {
                 withdrawals += entry.usdc;
-                current -= entry.usdc;
+                // basisUsd is the cost basis of the shares withdrawn; netWithdrawnUsd (usdc)
+                // is the cash received, which differs by the realized PnL on those shares.
+                // Reducing basis by usdc instead of basisUsd leaves a residual equal to the
+                // realized loss/gain, which then contaminates PnL on any later redeposit.
+                const basisOut = Number.isFinite(entry.basisUsd)
+                    ? (entry.basisUsd as number)
+                    : entry.usdc;
+                current -= basisOut;
             }
             if (current < 0) {
                 current = 0;
