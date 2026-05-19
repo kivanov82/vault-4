@@ -41,16 +41,20 @@ function useCountUp(target: number | null, duration = 1200) {
   return value
 }
 
-type PnlMode = "ITD" | "60D_ANNUAL" | "30D"
+type PnlMode = "INCEPTION" | "ANNUAL"
 
 const MODE_LABELS: Record<PnlMode, string> = {
-  ITD: "ITD_ANNUAL",
-  "60D_ANNUAL": "60D_ANNUAL",
-  "30D": "30D_PERFORMANCE",
+  INCEPTION: "INCEPTION",
+  ANNUAL: "ANNUAL",
+}
+
+const MODE_TOOLTIPS: Record<PnlMode, string> = {
+  INCEPTION: "Total PnL since inception (not annualized)",
+  ANNUAL: "Annualized return — inception-to-date PnL compounded to a 365-day rate",
 }
 
 export function PerformanceMetrics() {
-  const [pnlMode, setPnlMode] = useState<PnlMode>("ITD")
+  const [pnlMode, setPnlMode] = useState<PnlMode>("INCEPTION")
   const { data: metrics, isLoading: loading, isError, refetch } = useQuery<MetricsResponse>({
     queryKey: ["metrics"],
     queryFn: async () => {
@@ -62,28 +66,23 @@ export function PerformanceMetrics() {
   const error = isError && !metrics
 
   const tvl = useCountUp(metrics?.tvlUsd ?? null)
-  const annualized60dRaw = metrics?.pnlChange60dPct != null
-    ? metrics.pnlChange60dPct * 6
-    : null
-  const itdRaw =
+  const inceptionRaw = metrics?.pnlChangeInceptionPct ?? null
+  const annualRaw =
     metrics?.pnlChangeInceptionPct != null && metrics?.daysSinceInception
       ? compoundAnnualize(metrics.pnlChangeInceptionPct, metrics.daysSinceInception)
       : null
-  const itd = useCountUp(itdRaw)
-  const annualized60d = useCountUp(annualized60dRaw)
-  const pnl30d = useCountUp(metrics?.pnlChange30dPct ?? null)
+  const inception = useCountUp(inceptionRaw)
+  const annual = useCountUp(annualRaw)
   const drawdown = useCountUp(metrics?.maxDrawdownPct ?? null)
   const winRate = useCountUp(metrics?.winRatePct ?? null)
 
   const pnlValueByMode: Record<PnlMode, number | null> = {
-    ITD: itd,
-    "60D_ANNUAL": annualized60d,
-    "30D": pnl30d,
+    INCEPTION: inception,
+    ANNUAL: annual,
   }
   const pnlRawByMode: Record<PnlMode, number | null> = {
-    ITD: itdRaw,
-    "60D_ANNUAL": annualized60dRaw,
-    "30D": metrics?.pnlChange30dPct ?? null,
+    INCEPTION: inceptionRaw,
+    ANNUAL: annualRaw,
   }
   const pnlValue = pnlValueByMode[pnlMode]
   const pnlRaw = pnlRawByMode[pnlMode]
@@ -136,12 +135,14 @@ export function PerformanceMetrics() {
           >
             {"switcher" in metric && metric.switcher ? (
               <div className="flex items-center gap-1 text-[10px]">
-                {(["ITD", "60D_ANNUAL", "30D"] as const).map((mode, i) => (
+                <span className="text-[color:var(--terminal-cyan-dim)]">PnL:</span>
+                {(["INCEPTION", "ANNUAL"] as const).map((mode, i) => (
                   <span key={mode} className="flex items-center gap-1">
                     {i > 0 && <span className="text-[color:var(--terminal-cyan-dim)]">/</span>}
                     <button
                       onClick={() => setPnlMode(mode)}
-                      className={`transition-all ${
+                      title={MODE_TOOLTIPS[mode]}
+                      className={`transition-all cursor-help ${
                         pnlMode === mode
                           ? "text-[color:var(--terminal-cyan)]"
                           : "text-[color:var(--terminal-cyan-dim)] hover:text-[color:var(--terminal-cyan)]"

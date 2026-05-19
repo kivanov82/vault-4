@@ -133,7 +133,11 @@ export function PnlChart() {
   const maxValue = numericValues.length ? Math.max(...(numericValues as number[])) : 0
   const lastLiveValue = timePeriod === "1M" ? findLastValue(data) : null
   const axisDomain = computeAxisDomain(minValue, maxValue, timePeriod, lastLiveValue, chartMode === "PNL")
-  const xTicks = pickEvenTicks(data.map((d) => d.label), 5)
+  const liveLabelTicks = pickEvenTicks(data.map((d) => d.label), 6)
+  const timeAxisRange = computeTimeAxisRange(data, timePeriod)
+  const timestampTicks = timePeriod === "1M"
+    ? undefined
+    : generateTimeTicks(timeAxisRange.min, timeAxisRange.max, 6)
 
   const strokeColor = chartMode === "PNL" ? "#00ff41" : "#00d4ff"
   const gradientId = chartMode === "PNL" ? "pnlGradient" : "accGradient"
@@ -225,12 +229,17 @@ export function PnlChart() {
               </filter>
             </defs>
             <XAxis
-              dataKey="label"
+              dataKey={timePeriod === "1M" ? "label" : "timestamp"}
+              type={timePeriod === "1M" ? "category" : "number"}
+              domain={timePeriod === "1M" ? undefined : [timeAxisRange.min, timeAxisRange.max]}
+              scale={timePeriod === "1M" ? undefined : "time"}
               tick={{ fill: strokeColor, fontSize: 10 }}
               axisLine={{ stroke: `${strokeColor}40` }}
               tickLine={{ stroke: `${strokeColor}40` }}
-              ticks={xTicks}
+              ticks={timePeriod === "1M" ? liveLabelTicks : timestampTicks}
+              tickFormatter={timePeriod === "1M" ? undefined : (ts) => formatLabel(Number(ts), timePeriod)}
               interval={0}
+              allowDuplicatedCategory={false}
             />
             <YAxis
               domain={[axisDomain.min, axisDomain.max]}
@@ -250,7 +259,9 @@ export function PnlChart() {
                 boxShadow: `0 0 15px ${strokeColor}40`,
               }}
               formatter={(value: number) => [formatAxisValue(value, chartMode === "PNL"), chartMode === "PNL" ? "PNL" : "VALUE"]}
-              labelFormatter={(label) => (timePeriod === "1M" ? `SEC: ${label}` : `DAY: ${label}`)}
+              labelFormatter={(label) =>
+                timePeriod === "1M" ? `SEC: ${label}` : `DAY: ${formatLabel(Number(label), timePeriod)}`
+              }
             />
             <Area
               type="monotone"
@@ -305,9 +316,31 @@ function downsample(points: SeriesPoint[], maxPoints: number) {
 
 function formatLabel(timestamp: number, period: "1M" | "7D" | "30D" | "ALL") {
   const date = new Date(timestamp)
-  if (period === "7D") return date.toISOString().slice(5, 10)
-  if (period === "30D") return date.toISOString().slice(5, 10)
-  return date.toISOString().slice(0, 10)
+  const iso = date.toISOString()
+  if (period === "7D") return `${iso.slice(5, 10)} ${iso.slice(11, 13)}h`
+  if (period === "30D") return iso.slice(5, 10)
+  return iso.slice(0, 10)
+}
+
+function computeTimeAxisRange(points: ChartPoint[], period: "1M" | "7D" | "30D" | "ALL"): { min: number; max: number } {
+  const now = Date.now()
+  if (period === "1M") return { min: now, max: now }
+  const dayMs = 24 * 60 * 60 * 1000
+  const lastTs = points[points.length - 1]?.timestamp ?? now
+  const firstTs = points[0]?.timestamp ?? lastTs
+  if (period === "7D") return { min: Math.min(firstTs, now - 7 * dayMs), max: now }
+  if (period === "30D") return { min: Math.min(firstTs, now - 30 * dayMs), max: now }
+  return { min: Math.min(firstTs, LAUNCH_DATE_MS), max: lastTs }
+}
+
+function generateTimeTicks(start: number, end: number, count: number): number[] {
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start || count < 2) return [start]
+  const ticks: number[] = []
+  const step = (end - start) / (count - 1)
+  for (let i = 0; i < count; i += 1) {
+    ticks.push(Math.round(start + step * i))
+  }
+  return ticks
 }
 
 function latestValue(points?: SeriesPoint[] | null): number | null {
