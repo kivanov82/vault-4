@@ -143,13 +143,15 @@ Content types in `CONTENT_MIX`:
 - **Market reaction** — `market_funding_signal`, `market_oi_buildup`, `market_sentiment_extreme`, `market_hyperliquid_flow`
 - **Performance (positive only)** — `perf_weekly_positive`, `perf_monthly_positive`, `perf_inception_positive`, `perf_top_token` (with `#TICKER` hashtag)
 - **Engine internals** — `engine_ranking`, `engine_rebalance`, `engine_risk`, `engine_market_overlay`
-- **News reaction** — `news_react` (gated on `CRYPTOPANIC_API_TOKEN` being set and topics being available)
+- **News reaction** — `news_react` (gated on at least one keyword-relevant hot topic returning from `NewsService`)
 
 Topic-specific gating in `pickContentTypeForContext` — `perf_*` topics only enter the pool when the underlying metric is positive; `news_react` only when CryptoPanic returned actual headlines.
 
 **Persona rule:** the prompt forbids the word "vault". The bot speaks as a perps trader running an AI strategy — never mentions VAULT-4 by name. A code-level guardrail drops generated tweets that slip a "vault" word through.
 
-Env vars: `X_API_KEY`, `X_API_SECRET`, `X_ACCESS_TOKEN`, `X_ACCESS_SECRET`, `X_POST_ENABLED`, `X_POST_MIN_HOURS`, `X_POST_MAX_HOURS`, `CRYPTOPANIC_API_TOKEN`.
+News sources for `news_react`: free RSS (Cointelegraph, Decrypt, The Defiant, DLNews) + Reddit JSON (`r/Hyperliquid`, `r/CryptoCurrency`, `r/ethfinance`). No API keys. Cached 30 min.
+
+Env vars: `X_API_KEY`, `X_API_SECRET`, `X_ACCESS_TOKEN`, `X_ACCESS_SECRET`, `X_POST_ENABLED`, `X_POST_MIN_HOURS`, `X_POST_MAX_HOURS`.
 
 ## Environment Variables
 

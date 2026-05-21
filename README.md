@@ -61,7 +61,7 @@ Schema lives in `packages/api/migrations/`. Migrations run on API startup.
 
 ## Social (`packages/api/src/service/social/`)
 
-Daily X (Twitter) posts via `XPostScheduler` — independent of settlement, daily fire with **±10h jitter** (configurable). Content mix covers educational concepts, market reactions, performance highlights (positive only), engine internals, and reactions to crypto news fetched from CryptoPanic (Hyperliquid / Lighter / perps focus). The bot persona forbids the word "vault" — speaks as a perps trader running an AI strategy.
+Daily X (Twitter) posts via `XPostScheduler` — independent of settlement, daily fire with **±10h jitter** (configurable). Content mix covers educational concepts, market reactions, performance highlights (positive only), engine internals, and reactions to crypto news fetched from free RSS feeds (Cointelegraph, Decrypt, The Defiant, DLNews) plus Reddit JSON (`r/Hyperliquid`, `r/CryptoCurrency`, `r/ethfinance`) — keyword-filtered to Hyperliquid / Lighter / perps. The bot persona forbids the word "vault" — speaks as a perps trader running an AI strategy.
 
 ## Tech Stack
 
