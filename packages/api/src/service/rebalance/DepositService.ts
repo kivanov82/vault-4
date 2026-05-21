@@ -8,6 +8,7 @@ import type {
     VaultRecommendation,
 } from "../vaults/types";
 import { RebalanceService, type VaultTransferAction } from "./RebalanceService";
+import { TraceService } from "../../db/TraceService";
 
 export type DepositPlanOptions = {
     refreshRecommendations?: boolean;
@@ -58,6 +59,9 @@ export type DepositPlan = {
 export type ExecuteDepositPlanOptions = {
     dryRun?: boolean;
     minDepositUsd?: number;
+    roundId?: number | null;
+    platformTvlUsd?: number | null;
+    marketDirection?: "long" | "short" | "neutral";
 };
 
 export type ExecuteDepositPlanResult = {
@@ -473,6 +477,9 @@ export class DepositService {
     ): Promise<ExecuteDepositPlanResult> {
         const dryRun = options.dryRun ?? true;
         const minDepositUsd = Math.max(0, options.minDepositUsd ?? 5);
+        const roundId = options.roundId ?? null;
+        const platformTvlUsd = options.platformTvlUsd ?? null;
+        const marketDirection = options.marketDirection ?? "neutral";
 
         let submitted = 0;
         let skipped = 0;
@@ -530,6 +537,30 @@ export class DepositService {
                     vaultAddress: target.vaultAddress,
                     error: result.action.error,
                     remainingTargets: plan.targets.length - actions.length,
+                });
+            }
+
+            if (roundId) {
+                const snapshotId = await TraceService.recordVaultSnapshot(roundId, {
+                    vaultAddress: target.vaultAddress,
+                    vaultName: target.name,
+                    assumedBias: marketDirection,
+                });
+                const succeeded = result.action.status === "submitted";
+                await TraceService.recordPositionEvent({
+                    roundId,
+                    vaultAddress: target.vaultAddress,
+                    vaultSnapshotId: snapshotId,
+                    action: "deposit",
+                    amountUsd: succeeded ? target.depositUsd : 0,
+                    preEquityUsd: target.currentUsd,
+                    targetEquityUsd: target.targetUsd,
+                    confidence: target.confidence,
+                    reasonText: `deposit confidence=${target.confidence}`,
+                    txMeta: result.action,
+                    succeeded,
+                    hlPnlUsd: null,
+                    platformTvlUsd,
                 });
             }
         }

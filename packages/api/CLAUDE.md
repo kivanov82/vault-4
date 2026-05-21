@@ -96,11 +96,41 @@ Wait 60s after withdrawals before deposits (configurable via `REBALANCE_WITHDRAW
 
 - `GET /health` — Health check
 - `GET /api/positions` — User vault positions
-- `GET /api/history?page=1&pageSize=15` — Transaction history
+- `GET /api/history?page=1&pageSize=15` — Transaction history (reads from `position_ledger`, falls back to live HL if DB empty)
 - `GET /api/portfolio` — Aggregated portfolio summary
 - `GET /api/metrics` — Platform metrics (TVL, 30d/60d PnL %, win rate, max drawdown)
+- `GET /api/trace/rounds?limit=20` — Recent rebalance rounds with summaries
+- `GET /api/trace/rounds/:id` — Round detail: market snapshot + Claude decisions + vault snapshots + position events
+- `GET /api/trace/positions/:vaultAddress?limit=100` — Chronological event timeline per vault
 
 Append `?refresh=true` to bypass cache.
+
+## Trace persistence layer (`src/db/`)
+
+Cloud SQL Postgres mirrors every position lifecycle event the orchestrator causes, the Claude
+Stage 2 output per round, the market overlay snapshot, and per-vault context at decision time.
+The HL `getUserVaultLedgerUpdates` ledger is mirrored into `position_ledger` and a derived
+`position_account` table that uses **our-own FIFO basis** — HL's `basisUsd` is stored only as
+`basis_usd_hl` for divergence audit and is never used in any logic.
+
+- Schema: `migrations/001_init.sql`. Migrations run on startup via `runMigrations()` in `Vault4.init()`.
+- FIFO math: `src/db/PositionAccountService.ts` (pure, unit-tested in `src/db/__tests__/`).
+- Trace writes are non-fatal — DB outages must never break a rebalance round.
+- Periodic ledger sync every 5 min (`LEDGER_SYNC_INTERVAL_MS`).
+
+### Scripts
+
+```bash
+# One-time HL ledger backfill into position_ledger + recompute position_account
+npx ts-node scripts/backfill-ledger.ts
+
+# Backfill HL portfolio time series (pnlHistory + accountValueHistory) into portfolio_series,
+# plus our-own realized PnL + open basis per timestamp
+npx ts-node scripts/backfill-series.ts
+
+# Decision-logic backtest harness (stub; not yet implemented)
+npx ts-node scripts/backtest.ts
+```
 
 ## Environment Variables
 

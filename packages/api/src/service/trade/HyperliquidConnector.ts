@@ -370,6 +370,72 @@ export class HyperliquidConnector {
         }
     }
 
+    /**
+     * Returns ALL four HL portfolio time-windows merged into a single
+     * deduplicated series. HL returns separate `day`/`week`/`month`/`allTime`
+     * series with progressively coarser granularity over wider ranges; this
+     * stitches them together so the higher-resolution recent points are kept.
+     * Also returns the PERPS-only series (`perpDay`/`perpWeek`/etc) so callers
+     * can derive vault-only equity = accountValue − perpAccountValue.
+     */
+    static async getUserPortfolioAllSeries(
+        userAddress: `0x${string}`
+    ): Promise<{
+        pnl: { timestamp: number; value: number }[];
+        accountValue: { timestamp: number; value: number }[];
+        perpAccountValue: { timestamp: number; value: number }[];
+    } | null> {
+        try {
+            const client = this.getPublicClient();
+            const portfolio = await client.portfolio({ user: userAddress });
+            if (!Array.isArray(portfolio)) return null;
+            const map = toPortfolioMap(portfolio);
+            const pnl = new Map<number, number>();
+            const acc = new Map<number, number>();
+            const perpAcc = new Map<number, number>();
+            // Walk widest → narrowest so finer-resolution entries overwrite.
+            const order = [
+                { combined: "allTime", perp: "perpAllTime" },
+                { combined: "month", perp: "perpMonth" },
+                { combined: "week", perp: "perpWeek" },
+                { combined: "day", perp: "perpDay" },
+            ] as const;
+            const merge = (
+                target: Map<number, number>,
+                series: ReturnType<typeof parseSeries>
+            ) => {
+                if (!series?.points) return;
+                for (const p of series.points) {
+                    if (Number.isFinite(p.timestamp) && Number.isFinite(p.value)) {
+                        target.set(p.timestamp, p.value);
+                    }
+                }
+            };
+            for (const { combined, perp } of order) {
+                const entry = map[combined];
+                merge(pnl, parseSeries(entry?.pnlHistory));
+                merge(acc, parseSeries(entry?.accountValueHistory));
+                const perpEntry = map[perp];
+                merge(perpAcc, parseSeries(perpEntry?.accountValueHistory));
+            }
+            const toSorted = (m: Map<number, number>) =>
+                [...m.entries()]
+                    .map(([timestamp, value]) => ({ timestamp, value }))
+                    .sort((a, b) => a.timestamp - b.timestamp);
+            return {
+                pnl: toSorted(pnl),
+                accountValue: toSorted(acc),
+                perpAccountValue: toSorted(perpAcc),
+            };
+        } catch (error: any) {
+            logger.warn("Failed to fetch full portfolio series", {
+                userAddress,
+                message: error?.message,
+            });
+            return null;
+        }
+    }
+
     static async getUserVaultHistory(
         userAddress: `0x${string}`,
         vaultAddress: `0x${string}`

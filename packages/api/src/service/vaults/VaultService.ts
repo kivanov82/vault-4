@@ -3,6 +3,13 @@ import type { UserLedgerUpdate } from "../trade/HyperliquidConnector";
 import { ClaudeService } from "../claude/ClaudeService";
 import type { ClaudeRanking } from "../claude/ClaudeService";
 import { logger } from "../utils/logger";
+import {
+    readPositionAccountAggregate,
+    readPortfolioSnapshotAt,
+    readWinRateAggregate,
+    readMaxDrawdownFromSeries,
+    type PositionAccountAggregate,
+} from "../../db/TraceService";
 import type {
     CandidatesResult,
     RecommendationSet,
@@ -667,15 +674,18 @@ export class VaultService {
         if (!wallet) {
             throw new Error("WALLET is not set");
         }
-        const [portfolio, positions, updates, vaults] = await Promise.all([
-            this.getPlatformPortfolio({ refresh: options.refresh }),
-            this.getPlatformPositions({ refresh: options.refresh }),
-            HyperliquidConnector.getUserVaultLedgerUpdates(wallet),
-            this.getUserVaults(wallet, {
-                refresh: options.refresh,
-                includeHistory: true,
-            }),
-        ]);
+        const [portfolio, positions, updates, vaults, ourBooks, winRateBooks] =
+            await Promise.all([
+                this.getPlatformPortfolio({ refresh: options.refresh }),
+                this.getPlatformPositions({ refresh: options.refresh }),
+                HyperliquidConnector.getUserVaultLedgerUpdates(wallet),
+                this.getUserVaults(wallet, {
+                    refresh: options.refresh,
+                    includeHistory: true,
+                }),
+                readPositionAccountAggregate().catch(() => null),
+                readWinRateAggregate().catch(() => null),
+            ]);
 
         const now = Date.now();
         const accountSeries = normalizeSeries(
@@ -695,20 +705,37 @@ export class VaultService {
             Number.isFinite(currentAccountValue) && Number.isFinite(value30d)
                 ? (currentAccountValue as number) - (value30d as number)
                 : null;
-        const pnlChange30dPct = calcPnlPct(updates, MIN_POSITION_USD, 30, positions.positions);
-        const pnlChange60dPct = calcPnlPct(updates, MIN_POSITION_USD, 60, positions.positions);
         const daysSinceInception = Math.max(
             1,
             Math.floor((now - LAUNCH_DATE_MS) / MS_PER_DAY)
         );
-        const pnlChangeInceptionPct = calcPnlPct(
-            updates,
-            MIN_POSITION_USD,
-            daysSinceInception,
-            positions.positions
+        const fromBooks = ourBooks
+            ? await pnlPctFromBooks(ourBooks, tvlUsd, now)
+            : null;
+        const pnlChange30dPct =
+            fromBooks?.[30] ??
+            calcPnlPct(updates, MIN_POSITION_USD, 30, positions.positions);
+        const pnlChange60dPct =
+            fromBooks?.[60] ??
+            calcPnlPct(updates, MIN_POSITION_USD, 60, positions.positions);
+        const pnlChangeInceptionPct =
+            fromBooks?.inception ??
+            calcPnlPct(
+                updates,
+                MIN_POSITION_USD,
+                daysSinceInception,
+                positions.positions
+            );
+        const maxDrawdownFromOurSeries = await readMaxDrawdownFromSeries(LAUNCH_DATE_MS).catch(
+            () => null
         );
-        const maxDrawdownPct = await calcProRataMaxDrawdownPct(vaults.items, updates, MIN_POSITION_USD);
-        const winRatePct = calcWinRatePct(updates, LAUNCH_DATE_MS, MIN_POSITION_USD);
+        const maxDrawdownPct =
+            maxDrawdownFromOurSeries ??
+            (await calcProRataMaxDrawdownPct(vaults.items, updates, MIN_POSITION_USD));
+        const winRatePct =
+            winRateBooks && winRateBooks.totalClosures > 0
+                ? (winRateBooks.wins / winRateBooks.totalClosures) * 100
+                : calcWinRatePct(updates, LAUNCH_DATE_MS, MIN_POSITION_USD);
 
         return {
             userAddress: wallet,
@@ -1391,6 +1418,50 @@ async function calcProRataMaxDrawdownPct(
 
     if (!count || totalWeight <= 0) return null;
     return -((weightedDrawdown / totalWeight) * 100);
+}
+
+/**
+ * New PnL% calc, sourced from our FIFO books (`position_account`) and the
+ * mirrored portfolio time series (`portfolio_series`).
+ *
+ * Inception:
+ *   total_pnl_now = realized_total + (TVL - basis_open_total)
+ *   pct          = total_pnl_now / basis_open_total * 100
+ *
+ * Windowed (30d / 60d):
+ *   total_pnl_at_t      = our_realized_at_t + (account_value_at_t - our_basis_at_t)
+ *   denominator         = our_basis_at_t  (capital at risk at start of window)
+ *   pct                 = (total_pnl_now - total_pnl_at_t) / denominator * 100
+ *
+ * Fixes the recycled-capital denominator inflation in the old `calcPnlPct`,
+ * which stacked HL's per-withdrawal basis into the denominator and made the
+ * inception % appear ~9× smaller than the real return on capital.
+ */
+async function pnlPctFromBooks(
+    books: PositionAccountAggregate,
+    tvlUsd: number | null,
+    nowMs: number
+): Promise<{ 30: number | null; 60: number | null; inception: number | null } | null> {
+    if (!Number.isFinite(tvlUsd) || (tvlUsd as number) <= 0) return null;
+    if (books.basisOpenTotal <= 0) return null;
+    const totalPnlNow =
+        books.realizedPnlTotal + ((tvlUsd as number) - books.basisOpenTotal);
+    const inceptionPct = (totalPnlNow / books.basisOpenTotal) * 100;
+    const windowPct = async (days: number): Promise<number | null> => {
+        const targetMs = nowMs - days * MS_PER_DAY;
+        const snap = await readPortfolioSnapshotAt(targetMs).catch(() => null);
+        if (!snap || snap.ourBasisUsdOpen == null || snap.ourBasisUsdOpen <= 0) {
+            return null;
+        }
+        const startUnrealized =
+            snap.accountValueUsd != null
+                ? snap.accountValueUsd - (snap.ourBasisUsdOpen ?? 0)
+                : 0;
+        const startTotalPnl = (snap.ourRealizedPnlUsd ?? 0) + startUnrealized;
+        return ((totalPnlNow - startTotalPnl) / snap.ourBasisUsdOpen) * 100;
+    };
+    const [p30, p60] = await Promise.all([windowPct(30), windowPct(60)]);
+    return { 30: p30, 60: p60, inception: inceptionPct };
 }
 
 function calcPnlPct(

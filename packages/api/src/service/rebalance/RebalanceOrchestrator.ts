@@ -4,6 +4,9 @@ import { VaultService } from "../vaults/VaultService";
 import { HyperliquidConnector } from "../trade/HyperliquidConnector";
 import { MarketDataService } from "../claude/MarketDataService";
 import { logger } from "../utils/logger";
+import { TraceService } from "../../db/TraceService";
+import type { PositionEventAction } from "../../db/types";
+import type { UserPosition } from "../vaults/types";
 
 const STOP_LOSS_PCT = Number(process.env.STOP_LOSS_PCT ?? -15);
 const HARD_STOP_LOSS_PCT = Number(process.env.HARD_STOP_LOSS_PCT ?? -25);
@@ -62,11 +65,25 @@ export class RebalanceOrchestrator {
             includeLocked,
         });
 
+        const roundId = await TraceService.startRound();
+
         const plan = await DepositService.buildDepositPlan({
             refreshCandidates: options.refreshCandidates,
             refreshRecommendations: options.refreshRecommendations,
             maxActive: 10,
         });
+
+        if (plan.recommendations.source === "claude") {
+            await TraceService.recordClaudeDecision(roundId, 2, {
+                model: plan.recommendations.model,
+                top10: {
+                    high: plan.recommendations.highConfidence,
+                    low: plan.recommendations.lowConfidence,
+                },
+                allocations: plan.recommendations.suggestedAllocations ?? null,
+                raw: plan.recommendations,
+            });
+        }
 
         // Persist the latest Claude recommendations for the premium endpoint to read.
         if (plan.recommendations.source === "claude") {
@@ -78,6 +95,10 @@ export class RebalanceOrchestrator {
         // Heuristic scoring is unstable across cycles and causes unnecessary churn.
         if (plan.recommendations.source !== "claude") {
             logger.warn("Aborting rebalance: Claude ranking failed, heuristic fallback is too unstable for withdrawal decisions", {
+                source: plan.recommendations.source,
+            });
+            await TraceService.endRound(roundId, "aborted", {
+                reason: "claude-fallback",
                 source: plan.recommendations.source,
             });
             return {
@@ -144,6 +165,78 @@ export class RebalanceOrchestrator {
             plan.totalCapitalUsd
         );
 
+        // Fetch market direction up-front so trim + withdrawal scans can both reference it.
+        let marketDirection: "long" | "short" | "neutral" = "neutral";
+        try {
+            const marketData = await MarketDataService.getMarketOverlay();
+            marketDirection = marketData.preferred_direction;
+            await TraceService.recordMarketSnapshot(roundId, marketData);
+        } catch (err: any) {
+            logger.warn("Failed to fetch market direction for stop-loss check", {
+                error: err?.message,
+            });
+        }
+
+        const platformTvlUsd = positions.totalCapitalUsd ?? null;
+        const recommendationByAddress = new Map(
+            [
+                ...plan.recommendations.highConfidence,
+                ...plan.recommendations.lowConfidence,
+            ].map((r) => [r.vaultAddress.toLowerCase(), r])
+        );
+
+        const snapshotForPosition = async (
+            position: UserPosition,
+            netDirection: "long" | "short" | "neutral" | null
+        ): Promise<number | null> => {
+            const rec = recommendationByAddress.get(
+                position.vaultAddress.toLowerCase()
+            );
+            return TraceService.recordVaultSnapshot(roundId, {
+                vaultAddress: position.vaultAddress,
+                vaultName: position.vaultName ?? rec?.name ?? null,
+                tvlUsd: rec?.metrics?.tvl ?? null,
+                ageDays: rec?.metrics?.ageDays ?? null,
+                followers: rec?.metrics?.followers ?? null,
+                tradesLast7d: rec?.metrics?.tradesLast7d ?? null,
+                pnl7d: rec?.metrics?.weeklyPnl ?? null,
+                pnl30d: rec?.metrics?.monthlyPnl ?? null,
+                pnlAlltime: rec?.metrics?.allTimePnl ?? null,
+                netDirection,
+                assumedBias: marketDirection,
+            });
+        };
+
+        const recordEvent = async (
+            position: UserPosition,
+            action: PositionEventAction,
+            snapshotId: number | null,
+            extras: {
+                amountUsd: number | null;
+                targetEquityUsd: number | null;
+                confidence: "high" | "low" | null;
+                reasonText: string;
+                txMeta?: any;
+                succeeded?: boolean;
+            }
+        ): Promise<void> => {
+            await TraceService.recordPositionEvent({
+                roundId,
+                vaultAddress: position.vaultAddress,
+                vaultSnapshotId: snapshotId,
+                action,
+                amountUsd: extras.amountUsd,
+                preEquityUsd: position.amountUsd ?? null,
+                targetEquityUsd: extras.targetEquityUsd,
+                confidence: extras.confidence,
+                reasonText: extras.reasonText,
+                txMeta: extras.txMeta ?? null,
+                succeeded: extras.succeeded ?? true,
+                hlPnlUsd: position.pnlUsd ?? null,
+                platformTvlUsd,
+            });
+        };
+
         // Trim over-allocated recommended positions back to barbell target.
         const tpWithdrawals: VaultTransferAction[] = [];
 
@@ -183,7 +276,10 @@ export class RebalanceOrchestrator {
                 dryRun,
             });
 
-            if (result.action.status === "submitted" || result.action.status === "prepared") {
+            const submitted =
+                result.action.status === "submitted" ||
+                result.action.status === "prepared";
+            if (submitted) {
                 logger.info("Trim withdrawal executed", {
                     vaultAddress: address,
                     vaultName: position.vaultName,
@@ -194,6 +290,35 @@ export class RebalanceOrchestrator {
                 });
             }
 
+            const trimWithdrawn = (result.action.usdMicros ?? 0) / 1e6;
+            const trimSnapshotId = await TraceService.recordVaultSnapshot(roundId, {
+                vaultAddress: position.vaultAddress,
+                vaultName: position.vaultName,
+                tvlUsd: recommendationByAddress.get(address)?.metrics?.tvl ?? null,
+                ageDays: recommendationByAddress.get(address)?.metrics?.ageDays ?? null,
+                followers: recommendationByAddress.get(address)?.metrics?.followers ?? null,
+                tradesLast7d: recommendationByAddress.get(address)?.metrics?.tradesLast7d ?? null,
+                pnl7d: recommendationByAddress.get(address)?.metrics?.weeklyPnl ?? null,
+                pnl30d: recommendationByAddress.get(address)?.metrics?.monthlyPnl ?? null,
+                pnlAlltime: recommendationByAddress.get(address)?.metrics?.allTimePnl ?? null,
+                assumedBias: marketDirection,
+            });
+            await TraceService.recordPositionEvent({
+                roundId,
+                vaultAddress: position.vaultAddress,
+                vaultSnapshotId: trimSnapshotId,
+                action: "trim",
+                amountUsd: submitted ? -trimWithdrawn : 0,
+                preEquityUsd: currentUsd,
+                targetEquityUsd: targetUsd,
+                confidence: targetAllocation.confidence,
+                reasonText: "over-allocated-recommended",
+                txMeta: result.action,
+                succeeded: submitted,
+                hlPnlUsd: position.pnlUsd ?? null,
+                platformTvlUsd,
+            });
+
             tpWithdrawals.push(result.action);
         }
 
@@ -201,17 +326,6 @@ export class RebalanceOrchestrator {
         const depositTimeMap = await buildLastDepositTimeMap();
         const now = Date.now();
         const minHoldMs = MIN_HOLD_DAYS * MS_PER_DAY;
-
-        // Fetch market direction for stop-loss intelligence
-        let marketDirection: "long" | "short" | "neutral" = "neutral";
-        try {
-            const marketData = await MarketDataService.getMarketOverlay();
-            marketDirection = marketData.preferred_direction;
-        } catch (err: any) {
-            logger.warn("Failed to fetch market direction for stop-loss check", {
-                error: err?.message,
-            });
-        }
 
         logger.info("Withdrawal scan starting", {
             positionCount: positions.positions.length,
@@ -247,6 +361,19 @@ export class RebalanceOrchestrator {
                     sweepDust: true,
                     reason: "hard-stop-loss",
                 });
+                const snapshotId = await snapshotForPosition(position, null);
+                const withdrawn = (result.action.usdMicros ?? 0) / 1e6;
+                const submitted =
+                    result.action.status === "submitted" ||
+                    result.action.status === "prepared";
+                await recordEvent(position, "exit_hard_sl", snapshotId, {
+                    amountUsd: submitted ? -withdrawn : 0,
+                    targetEquityUsd: 0,
+                    confidence: null,
+                    reasonText: `hard-stop-loss roe=${roePct}`,
+                    txMeta: result.action,
+                    succeeded: submitted,
+                });
                 withdrawals.push(result.action);
                 continue;
             }
@@ -276,6 +403,19 @@ export class RebalanceOrchestrator {
                         sweepDust: true,
                         reason: "stop-loss",
                     });
+                    const snapshotId = await snapshotForPosition(position, vaultDirection);
+                    const withdrawn = (result.action.usdMicros ?? 0) / 1e6;
+                    const submitted =
+                        result.action.status === "submitted" ||
+                        result.action.status === "prepared";
+                    await recordEvent(position, "exit_soft_sl", snapshotId, {
+                        amountUsd: submitted ? -withdrawn : 0,
+                        targetEquityUsd: 0,
+                        confidence: null,
+                        reasonText: `soft-stop-loss roe=${roePct} aligned=${isAligned} recommended=${isRecommended}`,
+                        txMeta: result.action,
+                        succeeded: submitted,
+                    });
                     withdrawals.push(result.action);
                     continue;
                 }
@@ -286,6 +426,13 @@ export class RebalanceOrchestrator {
                     roePct,
                     vaultDirection,
                     marketDirection,
+                });
+                const holdSnapshotId = await snapshotForPosition(position, vaultDirection);
+                await recordEvent(position, "hold_soft_sl", holdSnapshotId, {
+                    amountUsd: 0,
+                    targetEquityUsd: position.amountUsd ?? null,
+                    confidence: null,
+                    reasonText: `held: recommended+aligned roe=${roePct}`,
                 });
             }
 
@@ -307,12 +454,32 @@ export class RebalanceOrchestrator {
                     sweepDust: true,
                     reason: "inactive-vault",
                 });
+                const snapshotId = await snapshotForPosition(position, null);
+                const withdrawn = (result.action.usdMicros ?? 0) / 1e6;
+                const submitted =
+                    result.action.status === "submitted" ||
+                    result.action.status === "prepared";
+                await recordEvent(position, "exit_inactive", snapshotId, {
+                    amountUsd: submitted ? -withdrawn : 0,
+                    targetEquityUsd: 0,
+                    confidence: null,
+                    reasonText: "inactive: 0 positions, 0 trades 7d",
+                    txMeta: result.action,
+                    succeeded: submitted,
+                });
                 withdrawals.push(result.action);
                 continue;
             }
 
             // 4. Skip if still in recommendations (over-allocations already trimmed above)
             if (recommendedSet.has(address)) {
+                const snapshotId = await snapshotForPosition(position, null);
+                await recordEvent(position, "skip_recommended", snapshotId, {
+                    amountUsd: 0,
+                    targetEquityUsd: position.amountUsd ?? null,
+                    confidence: null,
+                    reasonText: "still recommended, no trim needed",
+                });
                 continue;
             }
 
@@ -320,14 +487,22 @@ export class RebalanceOrchestrator {
             const lastDeposit = depositTimeMap.get(address);
             if (lastDeposit && (now - lastDeposit) < minHoldMs) {
                 const holdDaysRemaining = ((minHoldMs - (now - lastDeposit)) / MS_PER_DAY).toFixed(1);
+                const daysSinceDeposit = ((now - lastDeposit) / MS_PER_DAY).toFixed(1);
                 logger.info("Skipping exit (minimum hold period not met)", {
                     vaultAddress: position.vaultAddress,
                     vaultName: position.vaultName,
                     roePct,
-                    daysSinceDeposit: ((now - lastDeposit) / MS_PER_DAY).toFixed(1),
+                    daysSinceDeposit,
                     minHoldDays: MIN_HOLD_DAYS,
                     holdDaysRemaining,
                     reason: "hold-period",
+                });
+                const snapshotId = await snapshotForPosition(position, null);
+                await recordEvent(position, "hold_period", snapshotId, {
+                    amountUsd: 0,
+                    targetEquityUsd: position.amountUsd ?? null,
+                    confidence: null,
+                    reasonText: `hold-period: daysSinceDeposit=${daysSinceDeposit}, minHoldDays=${MIN_HOLD_DAYS}`,
                 });
                 continue;
             }
@@ -346,6 +521,19 @@ export class RebalanceOrchestrator {
                 includeLocked,
                 sweepDust: true,
                 reason: "not-recommended",
+            });
+            const snapshotId = await snapshotForPosition(position, null);
+            const withdrawn = (result.action.usdMicros ?? 0) / 1e6;
+            const submitted =
+                result.action.status === "submitted" ||
+                result.action.status === "prepared";
+            await recordEvent(position, "exit_not_recommended", snapshotId, {
+                amountUsd: submitted ? -withdrawn : 0,
+                targetEquityUsd: 0,
+                confidence: null,
+                reasonText: `not-recommended roe=${roePct}`,
+                txMeta: result.action,
+                succeeded: submitted,
             });
             withdrawals.push(result.action);
         }
@@ -396,6 +584,11 @@ export class RebalanceOrchestrator {
                     targetCount: depositPlan.targets.length,
                 }
             );
+            await TraceService.endRound(roundId, "aborted", {
+                reason: "heuristic-deposit-pass",
+                tpWithdrawals: tpWithdrawals.length,
+                withdrawals: withdrawals.length,
+            });
             return {
                 startedAt,
                 planTargets: plan.targets.length,
@@ -409,6 +602,9 @@ export class RebalanceOrchestrator {
         const deposits = await DepositService.executeDepositPlan(depositPlan, {
             dryRun,
             minDepositUsd,
+            roundId,
+            platformTvlUsd,
+            marketDirection,
         });
 
         // Categorize withdrawal reasons for analysis
@@ -418,24 +614,35 @@ export class RebalanceOrchestrator {
             withdrawalsByReason[reason] = (withdrawalsByReason[reason] ?? 0) + 1;
         }
 
+        const summary = {
+            tpWithdrawals: tpWithdrawals.length,
+            tpSubmitted: tpWithdrawals.filter(a => a.status === "submitted").length,
+            withdrawals: withdrawals.length,
+            withdrawalsSubmitted: withdrawals.filter(a => a.status === "submitted").length,
+            withdrawalsByReason,
+            depositsTotal: deposits.total,
+            depositsSubmitted: deposits.submitted,
+            depositsSkipped: deposits.skipped,
+            depositsErrors: deposits.errors,
+            marketDirection,
+            recommended: recommendedSet.size,
+            positionsAfter: positions.totalPositions,
+        };
         logger.info("Rebalance round completed", {
             startedAt,
             durationMs: Date.now() - new Date(startedAt).getTime(),
             dryRun,
             marketDirection,
-            summary: {
-                tpWithdrawals: tpWithdrawals.length,
-                tpSubmitted: tpWithdrawals.filter(a => a.status === "submitted").length,
-                withdrawals: withdrawals.length,
-                withdrawalsSubmitted: withdrawals.filter(a => a.status === "submitted").length,
-                withdrawalsByReason,
-                depositsTotal: deposits.total,
-                depositsSubmitted: deposits.submitted,
-                depositsSkipped: deposits.skipped,
-                depositsErrors: deposits.errors,
-            },
-            recommended: recommendedSet.size,
-            positionsAfter: positions.totalPositions,
+            summary,
+        });
+        await TraceService.endRound(roundId, "completed", summary);
+        // Snapshot the portfolio state right after a rebalance settles —
+        // gives the chart a clean "post-rebalance" datapoint with vault_equity
+        // captured directly (no perps-wallet contamination).
+        await TraceService.recordPortfolioPoint().catch((error) => {
+            logger.warn("recordPortfolioPoint failed (post-rebalance)", {
+                message: error?.message,
+            });
         });
 
         return {

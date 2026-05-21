@@ -10,6 +10,14 @@ import { ArticleService } from "./service/social/ArticleService";
 import { XPostService } from "./service/social/XPostService";
 import { paymentMiddleware } from "x402-express";
 import { logger } from "./service/utils/logger";
+import {
+    readLedgerHistory,
+    readNetCashFlowTimeline,
+    readPortfolioSeries,
+    readRecentRounds,
+    readRoundDetail,
+    readVaultTimeline,
+} from "./db/TraceService";
 
 const app = express();
 const cors = require("cors");
@@ -115,17 +123,158 @@ app.get("/api/history", async (req, res) => {
     try {
         const page = Number(req.query.page ?? 1);
         const pageSize = Number(req.query.pageSize ?? 15);
-        const history = PlatformSnapshotService.getHistory(page, pageSize);
-        if (!history) {
+        const wallet = process.env.WALLET ?? "";
+        const dbHistory = await readLedgerHistory({ page, pageSize });
+        if (dbHistory && dbHistory.total > 0) {
+            res.json({ userAddress: wallet, ...dbHistory });
+            return;
+        }
+        const fallback = PlatformSnapshotService.getHistory(page, pageSize);
+        if (!fallback) {
             res.status(503).json({ error: "Snapshot not ready" });
             return;
         }
-        res.json(history);
+        res.json(fallback);
     } catch (error: any) {
         logger.error("Failed to fetch platform history", {
             message: error?.message,
         });
         res.status(500).json({ error: "Failed to fetch platform history" });
+    }
+});
+
+app.get("/api/trace/rounds", async (req, res) => {
+    try {
+        const limit = Math.max(1, Math.min(100, Number(req.query.limit ?? 20)));
+        const rounds = await readRecentRounds(limit);
+        res.json({ rounds });
+    } catch (error: any) {
+        logger.error("Failed to fetch trace rounds", { message: error?.message });
+        res.status(500).json({ error: "Failed to fetch trace rounds" });
+    }
+});
+
+app.get("/api/trace/rounds/:id", async (req, res) => {
+    try {
+        const id = Number(req.params.id);
+        if (!Number.isFinite(id)) {
+            res.status(400).json({ error: "Invalid round id" });
+            return;
+        }
+        const detail = await readRoundDetail(id);
+        if (!detail) {
+            res.status(404).json({ error: "Round not found" });
+            return;
+        }
+        res.json(detail);
+    } catch (error: any) {
+        logger.error("Failed to fetch round detail", { message: error?.message });
+        res.status(500).json({ error: "Failed to fetch round detail" });
+    }
+});
+
+const CHART_LAUNCH_DATE_MS = (() => {
+    const raw = process.env.LAUNCH_DATE ?? "2026-01-06T22:17:00+01:00";
+    const parsed = Date.parse(raw);
+    return Number.isFinite(parsed) ? parsed : Date.parse("2026-01-06T22:17:00+01:00");
+})();
+
+app.get("/api/portfolio/chart", async (_req, res) => {
+    try {
+        const series = await readPortfolioSeries();
+        const wallet = process.env.WALLET ?? "";
+        if (!series || !series.accountValue.points.length) {
+            const portfolio = PlatformSnapshotService.getPortfolio();
+            if (!portfolio) {
+                res.status(503).json({ error: "Chart data unavailable" });
+                return;
+            }
+            res.json({
+                userAddress: wallet,
+                source: "hl-snapshot",
+                history: portfolio.history,
+            });
+            return;
+        }
+        // True total-PnL chart:
+        //   totalPnl_at_t = realized_at_t + (vault_equity_at_t − basis_open_at_t)
+        // Uses vault-only equity (sum of getUserVaultEquities) NOT HL's
+        // `accountValue` which adds the perps wallet — that would create false
+        // spikes whenever a rebalance briefly parks cash in the perps wallet.
+        // `vault_equity_usd` is only populated for periodic-snapshot rows
+        // (going forward). For historical points lacking it, we fall back to
+        // accountValue with a note.
+        const vaultEqByTs = new Map<number, number>();
+        for (const p of series.vaultEquity.points)
+            vaultEqByTs.set(p.timestamp, p.value);
+        const accByTs = new Map<number, number>();
+        for (const p of series.accountValue.points)
+            accByTs.set(p.timestamp, p.value);
+        const realizedByTs = new Map<number, number>();
+        for (const p of series.ourRealizedPnl.points)
+            realizedByTs.set(p.timestamp, p.value);
+        const basisByTs = new Map<number, number>();
+        for (const p of series.ourBasisOpen.points)
+            basisByTs.set(p.timestamp, p.value);
+        const allTs = [
+            ...new Set([
+                ...vaultEqByTs.keys(),
+                ...accByTs.keys(),
+                ...realizedByTs.keys(),
+                ...basisByTs.keys(),
+            ]),
+        ]
+            .filter((t) => t >= CHART_LAUNCH_DATE_MS)
+            .sort((a, b) => a - b);
+        let lastRealized = 0;
+        let lastBasis = 0;
+        let lastAcc = 0;
+        let lastVaultEq: number | null = null;
+        const pnlPoints: { timestamp: number; value: number }[] = [];
+        const accPoints: { timestamp: number; value: number }[] = [];
+        for (const ts of allTs) {
+            if (realizedByTs.has(ts)) lastRealized = realizedByTs.get(ts) as number;
+            if (basisByTs.has(ts)) lastBasis = basisByTs.get(ts) as number;
+            if (accByTs.has(ts)) lastAcc = accByTs.get(ts) as number;
+            if (vaultEqByTs.has(ts)) lastVaultEq = vaultEqByTs.get(ts) as number;
+            // Prefer vault-only equity; fall back to accountValue (perps+vaults).
+            const equity = lastVaultEq ?? lastAcc;
+            const totalPnl = lastRealized + (equity - lastBasis);
+            pnlPoints.push({ timestamp: ts, value: totalPnl });
+            accPoints.push({ timestamp: ts, value: equity });
+        }
+        res.json({
+            userAddress: wallet,
+            source: "portfolio_series",
+            history: {
+                pnl: { points: pnlPoints },
+                accountValue: { points: accPoints },
+                ourRealizedPnl: {
+                    points: series.ourRealizedPnl.points.filter(
+                        (p) => p.timestamp >= CHART_LAUNCH_DATE_MS
+                    ),
+                },
+                ourBasisOpen: {
+                    points: series.ourBasisOpen.points.filter(
+                        (p) => p.timestamp >= CHART_LAUNCH_DATE_MS
+                    ),
+                },
+            },
+        });
+    } catch (error: any) {
+        logger.error("Failed to fetch portfolio chart", { message: error?.message });
+        res.status(500).json({ error: "Failed to fetch portfolio chart" });
+    }
+});
+
+app.get("/api/trace/positions/:vaultAddress", async (req, res) => {
+    try {
+        const limit = Math.max(1, Math.min(500, Number(req.query.limit ?? 100)));
+        const timeline = await readVaultTimeline(req.params.vaultAddress, limit);
+        res.json({ vaultAddress: req.params.vaultAddress, events: timeline });
+    } catch (error: any) {
+        logger.error("Failed to fetch vault timeline", { message: error?.message });
+        res.status(500).json({ error: "Failed to fetch vault timeline" });
     }
 });
 
