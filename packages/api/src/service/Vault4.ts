@@ -1,6 +1,7 @@
 import { RebalanceScheduler } from "./rebalance/RebalanceScheduler";
 import { SettlementScheduler } from "./settlement/SettlementScheduler";
 import { PlatformSnapshotService } from "./vaults/PlatformSnapshotService";
+import { XPostScheduler } from "./social/XPostScheduler";
 import { logger } from "./utils/logger";
 import { runMigrations } from "../db/migrate";
 import { TraceService } from "../db/TraceService";
@@ -39,5 +40,6 @@ export class Vault4 {
         });
         await RebalanceScheduler.start();
         await SettlementScheduler.start();
+        await XPostScheduler.start();
     }
 }
