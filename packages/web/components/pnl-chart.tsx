@@ -2,7 +2,7 @@
 
 import { useMemo, useState, useEffect, useRef } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { Area, AreaChart, ResponsiveContainer, XAxis, YAxis, Tooltip } from "recharts"
+import { Area, AreaChart, Brush, ReferenceLine, ResponsiveContainer, XAxis, YAxis, Tooltip } from "recharts"
 import { BlinkingLabel } from "./blinking-label"
 import { LiveDataTicker } from "./live-data-ticker"
 import { TerminalSkeletonBlock } from "./terminal-skeleton"
@@ -18,6 +18,7 @@ type PortfolioHistory = {
 
 type PortfolioResponse = {
   userAddress: string
+  source: "portfolio_series" | "hl-snapshot"
   history: PortfolioHistory
 }
 
@@ -56,8 +57,9 @@ function useIsMobile() {
 
 export function PnlChart() {
   const [chartMode, setChartMode] = useState<"PNL" | "ACC_VALUE">("PNL")
-  const [timePeriod, setTimePeriod] = useState<"1M" | "7D" | "30D" | "ALL">("30D")
+  const [timePeriod, setTimePeriod] = useState<"1M" | "7D" | "30D" | "ALL">("ALL")
   const [animationKey, setAnimationKey] = useState(0)
+  const [brushRange, setBrushRange] = useState<{ start: number; end: number } | null>(null)
   const isMobile = useIsMobile()
   const [liveSeries, setLiveSeries] = useState<{ pnl: (number | null)[]; acc: (number | null)[] }>({
     pnl: [],
@@ -66,9 +68,9 @@ export function PnlChart() {
   const liveCursorRef = useRef(0)
 
   const { data: portfolio, isError: chartError, refetch: refetchPortfolio } = useQuery<PortfolioResponse>({
-    queryKey: ["portfolio"],
+    queryKey: ["portfolio-chart"],
     queryFn: async () => {
-      const response = await fetch(`${API_BASE}/api/portfolio`)
+      const response = await fetch(`${API_BASE}/api/portfolio/chart`)
       if (!response.ok) throw new Error("API error")
       return response.json()
     },
@@ -128,13 +130,31 @@ export function PnlChart() {
     }))
   }, [portfolio, chartMode, timePeriod, liveSeries])
 
-  const numericValues = data.map((d) => d.value).filter((value) => Number.isFinite(value))
+  // When the user drags the Brush, slice the data window for Y-axis fit.
+  // Brush keeps full-data visibility for re-selection (it operates on `data`),
+  // but the Y-axis recomputes from only the brushed slice.
+  const visibleData = useMemo(() => {
+    if (!brushRange) return data
+    const start = Math.max(0, Math.min(brushRange.start, data.length - 1))
+    const end = Math.max(start, Math.min(brushRange.end, data.length - 1))
+    return data.slice(start, end + 1)
+  }, [data, brushRange])
+
+  const numericValues = visibleData.map((d) => d.value).filter((value) => Number.isFinite(value))
   const minValue = numericValues.length ? Math.min(...(numericValues as number[])) : 0
   const maxValue = numericValues.length ? Math.max(...(numericValues as number[])) : 0
-  const lastLiveValue = timePeriod === "1M" ? findLastValue(data) : null
+  const lastLiveValue = timePeriod === "1M" ? findLastValue(visibleData) : null
   const axisDomain = computeAxisDomain(minValue, maxValue, timePeriod, lastLiveValue, chartMode === "PNL")
-  const liveLabelTicks = pickEvenTicks(data.map((d) => d.label), 6)
-  const timeAxisRange = computeTimeAxisRange(data, timePeriod)
+  const liveLabelTicks = pickEvenTicks(visibleData.map((d) => d.label), 6)
+  // When the Brush is active, use the brushed slice's actual time bounds —
+  // skipping the period-default clamps (which would otherwise force ALL→launch,
+  // 30D→30-days-ago, etc).
+  const timeAxisRange = brushRange
+    ? {
+        min: visibleData[0]?.timestamp ?? Date.now(),
+        max: visibleData[visibleData.length - 1]?.timestamp ?? Date.now(),
+      }
+    : computeTimeAxisRange(visibleData, timePeriod)
   const timestampTicks = timePeriod === "1M"
     ? undefined
     : generateTimeTicks(timeAxisRange.min, timeAxisRange.max, 6)
@@ -144,6 +164,7 @@ export function PnlChart() {
 
   useEffect(() => {
     setAnimationKey((k) => k + 1)
+    setBrushRange(null)
   }, [chartMode, timePeriod])
 
   return (
@@ -199,7 +220,7 @@ export function PnlChart() {
         <span className="text-[10px] text-muted-foreground signal-text">LIVE</span>
       </div>
 
-      <div className="h-48 md:h-56 chart-glow">
+      <div className={`${timePeriod === "1M" ? "h-48 md:h-56" : "h-60 md:h-72"} chart-glow`}>
         {chartError && !portfolio ? (
           <div className="w-full h-full flex items-center justify-center">
             <ConnectionError onRetry={() => refetchPortfolio()} />
@@ -263,6 +284,15 @@ export function PnlChart() {
                 timePeriod === "1M" ? `SEC: ${label}` : `DAY: ${formatLabel(Number(label), timePeriod)}`
               }
             />
+            {chartMode === "PNL" && timePeriod !== "1M" && (
+              <ReferenceLine
+                y={0}
+                stroke={strokeColor}
+                strokeDasharray="3 3"
+                strokeOpacity={0.5}
+                ifOverflow="extendDomain"
+              />
+            )}
             <Area
               type="monotone"
               dataKey="value"
@@ -277,6 +307,25 @@ export function PnlChart() {
               animationEasing="ease-out"
               connectNulls={false}
             />
+            {timePeriod !== "1M" && data.length > 2 && (
+              <Brush
+                dataKey="timestamp"
+                height={22}
+                stroke={strokeColor}
+                fill="#0a0a0a"
+                travellerWidth={8}
+                tickFormatter={(ts) => formatLabel(Number(ts), timePeriod)}
+                onChange={(range) => {
+                  if (
+                    range &&
+                    typeof range.startIndex === "number" &&
+                    typeof range.endIndex === "number"
+                  ) {
+                    setBrushRange({ start: range.startIndex, end: range.endIndex })
+                  }
+                }}
+              />
+            )}
           </AreaChart>
         </ResponsiveContainer>
         )}
