@@ -139,6 +139,51 @@ describe("PositionAccountService FIFO", () => {
         expect(round(state.realizedPnlUsdTotal)).toBe(0);
     });
 
+    test("zero-amount withdraw does not destroy basis (cancelled/no-op)", () => {
+        // Prior bug: $0 withdraw with basisUsdHl null/0 hit the consume-all
+        // fallback and zeroed out the entire position. Observed on vault
+        // 0xe44bed which inflated subsequent realized PnL by ~$115.
+        const events: LedgerEvent[] = [
+            { time: t("2026-01-01"), type: "vaultDeposit", usdc: 100 },
+            {
+                time: t("2026-02-01"),
+                type: "vaultWithdraw",
+                usdc: 0,
+                netWithdrawnUsd: 0,
+            },
+            {
+                time: t("2026-03-01"),
+                type: "vaultWithdraw",
+                usdc: 120,
+                netWithdrawnUsd: 120,
+                basisUsdHl: 100,
+            },
+        ];
+        const state = replayLedger("0xA", events);
+        // After the $0 no-op, basis stays at $100. The $120 exit realises $20.
+        expect(round(totalOpenBasis(state))).toBe(0);
+        expect(round(state.realizedPnlUsdTotal)).toBe(20);
+    });
+
+    test("HL basis=0 on positive withdraw is honoured, not treated as unknown", () => {
+        const events: LedgerEvent[] = [
+            { time: t("2026-01-01"), type: "vaultDeposit", usdc: 100 },
+            {
+                time: t("2026-02-01"),
+                type: "vaultWithdraw",
+                usdc: 30,
+                netWithdrawnUsd: 30,
+                basisUsdHl: 0,
+            },
+        ];
+        const state = replayLedger("0xA", events);
+        // HL claims 0 basis consumed; treat the $30 as pure realised gain and
+        // keep the $100 basis intact. (Edge case — HL reporting 0 basis on a
+        // non-zero withdraw is weird but observed.)
+        expect(round(totalOpenBasis(state))).toBe(100);
+        expect(round(state.realizedPnlUsdTotal)).toBe(30);
+    });
+
     test("aggregates: deposits, withdraws, counts", () => {
         const events: LedgerEvent[] = [
             { time: t("2026-01-01"), type: "vaultDeposit", usdc: 100 },

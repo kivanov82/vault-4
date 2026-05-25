@@ -692,11 +692,14 @@ export class VaultService {
             portfolio?.history?.accountValue?.points
         );
         const currentAccountValue = latestSeriesValue(accountSeries);
-        const tvlUsd =
-            currentAccountValue ??
-            (Number.isFinite(positions.totalInvestedUsd)
-                ? (positions.totalInvestedUsd as number)
-                : null);
+        // Vault-equity TVL (sum of open vault equities). HL's portfolio
+        // accountValueHistory is perp-wallet equity, not vault equity — using it
+        // in unrealized-PnL = (equity − basis) gives a nonsensical value
+        // because perp_wallet moves opposite to vault basis on rebalances.
+        const vaultEquityUsd = Number.isFinite(positions.totalInvestedUsd)
+            ? (positions.totalInvestedUsd as number)
+            : null;
+        const tvlUsd = vaultEquityUsd ?? currentAccountValue;
         const value30d = findValueAtOrBefore(
             accountSeries,
             now - 30 * MS_PER_DAY
@@ -710,7 +713,14 @@ export class VaultService {
             Math.floor((now - LAUNCH_DATE_MS) / MS_PER_DAY)
         );
         const fromBooks = ourBooks
-            ? await pnlPctFromBooks(ourBooks, tvlUsd, now)
+            ? await pnlPctFromBooks(
+                  ourBooks,
+                  vaultEquityUsd,
+                  Number.isFinite(positions.totalCapitalUsd)
+                      ? (positions.totalCapitalUsd as number)
+                      : null,
+                  now
+              )
             : null;
         const pnlChange30dPct =
             fromBooks?.[30] ??
@@ -785,6 +795,12 @@ export class VaultService {
             userAddress as `0x${string}`,
             vaultAddress as `0x${string}`
         );
+    }
+
+    static async resolveVaultNames(
+        vaults: string[]
+    ): Promise<Map<string, string>> {
+        return fetchVaultNames(vaults);
     }
 }
 
@@ -1425,38 +1441,50 @@ async function calcProRataMaxDrawdownPct(
  * mirrored portfolio time series (`portfolio_series`).
  *
  * Inception:
- *   total_pnl_now = realized_total + (TVL - basis_open_total)
- *   pct          = total_pnl_now / basis_open_total * 100
+ *   total_pnl_now = realized_total + (vault_equity - basis_open_total)
+ *   implied_seed  = max(wallet_value_now - total_pnl_now, basis_open_total)
+ *   pct           = total_pnl_now / implied_seed * 100
+ *
+ * Wallet-growth denominator (= wallet now − total PnL = implied starting
+ * capital) is stable across rebalances. Falls back to basis_open_total when
+ * wallet value isn't available or the math goes nonsensical.
  *
  * Windowed (30d / 60d):
- *   total_pnl_at_t      = our_realized_at_t + (account_value_at_t - our_basis_at_t)
+ *   total_pnl_at_t      = our_realized_at_t + (vault_equity_at_t - our_basis_at_t)
  *   denominator         = our_basis_at_t  (capital at risk at start of window)
  *   pct                 = (total_pnl_now - total_pnl_at_t) / denominator * 100
  *
- * Fixes the recycled-capital denominator inflation in the old `calcPnlPct`,
- * which stacked HL's per-withdrawal basis into the denominator and made the
- * inception % appear ~9× smaller than the real return on capital.
+ * `vaultEquityUsd` must be the sum of open vault equities (NOT HL's
+ * portfolio.accountValue, which is the perp wallet) — otherwise rebalances
+ * that move cash perp↔vault show up as spurious PnL swings.
  */
 async function pnlPctFromBooks(
     books: PositionAccountAggregate,
-    tvlUsd: number | null,
+    vaultEquityUsd: number | null,
+    walletValueUsd: number | null,
     nowMs: number
 ): Promise<{ 30: number | null; 60: number | null; inception: number | null } | null> {
-    if (!Number.isFinite(tvlUsd) || (tvlUsd as number) <= 0) return null;
+    if (!Number.isFinite(vaultEquityUsd) || (vaultEquityUsd as number) <= 0) return null;
     if (books.basisOpenTotal <= 0) return null;
     const totalPnlNow =
-        books.realizedPnlTotal + ((tvlUsd as number) - books.basisOpenTotal);
-    const inceptionPct = (totalPnlNow / books.basisOpenTotal) * 100;
+        books.realizedPnlTotal + ((vaultEquityUsd as number) - books.basisOpenTotal);
+    const impliedSeed =
+        Number.isFinite(walletValueUsd) &&
+        (walletValueUsd as number) - totalPnlNow > 0
+            ? (walletValueUsd as number) - totalPnlNow
+            : books.basisOpenTotal;
+    const inceptionPct = (totalPnlNow / impliedSeed) * 100;
     const windowPct = async (days: number): Promise<number | null> => {
         const targetMs = nowMs - days * MS_PER_DAY;
         const snap = await readPortfolioSnapshotAt(targetMs).catch(() => null);
         if (!snap || snap.ourBasisUsdOpen == null || snap.ourBasisUsdOpen <= 0) {
             return null;
         }
+        // Prefer vault_equity (vault-only) over HL accountValue (which is the
+        // perp wallet) — see comment in pnlPctFromBooks for why.
+        const startEquity = snap.vaultEquityUsd ?? snap.accountValueUsd ?? null;
         const startUnrealized =
-            snap.accountValueUsd != null
-                ? snap.accountValueUsd - (snap.ourBasisUsdOpen ?? 0)
-                : 0;
+            startEquity != null ? startEquity - (snap.ourBasisUsdOpen ?? 0) : 0;
         const startTotalPnl = (snap.ourRealizedPnlUsd ?? 0) + startUnrealized;
         return ((totalPnlNow - startTotalPnl) / snap.ourBasisUsdOpen) * 100;
     };

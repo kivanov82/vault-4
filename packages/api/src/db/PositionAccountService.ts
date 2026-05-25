@@ -81,10 +81,18 @@ export function applyEvent(
     let basisConsumed: number;
     if (openBasis <= 0) {
         basisConsumed = 0;
+    } else if (netReceived <= 0) {
+        // Zero-cash withdraw (cancelled request, settlement no-op, dust). No
+        // basis to consume regardless of what HL reports — without this guard
+        // the fallback below would zero out the entire position.
+        basisConsumed = 0;
     } else if (event.preEquityUsd != null && event.preEquityUsd > 0) {
         const fraction = Math.min(1, netReceived / event.preEquityUsd);
         basisConsumed = openBasis * fraction;
-    } else if (event.basisUsdHl != null && event.basisUsdHl > 0) {
+    } else if (event.basisUsdHl != null && event.basisUsdHl >= 0) {
+        // Honour HL's explicit basis figure, including 0 (some no-op events
+        // come through with basis=0; treating that as "unknown" used to
+        // trigger the consume-all fallback and corrupt basis).
         basisConsumed = Math.min(event.basisUsdHl, openBasis);
     } else {
         basisConsumed = openBasis;

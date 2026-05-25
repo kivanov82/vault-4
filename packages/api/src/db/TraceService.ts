@@ -5,6 +5,7 @@ import { HyperliquidConnector, UserLedgerUpdate } from "../service/trade/Hyperli
 import type { MarketOverlay } from "../service/claude/MarketDataService";
 import {
     applyEvent,
+    createEmptyState,
     LedgerEvent,
     recomputeAccountFor,
     recomputeAllAccounts,
@@ -197,6 +198,7 @@ export class TraceService {
 
             const isExecute =
                 input.action === "deposit" ||
+                input.action === "topup" ||
                 input.action === "trim" ||
                 input.action.startsWith("exit_");
 
@@ -408,13 +410,290 @@ async function loadVaultLedgerEvents(
 // re-export recomputeAccountFor so callers can trigger after manual ledger writes
 export { recomputeAccountFor };
 
+/**
+ * Backfill `our_realized_pnl_usd` and `our_basis_usd_open` on every historical
+ * `portfolio_series` row by replaying the entire `position_ledger` with the
+ * current (post-fix) FIFO logic up to each row's timestamp.
+ *
+ * Walks all vaults' ledger entries in global chronological order, maintaining
+ * per-vault FIFO state. Each portfolio_series row gets the aggregate
+ * (sum of realized + sum of open basis) at its `ts`. Returns rows updated.
+ *
+ * `account_value_usd` and `vault_equity_usd` are external (HL) truths and are
+ * left untouched.
+ */
+export async function backfillPortfolioSeriesFromLedger(): Promise<number> {
+    return (
+        (await withDb<number>(
+            "backfillPortfolioSeriesFromLedger",
+            async (client) => {
+                const ledgerRows = await client.query<{
+                    time: Date;
+                    vault_address: string;
+                    type: "vaultDeposit" | "vaultWithdraw";
+                    usdc: string;
+                    net_withdrawn_usd: string | null;
+                    basis_usd_hl: string | null;
+                }>(
+                    `SELECT time, LOWER(vault_address) AS vault_address, type,
+                            usdc, net_withdrawn_usd, basis_usd_hl
+                     FROM position_ledger
+                     ORDER BY time ASC, id ASC`
+                );
+                const seriesRows = await client.query<{
+                    ts: Date;
+                    our_realized_pnl_usd: string | null;
+                    our_basis_usd_open: string | null;
+                }>(
+                    `SELECT ts, our_realized_pnl_usd, our_basis_usd_open
+                     FROM portfolio_series
+                     ORDER BY ts ASC`
+                );
+
+                type VaultState = ReturnType<typeof createEmptyState>;
+                const stateByVault = new Map<string, VaultState>();
+                const realizedByVault = new Map<string, number>();
+                let realizedSum = 0;
+                let basisSum = 0;
+                const recomputeBasis = () => {
+                    let s = 0;
+                    for (const st of stateByVault.values()) s += totalOpenBasis(st);
+                    return s;
+                };
+
+                let ledgerIdx = 0;
+                let updated = 0;
+                const eps = 1e-6;
+                for (const row of seriesRows.rows) {
+                    const ts = row.ts.getTime();
+                    while (
+                        ledgerIdx < ledgerRows.rows.length &&
+                        ledgerRows.rows[ledgerIdx].time.getTime() <= ts
+                    ) {
+                        const r = ledgerRows.rows[ledgerIdx];
+                        const vault = r.vault_address;
+                        const ev: LedgerEvent = {
+                            time: r.time,
+                            type: r.type,
+                            usdc: Number(r.usdc),
+                            netWithdrawnUsd:
+                                r.net_withdrawn_usd != null
+                                    ? Number(r.net_withdrawn_usd)
+                                    : null,
+                            basisUsdHl:
+                                r.basis_usd_hl != null
+                                    ? Number(r.basis_usd_hl)
+                                    : null,
+                        };
+                        const st =
+                            stateByVault.get(vault) ?? createEmptyState(vault);
+                        const result = applyEvent(st, ev);
+                        stateByVault.set(vault, result.state);
+                        realizedSum += result.realizedPnl;
+                        realizedByVault.set(
+                            vault,
+                            (realizedByVault.get(vault) ?? 0) +
+                                result.realizedPnl
+                        );
+                        ledgerIdx += 1;
+                    }
+                    basisSum = recomputeBasis();
+                    const curRealized =
+                        row.our_realized_pnl_usd != null
+                            ? Number(row.our_realized_pnl_usd)
+                            : null;
+                    const curBasis =
+                        row.our_basis_usd_open != null
+                            ? Number(row.our_basis_usd_open)
+                            : null;
+                    const drift =
+                        curRealized == null ||
+                        Math.abs(curRealized - realizedSum) > eps ||
+                        curBasis == null ||
+                        Math.abs(curBasis - basisSum) > eps;
+                    if (drift) {
+                        await client.query(
+                            `UPDATE portfolio_series SET
+                                our_realized_pnl_usd = $1,
+                                our_basis_usd_open = $2
+                             WHERE ts = $3`,
+                            [realizedSum, basisSum, row.ts]
+                        );
+                        updated += 1;
+                    }
+                }
+                return updated;
+            },
+            0
+        )) ?? 0
+    );
+}
+
+/**
+ * One-time backfill: rewrite `our_basis_usd_before/after` and
+ * `our_realized_pnl_usd` on historical `position_event` rows using a fresh
+ * FIFO replay of `position_ledger` with the current (post-fix) logic.
+ *
+ * Matches each execute-action event to its corresponding ledger entry by
+ * vault + time-proximity (±10 min) + direction. Hold/skip events get
+ * basis_before = current state at occurred_at; basis_after = same.
+ *
+ * Returns the number of rows whose stored values changed.
+ */
+export async function backfillEventBasisFromLedger(): Promise<number> {
+    return (
+        (await withDb<number>(
+            "backfillEventBasisFromLedger",
+            async (client) => {
+                const vaults = await client.query<{ vault_address: string }>(
+                    `SELECT DISTINCT LOWER(vault_address) AS vault_address
+                     FROM position_event`
+                );
+                let updated = 0;
+                const MATCH_WINDOW_MS = 10 * 60 * 1000;
+                for (const v of vaults.rows) {
+                    const vault = v.vault_address;
+                    const ledger = await loadVaultLedgerEvents(client, vault);
+
+                    // Replay FIFO, recording pre/post-state at each ledger entry.
+                    let state = createEmptyState(vault);
+                    const ledgerStates: {
+                        time: number;
+                        type: "vaultDeposit" | "vaultWithdraw";
+                        basisBefore: number;
+                        basisAfter: number;
+                        realized: number;
+                        used: boolean;
+                    }[] = [];
+                    for (const entry of ledger) {
+                        const before = totalOpenBasis(state);
+                        const r = applyEvent(state, entry);
+                        state = r.state;
+                        ledgerStates.push({
+                            time: entry.time.getTime(),
+                            type: entry.type,
+                            basisBefore: before,
+                            basisAfter: totalOpenBasis(state),
+                            realized: r.realizedPnl,
+                            used: false,
+                        });
+                    }
+
+                    const eventRows = await client.query<{
+                        id: string;
+                        occurred_at: Date;
+                        action: string;
+                        amount_usd: string | null;
+                        succeeded: boolean;
+                        our_basis_usd_before: string | null;
+                        our_basis_usd_after: string | null;
+                        our_realized_pnl_usd: string | null;
+                    }>(
+                        `SELECT id, occurred_at, action, amount_usd, succeeded,
+                                our_basis_usd_before, our_basis_usd_after, our_realized_pnl_usd
+                         FROM position_event
+                         WHERE LOWER(vault_address) = LOWER($1)
+                         ORDER BY occurred_at ASC, id ASC`,
+                        [vault]
+                    );
+
+                    for (const ev of eventRows.rows) {
+                        const occurredAt = ev.occurred_at.getTime();
+                        const amount =
+                            ev.amount_usd != null ? Number(ev.amount_usd) : 0;
+                        const isExecute =
+                            (ev.action === "deposit" ||
+                                ev.action === "topup" ||
+                                ev.action === "trim" ||
+                                ev.action.startsWith("exit_")) &&
+                            ev.succeeded;
+
+                        let matched: typeof ledgerStates[number] | null = null;
+                        if (isExecute) {
+                            const expectedType =
+                                amount > 0 ? "vaultDeposit" : "vaultWithdraw";
+                            let bestDelta = Infinity;
+                            for (const ls of ledgerStates) {
+                                if (ls.used) continue;
+                                if (ls.type !== expectedType) continue;
+                                const d = Math.abs(ls.time - occurredAt);
+                                if (d <= MATCH_WINDOW_MS && d < bestDelta) {
+                                    bestDelta = d;
+                                    matched = ls;
+                                }
+                            }
+                            if (matched) matched.used = true;
+                        }
+
+                        let basisBefore: number;
+                        let basisAfter: number;
+                        let realized: number;
+                        if (matched) {
+                            basisBefore = matched.basisBefore;
+                            basisAfter = matched.basisAfter;
+                            realized = matched.realized;
+                        } else {
+                            // No matching ledger entry — hold/skip/failed
+                            // event. Use the FIFO state at the timestamp.
+                            let stateAt = 0;
+                            for (const ls of ledgerStates) {
+                                if (ls.time <= occurredAt) stateAt = ls.basisAfter;
+                                else break;
+                            }
+                            basisBefore = stateAt;
+                            basisAfter = stateAt;
+                            realized = 0;
+                        }
+
+                        const eps = 1e-6;
+                        const cur = {
+                            before:
+                                ev.our_basis_usd_before != null
+                                    ? Number(ev.our_basis_usd_before)
+                                    : null,
+                            after:
+                                ev.our_basis_usd_after != null
+                                    ? Number(ev.our_basis_usd_after)
+                                    : null,
+                            realized:
+                                ev.our_realized_pnl_usd != null
+                                    ? Number(ev.our_realized_pnl_usd)
+                                    : null,
+                        };
+                        const drift =
+                            cur.before == null ||
+                            Math.abs(cur.before - basisBefore) > eps ||
+                            cur.after == null ||
+                            Math.abs(cur.after - basisAfter) > eps ||
+                            cur.realized == null ||
+                            Math.abs(cur.realized - realized) > eps;
+                        if (drift) {
+                            await client.query(
+                                `UPDATE position_event SET
+                                    our_basis_usd_before = $1,
+                                    our_basis_usd_after = $2,
+                                    our_realized_pnl_usd = $3
+                                 WHERE id = $4`,
+                                [basisBefore, basisAfter, realized, ev.id]
+                            );
+                            updated += 1;
+                        }
+                    }
+                }
+                return updated;
+            },
+            0
+        )) ?? 0
+    );
+}
+
 export type LedgerHistoryEntry = {
     time: number;
     type: "vaultDeposit" | "vaultWithdraw";
     vaultAddress: string;
+    vaultName?: string;
     amountUsd: number | null;
-    realizedPnlUsdHl: number | null;
-    realizedPnlUsdOurs: number | null;
+    realizedPnlUsd: number | null;
 };
 
 export async function readLedgerHistory(options: {
@@ -446,16 +725,31 @@ export async function readLedgerHistory(options: {
                 usdc: string;
                 net_withdrawn_usd: string | null;
                 basis_usd_hl: string | null;
+                vault_name: string | null;
             }>(
-                `SELECT time, type, vault_address, usdc, net_withdrawn_usd, basis_usd_hl
-                 FROM position_ledger
-                 ORDER BY time DESC, id DESC
+                `SELECT
+                     pl.time,
+                     pl.type,
+                     pl.vault_address,
+                     pl.usdc,
+                     pl.net_withdrawn_usd,
+                     pl.basis_usd_hl,
+                     (
+                         SELECT vs.vault_name
+                         FROM vault_snapshot vs
+                         WHERE LOWER(vs.vault_address) = LOWER(pl.vault_address)
+                           AND vs.vault_name IS NOT NULL
+                         ORDER BY vs.captured_at DESC
+                         LIMIT 1
+                     ) AS vault_name
+                 FROM position_ledger pl
+                 ORDER BY pl.time DESC, pl.id DESC
                  LIMIT $1 OFFSET $2`,
                 [pageSize, offset]
             );
             const entries: LedgerHistoryEntry[] = rows.rows.map((r) => {
                 const amount = Number(r.usdc);
-                const realizedHl =
+                const realized =
                     r.type === "vaultWithdraw" &&
                     r.net_withdrawn_usd != null &&
                     r.basis_usd_hl != null
@@ -465,9 +759,9 @@ export async function readLedgerHistory(options: {
                     time: r.time.getTime(),
                     type: r.type,
                     vaultAddress: r.vault_address,
+                    vaultName: r.vault_name ?? undefined,
                     amountUsd: Number.isFinite(amount) ? amount : null,
-                    realizedPnlUsdHl: realizedHl,
-                    realizedPnlUsdOurs: null, // populated below if needed
+                    realizedPnlUsd: realized,
                 };
             });
             return { totalCount, totalPages, clampedPage, entries };
@@ -650,6 +944,7 @@ export type PortfolioSeriesSnapshot = {
     ts: number;
     cumulativePnlUsd: number | null;
     accountValueUsd: number | null;
+    vaultEquityUsd: number | null;
     ourRealizedPnlUsd: number | null;
     ourBasisUsdOpen: number | null;
 };
@@ -660,10 +955,11 @@ export async function readPortfolioSnapshotAt(targetMs: number): Promise<Portfol
             ts: Date;
             cumulative_pnl_usd: string | null;
             account_value_usd: string | null;
+            vault_equity_usd: string | null;
             our_realized_pnl_usd: string | null;
             our_basis_usd_open: string | null;
         }>(
-            `SELECT ts, cumulative_pnl_usd, account_value_usd,
+            `SELECT ts, cumulative_pnl_usd, account_value_usd, vault_equity_usd,
                     our_realized_pnl_usd, our_basis_usd_open
              FROM portfolio_series
              WHERE ts <= to_timestamp($1 / 1000.0)
@@ -677,6 +973,7 @@ export async function readPortfolioSnapshotAt(targetMs: number): Promise<Portfol
             ts: row.ts.getTime(),
             cumulativePnlUsd: row.cumulative_pnl_usd != null ? Number(row.cumulative_pnl_usd) : null,
             accountValueUsd: row.account_value_usd != null ? Number(row.account_value_usd) : null,
+            vaultEquityUsd: row.vault_equity_usd != null ? Number(row.vault_equity_usd) : null,
             ourRealizedPnlUsd: row.our_realized_pnl_usd != null ? Number(row.our_realized_pnl_usd) : null,
             ourBasisUsdOpen: row.our_basis_usd_open != null ? Number(row.our_basis_usd_open) : null,
         };

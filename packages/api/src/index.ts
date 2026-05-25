@@ -126,6 +126,20 @@ app.get("/api/history", async (req, res) => {
         const wallet = process.env.WALLET ?? "";
         const dbHistory = await readLedgerHistory({ page, pageSize });
         if (dbHistory && dbHistory.total > 0) {
+            const missingNames = dbHistory.entries
+                .filter((e) => !e.vaultName)
+                .map((e) => e.vaultAddress);
+            if (missingNames.length) {
+                const resolved = await VaultService.resolveVaultNames(missingNames).catch(
+                    () => new Map<string, string>()
+                );
+                for (const entry of dbHistory.entries) {
+                    if (!entry.vaultName) {
+                        const name = resolved.get(entry.vaultAddress.toLowerCase());
+                        if (name) entry.vaultName = name;
+                    }
+                }
+            }
             res.json({ userAddress: wallet, ...dbHistory });
             return;
         }
