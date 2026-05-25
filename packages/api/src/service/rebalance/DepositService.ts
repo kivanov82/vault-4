@@ -9,6 +9,9 @@ import type {
 } from "../vaults/types";
 import { RebalanceService, type VaultTransferAction } from "./RebalanceService";
 import { TraceService } from "../../db/TraceService";
+import { computeTopupTargets } from "./topup";
+import type { DepositTarget } from "./DepositService.types";
+export type { DepositTarget } from "./DepositService.types";
 
 export type DepositPlanOptions = {
     refreshRecommendations?: boolean;
@@ -23,17 +26,6 @@ export type DepositPlanOptions = {
      * Used by the rebalance rebuild pass after withdrawals settle.
      */
     recommendations?: RecommendationSet;
-};
-
-export type DepositTarget = {
-    vaultAddress: `0x${string}`;
-    name: string;
-    confidence: "high" | "low";
-    targetPct: number;
-    targetUsd: number;
-    currentUsd: number;
-    desiredUsd: number;
-    depositUsd: number;
 };
 
 export type DepositPlan = {
@@ -82,6 +74,22 @@ const DEFAULT_LOW_PCT = readNumberEnv(process.env.DEPOSIT_LOW_PCT, 20);
 // Max percentage of the post-deposit portfolio (existing + new) that can share the
 // same directional bias (long or short). Neutrals don't count toward either side.
 const MAX_SAME_DIRECTION_PCT = readNumberEnv(process.env.MAX_SAME_DIRECTION_PCT, 60);
+// When true, the deposit pass also tops up held vaults whose currentUsd is
+// below Claude's per-vault target (totalCapital × allocationPct / 100).
+// Off by default — flip on once we've validated it doesn't disrupt
+// new-slot diversification. New slots always take priority over top-ups
+// when the perps budget is tight.
+const TOPUP_ENABLED =
+    (process.env.REBALANCE_TOPUP_ENABLED ?? "false").toLowerCase() === "true";
+// Skip top-ups smaller than max($5, currentUsd × tolerance/100). Default 30%
+// means a held position needs to be ≥30% underweight (or under-by-$5,
+// whichever is larger) before a top-up fires — keeps the system from
+// chasing every 1-2% allocation drift between rounds.
+const TOPUP_TOLERANCE_PCT = readNumberEnv(
+    process.env.REBALANCE_TOPUP_TOLERANCE_PCT,
+    30
+);
+const MIN_DEPOSIT_USD = 5;
 
 export class DepositService {
     static async buildDepositPlan(
@@ -400,6 +408,7 @@ export class DepositService {
                       vaultAddress: rec.vaultAddress as `0x${string}`,
                       name: rec.name,
                       confidence,
+                      kind: "new" as const,
                       targetPct: roundPct((pct / filteredAllocSum) * 100),
                       targetUsd: depositUsd,
                       currentUsd: 0,
@@ -425,6 +434,47 @@ export class DepositService {
                       )
                   ),
               ];
+
+        // ── Top-up pass (off by default) ───────────────────────────────────
+        // For each Claude-recommended vault we *already* hold, compute the
+        // delta between Claude's per-vault target ($ at totalCapital × pct)
+        // and our current holding. New slots have priority — top-ups eat
+        // whatever new-slot deposits leave behind in the perps wallet.
+        if (TOPUP_ENABLED) {
+            const newSlotConsumed = targets.reduce(
+                (sum, t) => sum + (Number.isFinite(t.depositUsd) ? t.depositUsd : 0),
+                0
+            );
+            const topupResult = computeTopupTargets({
+                highSelected,
+                lowSelected,
+                currentEquityMap,
+                totalCapitalUsd,
+                perpsBalanceUsd,
+                withdrawReserveUsd,
+                newSlotConsumed,
+                tolerancePct: TOPUP_TOLERANCE_PCT,
+                minDepositUsd: MIN_DEPOSIT_USD,
+            });
+            targets.push(...topupResult.targets);
+            logger.info("Top-up pass evaluated", {
+                enabled: true,
+                tolerancePct: TOPUP_TOLERANCE_PCT,
+                heldRecsCount: topupResult.diagnostics.heldRecsCount,
+                eligibleCount: topupResult.diagnostics.eligibleCount,
+                skippedBelowTolerance:
+                    topupResult.diagnostics.skippedBelowTolerance.length,
+                remainingBudget: topupResult.diagnostics.remainingBudget,
+                totalWant: topupResult.diagnostics.totalWant,
+                scaleFactor:
+                    roundPct(topupResult.diagnostics.scaleFactor * 100) + "%",
+                topupsQueued: topupResult.targets.length,
+                topupsTotalUsd: roundUsd(
+                    topupResult.targets.reduce((s, t) => s + t.depositUsd, 0)
+                ),
+                skipped: topupResult.diagnostics.skippedBelowTolerance,
+            });
+        }
 
         logger.info("Deposit allocation calculated", {
             availableForDeposit,
@@ -493,6 +543,7 @@ export class DepositService {
             totalDepositUsd: plan.targets.reduce((s, t) => s + t.depositUsd, 0),
             targets: plan.targets.map(t => ({
                 name: t.name,
+                kind: t.kind,
                 confidence: t.confidence,
                 depositUsd: t.depositUsd,
             })),
@@ -525,6 +576,7 @@ export class DepositService {
                 logger.info("Deposit submitted", {
                     vaultAddress: target.vaultAddress,
                     vaultName: target.name,
+                    kind: target.kind,
                     depositUsd: target.depositUsd,
                     confidence: target.confidence,
                     dryRun,
@@ -547,16 +599,19 @@ export class DepositService {
                     assumedBias: marketDirection,
                 });
                 const succeeded = result.action.status === "submitted";
+                const isTopup = target.kind === "topup";
                 await TraceService.recordPositionEvent({
                     roundId,
                     vaultAddress: target.vaultAddress,
                     vaultSnapshotId: snapshotId,
-                    action: "deposit",
+                    action: isTopup ? "topup" : "deposit",
                     amountUsd: succeeded ? target.depositUsd : 0,
                     preEquityUsd: target.currentUsd,
                     targetEquityUsd: target.targetUsd,
                     confidence: target.confidence,
-                    reasonText: `deposit confidence=${target.confidence}`,
+                    reasonText: isTopup
+                        ? `topup confidence=${target.confidence} delta=${target.depositUsd} (target=${target.targetUsd}, current=${target.currentUsd})`
+                        : `deposit confidence=${target.confidence}`,
                     txMeta: result.action,
                     succeeded,
                     hlPnlUsd: null,
@@ -596,6 +651,7 @@ function buildTargetFromAllocation(
         vaultAddress: rec.vaultAddress as `0x${string}`,
         name: rec.name,
         confidence,
+        kind: "new",
         targetPct,
         targetUsd: depositUsd,
         currentUsd: 0, // No existing exposure (filtered out earlier)

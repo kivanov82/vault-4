@@ -94,6 +94,7 @@ export type PositionAccountRow = {
 
 export type PositionEventAction =
     | "deposit"
+    | "topup"
     | "trim"
     | "exit_hard_sl"
     | "exit_soft_sl"
