@@ -165,6 +165,34 @@ const vault4FundAbi = [
         inputs: [],
         outputs: [{ type: "uint256" }],
     },
+    {
+        name: "highWaterMark",
+        type: "function",
+        stateMutability: "view",
+        inputs: [],
+        outputs: [{ type: "uint256" }],
+    },
+    {
+        name: "totalSupply",
+        type: "function",
+        stateMutability: "view",
+        inputs: [],
+        outputs: [{ type: "uint256" }],
+    },
+    {
+        name: "balanceOf",
+        type: "function",
+        stateMutability: "view",
+        inputs: [{ name: "account", type: "address" }],
+        outputs: [{ type: "uint256" }],
+    },
+    {
+        name: "manager",
+        type: "function",
+        stateMutability: "view",
+        inputs: [],
+        outputs: [{ type: "address" }],
+    },
 ] as const;
 
 // ── Service ─────────────────────────────────────────────────────────────
@@ -216,6 +244,11 @@ export class VaultContractService {
             outputs: [{ type: "uint256" }],
         }] as const };
 
+        const manager = (await client.readContract({
+            ...contract,
+            functionName: "manager",
+        })) as `0x${string}`;
+
         const [
             totalAssets,
             pendingDeposits,
@@ -228,6 +261,9 @@ export class VaultContractService {
             sharePrice,
             deployedToL1,
             contractUsdcBalance,
+            highWaterMark,
+            totalSupply,
+            managerShares,
         ] = await Promise.all([
             client.readContract({ ...contract, functionName: "totalAssets" }),
             client.readContract({ ...contract, functionName: "pendingDeposits" }),
@@ -240,6 +276,9 @@ export class VaultContractService {
             client.readContract({ ...contract, functionName: "sharePrice" }),
             client.readContract({ ...contract, functionName: "deployedToL1" }),
             client.readContract({ ...usdcContract, functionName: "balanceOf", args: [address] }),
+            client.readContract({ ...contract, functionName: "highWaterMark" }),
+            client.readContract({ ...contract, functionName: "totalSupply" }),
+            client.readContract({ ...contract, functionName: "balanceOf", args: [manager] }),
         ]);
 
         const pendingDepositsUsdc = Number(formatUnits(pendingDeposits as bigint, 6));
@@ -257,6 +296,10 @@ export class VaultContractService {
             epoch: Number(epoch),
             sharePrice: Number(formatUnits(sharePrice as bigint, 18)),
             deployedToL1: Number(formatUnits(deployedToL1 as bigint, 6)),
+            highWaterMark: Number(formatUnits(highWaterMark as bigint, 18)),
+            totalSupply: Number(formatUnits(totalSupply as bigint, 18)),
+            manager,
+            managerShares: Number(formatUnits(managerShares as bigint, 18)),
         };
     }
 

@@ -636,6 +636,16 @@ export class RebalanceOrchestrator {
             summary,
         });
         await TraceService.endRound(roundId, "completed", summary);
+        // Pull the round's HL ledger entries into position_ledger →
+        // position_account BEFORE stamping the chart. Without this, the
+        // round-end portfolio_series row reads stale (pre-round) FIFO
+        // aggregates because the periodic syncLedger only fires every
+        // LEDGER_SYNC_INTERVAL_MS (default 5 min).
+        await TraceService.syncLedger().catch((error) => {
+            logger.warn("syncLedger failed (post-rebalance)", {
+                message: error?.message,
+            });
+        });
         // Snapshot the portfolio state right after a rebalance settles —
         // gives the chart a clean "post-rebalance" datapoint with vault_equity
         // captured directly (no perps-wallet contamination).
