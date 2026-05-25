@@ -553,13 +553,18 @@ export class VaultService {
             }),
         ]);
         const ledgerByVault = buildLedgerByVault(ledgerUpdates, MIN_POSITION_USD);
-        const perpsEquity = extractAccountEquity(portfolio);
+        // Misnamed: HL's `accountEquity` is the *total* manager account value —
+        // perps wallet + sum of vault equities — NOT perps-only. Adding
+        // `investedUsd` (vault equities) below would double-count, so we use
+        // accountEquity directly as totalCapital.
+        const accountEquity = extractAccountEquity(portfolio);
         const investedUsd = vaults.items.reduce((sum, entry) => {
             const equity = Number.isFinite(entry.equity) ? entry.equity : 0;
             return equity >= MIN_POSITION_USD ? sum + equity : sum;
         }, 0);
-        const totalCapital =
-            Number.isFinite(perpsEquity) ? perpsEquity + investedUsd : null;
+        const totalCapital = Number.isFinite(accountEquity)
+            ? (accountEquity as number)
+            : null;
         const positions = vaults.items
             .filter(
                 (entry) =>
