@@ -296,10 +296,13 @@ export class VaultContractService {
             epoch: Number(epoch),
             sharePrice: Number(formatUnits(sharePrice as bigint, 18)),
             deployedToL1: Number(formatUnits(deployedToL1 as bigint, 6)),
+            // sharePrice + HWM are 18-decimal precision (NAVLib.PRECISION).
+            // totalSupply + balanceOf inherit the asset's 6 decimals — the
+            // contract doesn't override ERC-4626's _decimalsOffset().
             highWaterMark: Number(formatUnits(highWaterMark as bigint, 18)),
-            totalSupply: Number(formatUnits(totalSupply as bigint, 18)),
+            totalSupply: Number(formatUnits(totalSupply as bigint, 6)),
             manager,
-            managerShares: Number(formatUnits(managerShares as bigint, 18)),
+            managerShares: Number(formatUnits(managerShares as bigint, 6)),
         };
     }
 
