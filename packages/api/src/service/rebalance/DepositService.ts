@@ -76,11 +76,12 @@ const DEFAULT_LOW_PCT = readNumberEnv(process.env.DEPOSIT_LOW_PCT, 20);
 const MAX_SAME_DIRECTION_PCT = readNumberEnv(process.env.MAX_SAME_DIRECTION_PCT, 60);
 // When true, the deposit pass also tops up held vaults whose currentUsd is
 // below Claude's per-vault target (totalCapital × allocationPct / 100).
-// Off by default — flip on once we've validated it doesn't disrupt
-// new-slot diversification. New slots always take priority over top-ups
-// when the perps budget is tight.
+// On by default — fresh investor capital otherwise sits idle in the perps
+// wallet when all 10 vault slots are already filled. New slots always take
+// priority over top-ups when the perps budget is tight. Set
+// REBALANCE_TOPUP_ENABLED=false to revert to new-slots-only behaviour.
 const TOPUP_ENABLED =
-    (process.env.REBALANCE_TOPUP_ENABLED ?? "false").toLowerCase() === "true";
+    (process.env.REBALANCE_TOPUP_ENABLED ?? "true").toLowerCase() === "true";
 // Skip top-ups smaller than max($5, currentUsd × tolerance/100). Default 30%
 // means a held position needs to be ≥30% underweight (or under-by-$5,
 // whichever is larger) before a top-up fires — keeps the system from
