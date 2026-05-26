@@ -269,7 +269,9 @@ export class TraceService {
      * `vault_equity_usd` = sum of `getUserVaultEquities` (vault-only, no perps
      * wallet) at the current ts — that's what drives the PnL chart.
      */
-    static async recordPortfolioPoint(): Promise<number> {
+    static async recordPortfolioPoint(options?: {
+        roundId?: number | null;
+    }): Promise<number> {
         const wallet = process.env.WALLET as `0x${string}` | undefined;
         if (!wallet) return 0;
         const [raw, vaultEquities] = await Promise.all([
@@ -290,20 +292,71 @@ export class TraceService {
         for (const p of raw.pnl) pnlByTs.set(p.timestamp, p.value);
         const accByTs = new Map<number, number>();
         for (const p of raw.accountValue) accByTs.set(p.timestamp, p.value);
+        const nowMs = Date.now();
+        const roundId =
+            options?.roundId != null && Number.isFinite(options.roundId)
+                ? options.roundId
+                : null;
         let inserted = 0;
         await withDb("recordPortfolioPoint", async (client) => {
-            const agg = await client.query<{ realized: string; basis: string }>(
-                `SELECT
-                    COALESCE(SUM(our_realized_pnl_usd_total), 0)::text AS realized,
-                    COALESCE(SUM(our_basis_usd_open), 0)::text AS basis
-                 FROM position_account`
-            );
-            const realized = Number(agg.rows[0]?.realized ?? 0);
-            const basis = Number(agg.rows[0]?.basis ?? 0);
+            let realized: number;
+            let basis: number;
+            if (roundId !== null) {
+                // Round-end stamp: derive from the prior chart row + this
+                // round's position_event deltas. Decouples us from HL's
+                // `getUserVaultLedgerUpdates` propagation delay (~3 min for
+                // vault txs), which made the inline syncLedger here insert 0
+                // rows and leave position_account holding pre-round
+                // aggregates. Per-event basis_before may be stale when a
+                // vault has multiple events in one round, but the SUM of
+                // (basis_after − basis_before) still nets to the correct
+                // round delta because the offset cancels across events.
+                const prior = await client.query<{
+                    realized: string | null;
+                    basis: string | null;
+                }>(
+                    `SELECT our_realized_pnl_usd AS realized,
+                            our_basis_usd_open AS basis
+                     FROM portfolio_series
+                     WHERE ts < to_timestamp($1 / 1000.0)
+                     ORDER BY ts DESC
+                     LIMIT 1`,
+                    [nowMs]
+                );
+                const delta = await client.query<{
+                    d_realized: string;
+                    d_basis: string;
+                }>(
+                    `SELECT
+                        COALESCE(SUM(our_realized_pnl_usd), 0)::text AS d_realized,
+                        COALESCE(SUM(our_basis_usd_after - our_basis_usd_before), 0)::text AS d_basis
+                     FROM position_event
+                     WHERE round_id = $1 AND succeeded = true`,
+                    [roundId]
+                );
+                const priorRealized = Number(prior.rows[0]?.realized ?? 0);
+                const priorBasis = Number(prior.rows[0]?.basis ?? 0);
+                realized = priorRealized + Number(delta.rows[0].d_realized);
+                basis = priorBasis + Number(delta.rows[0].d_basis);
+            } else {
+                // Non-round invocation (startup stamp, manual call): read
+                // from position_account which is the authoritative ledger
+                // replay refreshed by syncLedger.
+                const agg = await client.query<{
+                    realized: string;
+                    basis: string;
+                }>(
+                    `SELECT
+                        COALESCE(SUM(our_realized_pnl_usd_total), 0)::text AS realized,
+                        COALESCE(SUM(our_basis_usd_open), 0)::text AS basis
+                     FROM position_account`
+                );
+                realized = Number(agg.rows[0]?.realized ?? 0);
+                basis = Number(agg.rows[0]?.basis ?? 0);
+            }
             // The CURRENT moment gets the vault_equity snapshot we just fetched.
             // Older ts (from HL day-window backfill) don't have a known
             // vault_equity — leave them null and let the chart fall back.
-            const nowMs = Date.now();
             await client.query(
                 `INSERT INTO portfolio_series (
                     ts, cumulative_pnl_usd, account_value_usd,
