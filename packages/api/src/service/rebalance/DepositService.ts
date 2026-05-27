@@ -10,6 +10,14 @@ import type {
 import { RebalanceService, type VaultTransferAction } from "./RebalanceService";
 import { TraceService } from "../../db/TraceService";
 import { computeTopupTargets } from "./topup";
+import {
+    buildTargetFromAllocation,
+    clampCount,
+    floorUsd,
+    normalizeGroupPcts,
+    roundPct,
+    roundUsd,
+} from "./depositMath";
 import type { DepositTarget } from "./DepositService.types";
 export type { DepositTarget } from "./DepositService.types";
 
@@ -633,85 +641,9 @@ export class DepositService {
     }
 }
 
-function buildTargetFromAllocation(
-    rec: VaultRecommendation,
-    confidence: "high" | "low",
-    groupAllocationUsd: number,
-    groupCount: number
-): DepositTarget {
-    // Split group allocation evenly among vaults in this group
-    // Note: AI's allocationPct is for total portfolio, not applicable here since
-    // we've already filtered to specific vaults based on available slots
-    const perVaultUsd = groupCount > 0
-        ? groupAllocationUsd / groupCount
-        : 0;
-    const depositUsd = floorUsd(perVaultUsd);
-    const targetPct = groupCount > 0 ? 100 / groupCount : 0;
-
-    return {
-        vaultAddress: rec.vaultAddress as `0x${string}`,
-        name: rec.name,
-        confidence,
-        kind: "new",
-        targetPct,
-        targetUsd: depositUsd,
-        currentUsd: 0, // No existing exposure (filtered out earlier)
-        desiredUsd: depositUsd,
-        depositUsd,
-    };
-}
-
-function normalizeGroupPcts(
-    highPct: number,
-    lowPct: number,
-    highCount: number,
-    lowCount: number
-): { highPct: number; lowPct: number } {
-    if (highCount === 0 && lowCount === 0) {
-        return { highPct: 0, lowPct: 0 };
-    }
-    if (highCount === 0) {
-        return { highPct: 0, lowPct: 100 };
-    }
-    if (lowCount === 0) {
-        return { highPct: 100, lowPct: 0 };
-    }
-    const total = Number(highPct) + Number(lowPct);
-    if (!Number.isFinite(total) || total <= 0) {
-        return { highPct: 70, lowPct: 30 };
-    }
-    const scale = 100 / total;
-    return {
-        highPct: roundPct(Number(highPct) * scale),
-        lowPct: roundPct(Number(lowPct) * scale),
-    };
-}
-
-function clampCount(value: number, min: number, max?: number): number {
-    const num = Number(value);
-    if (!Number.isFinite(num)) return min;
-    const upper = max ?? Number.POSITIVE_INFINITY;
-    return Math.min(upper, Math.max(min, Math.floor(num)));
-}
-
 function readNumberEnv(value: any, fallback: number): number {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-function roundPct(value: number): number {
-    return Math.round(value * 100) / 100;
-}
-
-function roundUsd(value: number): number {
-    return Math.round(value * 100) / 100;
-}
-
-// Floor to cent for deposit sizes — rounding up can produce a per-target sum
-// that exceeds availableForDeposit and causes the last deposit to fail with
-// "Insufficient funds available to deposit."
-function floorUsd(value: number): number {
-    return Math.floor(value * 100) / 100;
 }
 
 type VaultDirection = "long" | "short" | "neutral";

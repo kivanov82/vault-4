@@ -1,5 +1,6 @@
 import { HyperliquidConnector } from "../trade/HyperliquidConnector";
 import { logger } from "../utils/logger";
+import { toUsdMicros, toUsdMicrosFromDeposit } from "./usdMicros";
 
 export type VaultTransferAction = {
     vaultAddress: string;
@@ -272,22 +273,6 @@ export class RebalanceService {
             };
         }
     }
-}
-
-function toUsdMicros(amountUsd: number, bufferBps: number): number {
-    if (!Number.isFinite(amountUsd) || amountUsd <= 0) return 0;
-    const buffered = amountUsd * (1 - bufferBps / 10000);
-    return Math.max(0, Math.floor(buffered * 1e6));
-}
-
-function toUsdMicrosFromDeposit(options: DepositVaultOptions): number {
-    if (Number.isFinite(options.usdMicros)) {
-        return Math.max(0, Math.floor(Number(options.usdMicros)));
-    }
-    if (Number.isFinite(options.amountUsd)) {
-        return Math.max(0, Math.floor(Number(options.amountUsd) * 1e6));
-    }
-    return 0;
 }
 
 async function withdrawFromEquity(
