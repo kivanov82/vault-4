@@ -45,7 +45,7 @@ app.get("/health", (req, res) => {
 // ── Discovery: x402 + OpenAPI ───────────────────────────────────────────
 // x402 agents probe /.well-known/x402 to find payable endpoints.
 app.get("/.well-known/x402", (req, res) => {
-    const wallet = process.env.X402_WALLET ?? process.env.WALLET ?? null;
+    const wallet = process.env.WALLET ?? null;
     res.json({
         version: "0.1",
         name: "VAULT-4 API",
@@ -380,7 +380,7 @@ app.get("/api/strategy", async (req, res) => {
 });
 
 // x402-gated premium endpoint — AI scoring details + full allocation breakdown
-const x402Wallet = process.env.X402_WALLET ?? process.env.WALLET;
+const x402Wallet = process.env.WALLET;
 if (x402Wallet) {
     const x402Protected = paymentMiddleware(
         x402Wallet,

@@ -18,7 +18,7 @@ dotenv.config();
 
 const VAULTS_URL = "https://stats-data.hyperliquid.xyz/Mainnet/vaults";
 const HYPERLIQUID_RPC =
-    process.env.HYPERLIQUID_RPC ?? "https://rpc.hyperlend.finance";
+    process.env.HYPERLIQUID_RPC ?? "https://rpc.hyperliquid.xyz/evm";
 const HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info";
 const EXCHANGE_PKEY = process.env.WALLET_PK as `0x${string}` | undefined;
 const VAULT_DETAILS_TTL_MS = 120000;
