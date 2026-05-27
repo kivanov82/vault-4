@@ -20,16 +20,14 @@ export class RebalanceScheduler {
             return;
         }
 
-        const intervalMs = INTERVAL_MS;
-
         const lastDepositTime = await getLastDepositTime();
         const now = Date.now();
         const elapsed = lastDepositTime ? now - lastDepositTime : null;
         const initialDelay =
-            elapsed !== null && elapsed < intervalMs ? intervalMs - elapsed : 0;
+            elapsed !== null && elapsed < INTERVAL_MS ? INTERVAL_MS - elapsed : 0;
 
         logger.info("Rebalance scheduler initialized", {
-            intervalMs,
+            intervalMs: INTERVAL_MS,
             lastDepositTime,
             initialDelay,
         });
@@ -38,7 +36,7 @@ export class RebalanceScheduler {
             await this.runOnce();
             this.intervalHandle = setInterval(() => {
                 void this.runOnce();
-            }, intervalMs);
+            }, INTERVAL_MS);
         }, Math.max(0, initialDelay));
     }
 

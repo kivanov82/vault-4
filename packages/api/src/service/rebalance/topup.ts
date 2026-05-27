@@ -1,5 +1,6 @@
 import type { VaultRecommendation } from "../vaults/types";
 import type { DepositTarget } from "./DepositService.types";
+import { floorUsd, roundPct, roundUsd } from "./depositMath";
 
 export type ComputeTopupInput = {
     highSelected: VaultRecommendation[];
@@ -136,14 +137,3 @@ export function computeTopupTargets(input: ComputeTopupInput): ComputeTopupResul
     };
 }
 
-function roundPct(value: number): number {
-    return Math.round(value * 100) / 100;
-}
-
-function roundUsd(value: number): number {
-    return Math.round(value * 100) / 100;
-}
-
-function floorUsd(value: number): number {
-    return Math.floor(value * 100) / 100;
-}

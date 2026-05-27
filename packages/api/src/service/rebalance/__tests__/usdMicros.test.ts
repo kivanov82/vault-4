@@ -30,34 +30,19 @@ describe("toUsdMicros", () => {
 
 describe("toUsdMicrosFromDeposit", () => {
     test("uses usdMicros directly when provided, floored to integer", () => {
-        expect(
-            toUsdMicrosFromDeposit({
-usdMicros: 5_000_000,
-            })
-        ).toBe(5_000_000);
+        expect(toUsdMicrosFromDeposit({ usdMicros: 5_000_000 })).toBe(5_000_000);
 
         // Float micros must floor — rounding up would exceed actual balance.
-        expect(
-            toUsdMicrosFromDeposit({
-usdMicros: 5_000_000.9,
-            })
-        ).toBe(5_000_000);
+        expect(toUsdMicrosFromDeposit({ usdMicros: 5_000_000.9 })).toBe(5_000_000);
     });
 
     test("converts amountUsd to micros when usdMicros is absent", () => {
-        expect(
-            toUsdMicrosFromDeposit({
-amountUsd: 10.5,
-            })
-        ).toBe(10_500_000);
+        expect(toUsdMicrosFromDeposit({ amountUsd: 10.5 })).toBe(10_500_000);
     });
 
     test("usdMicros wins when both fields are present", () => {
         expect(
-            toUsdMicrosFromDeposit({
-usdMicros: 3_000_000,
-                amountUsd: 9.99,
-            })
+            toUsdMicrosFromDeposit({ usdMicros: 3_000_000, amountUsd: 9.99 })
         ).toBe(3_000_000);
     });
 

@@ -29,6 +29,7 @@ import type {
 } from "./types";
 import {
     LedgerSummary,
+    MS_PER_DAY,
     ageInDays,
     applyAllocation,
     buildLedgerByVault,
@@ -49,8 +50,6 @@ import {
     safeRatio,
     scoreCandidate,
 } from "./vaultMath";
-
-const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 const RESERVED_NAMES = new Set([
     "Hyperliquidity Provider (HLP)",

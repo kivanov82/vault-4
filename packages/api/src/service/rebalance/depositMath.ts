@@ -2,25 +2,14 @@
 // don't drag in the Hyperliquid SDK transitively via HyperliquidConnector.
 
 import type { VaultRecommendation } from "../vaults/types";
-
-export type DepositTargetCore = {
-    vaultAddress: `0x${string}`;
-    name: string;
-    confidence: "high" | "low";
-    kind: "new";
-    targetPct: number;
-    targetUsd: number;
-    currentUsd: number;
-    desiredUsd: number;
-    depositUsd: number;
-};
+import type { DepositTarget } from "./DepositService.types";
 
 export function buildTargetFromAllocation(
     rec: VaultRecommendation,
     confidence: "high" | "low",
     groupAllocationUsd: number,
     groupCount: number
-): DepositTargetCore {
+): DepositTarget {
     const perVaultUsd = groupCount > 0 ? groupAllocationUsd / groupCount : 0;
     const depositUsd = floorUsd(perVaultUsd);
     const targetPct = groupCount > 0 ? 100 / groupCount : 0;
@@ -54,7 +43,10 @@ export function normalizeGroupPcts(
     }
     const total = Number(highPct) + Number(lowPct);
     if (!Number.isFinite(total) || total <= 0) {
-        return { highPct: 70, lowPct: 30 };
+        // Matches DepositService.DEFAULT_HIGH_PCT / DEFAULT_LOW_PCT — the
+        // documented 80/20 barbell. The fallback is rarely hit (both inputs
+        // would have to be zero or NaN) but should reflect current policy.
+        return { highPct: 80, lowPct: 20 };
     }
     const scale = 100 / total;
     return {

@@ -27,16 +27,16 @@ describe("normalizeGroupPcts", () => {
         expect(normalizeGroupPcts(80, 20, 0, 0)).toEqual({ highPct: 0, lowPct: 0 });
     });
 
-    test("falls back to 70/30 when the input pcts are both zero with non-empty groups", () => {
-        // This is the safety net: misconfigured inputs (both zero) shouldn't
-        // produce a div-by-zero. The 70/30 fallback was historically the
-        // VaultService default; safe-by-default for a recoverable misconfig.
-        expect(normalizeGroupPcts(0, 0, 5, 5)).toEqual({ highPct: 70, lowPct: 30 });
+    test("falls back to the documented 80/20 split when both input pcts are zero with non-empty groups", () => {
+        // Safety net: misconfigured inputs (both zero) shouldn't produce a
+        // div-by-zero. Falls back to the executor's documented 80/20 barbell
+        // (DepositService.DEFAULT_HIGH_PCT / DEFAULT_LOW_PCT).
+        expect(normalizeGroupPcts(0, 0, 5, 5)).toEqual({ highPct: 80, lowPct: 20 });
     });
 
     test("handles non-finite inputs by treating their sum as zero", () => {
         // Number coercion of NaN inputs yields a NaN total → not finite → fallback.
-        expect(normalizeGroupPcts(NaN, 20, 5, 5)).toEqual({ highPct: 70, lowPct: 30 });
+        expect(normalizeGroupPcts(NaN, 20, 5, 5)).toEqual({ highPct: 80, lowPct: 20 });
     });
 });
 

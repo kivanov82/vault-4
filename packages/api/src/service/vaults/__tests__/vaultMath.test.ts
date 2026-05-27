@@ -1,4 +1,5 @@
 import {
+    MS_PER_DAY,
     applyAllocation,
     buildLedgerByVault,
     calcInceptionPnlPct,
@@ -16,8 +17,6 @@ import {
 } from "../vaultMath";
 import type { UserPortfolioSummary, VaultCandidate, VaultRecommendation } from "../types";
 import type { UserLedgerUpdate } from "../../trade/HyperliquidConnector";
-
-const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 const portfolio = (
     accountEquity: Partial<Record<"24h" | "7d" | "30d" | "allTime", number | null>>
