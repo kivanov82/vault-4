@@ -8,9 +8,9 @@ import { TraceService } from "../../db/TraceService";
 import type { PositionEventAction } from "../../db/types";
 import type { UserPosition } from "../vaults/types";
 
-const STOP_LOSS_PCT = Number(process.env.STOP_LOSS_PCT ?? -15);
-const HARD_STOP_LOSS_PCT = Number(process.env.HARD_STOP_LOSS_PCT ?? -25);
-const MIN_HOLD_DAYS = Number(process.env.MIN_HOLD_DAYS ?? 5);
+const STOP_LOSS_PCT = -15;
+const HARD_STOP_LOSS_PCT = -25;
+const MIN_HOLD_DAYS = 5;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 export type RebalanceRoundOptions = {
@@ -31,9 +31,7 @@ export type RebalanceRoundResult = {
     deposits: Awaited<ReturnType<typeof DepositService.executeDepositPlan>> | null;
 };
 
-const DEFAULT_WITHDRAWAL_DELAY_MS = Number(
-    process.env.REBALANCE_WITHDRAWAL_DELAY_MS ?? 60000
-);
+const DEFAULT_WITHDRAWAL_DELAY_MS = 60000;
 
 export class RebalanceOrchestrator {
     /**
@@ -673,8 +671,8 @@ function buildTargetAllocations(
     }
 
     // Get group percentages from env or use defaults (80/20 split)
-    const DEFAULT_HIGH_PCT = Number(process.env.DEPOSIT_HIGH_PCT || 80);
-    const DEFAULT_LOW_PCT = Number(process.env.DEPOSIT_LOW_PCT || 20);
+    const DEFAULT_HIGH_PCT = 80;
+    const DEFAULT_LOW_PCT = 20;
 
     const highTotalUsd = totalCapitalUsd * (DEFAULT_HIGH_PCT / 100);
     const lowTotalUsd = totalCapitalUsd * (DEFAULT_LOW_PCT / 100);

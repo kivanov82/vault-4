@@ -12,7 +12,7 @@ export function getPool(): Pool | null {
     }
     const config: PoolConfig = {
         connectionString: url,
-        max: Number(process.env.DATABASE_POOL_MAX ?? 5),
+        max: 5,
         idleTimeoutMillis: 30_000,
         connectionTimeoutMillis: 5_000,
     };

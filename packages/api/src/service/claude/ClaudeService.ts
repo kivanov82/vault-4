@@ -26,19 +26,18 @@ export type ClaudeRanking = {
 };
 
 const MODEL = process.env.CLAUDE_MODEL ?? "claude-sonnet-4-6";
-const RAW_TEMPERATURE = Number(process.env.CLAUDE_TEMPERATURE ?? 0.2);
-const DEFAULT_TEMPERATURE = Number.isFinite(RAW_TEMPERATURE) ? RAW_TEMPERATURE : 0.2;
-const SCORING_MAX_TOKENS = Number(process.env.CLAUDE_SCORING_MAX_TOKENS ?? 4096);
-const RANKING_MAX_TOKENS = Number(process.env.CLAUDE_RANKING_MAX_TOKENS ?? 4096);
-const MAX_TRADES = Number(process.env.CLAUDE_MAX_TRADES_PER_VAULT ?? 50);
-const MAX_POSITIONS = Number(process.env.CLAUDE_MAX_POSITIONS_PER_VAULT ?? 30);
-const MAX_PNL_POINTS = Number(process.env.CLAUDE_MAX_PNL_POINTS ?? 60);
-const BATCH_SIZE = Number(process.env.CLAUDE_BATCH_SIZE ?? 5);
-const CLAUDE_API_DELAY_MS = Number(process.env.CLAUDE_API_DELAY_MS ?? 60000);
+const DEFAULT_TEMPERATURE = 0.2;
+const SCORING_MAX_TOKENS = 4096;
+const RANKING_MAX_TOKENS = 4096;
+const MAX_TRADES = 50;
+const MAX_POSITIONS = 30;
+const MAX_PNL_POINTS = 60;
+const BATCH_SIZE = 5;
+const CLAUDE_API_DELAY_MS = 60000;
 
 const PROMPT_PATH = path.join(__dirname, "prompts", "vault-ranking.md");
 const SCORING_PROMPT_PATH = path.join(__dirname, "prompts", "vault-scoring.md");
-const DATA_DELAY_MS = Number(process.env.HYPERLIQUID_DATA_REQUEST_DELAY_MS ?? 200);
+const DATA_DELAY_MS = 200;
 
 const SCORING_TOOL = {
     name: "submit_vault_scores",
@@ -212,7 +211,7 @@ export class ClaudeService {
 
         // Stage 2: Final ranking of top candidates
         // Limit candidates for final ranking to fit within token limits (Haiku: 4096 tokens)
-        const FINAL_RANKING_LIMIT = Number(process.env.CLAUDE_FINAL_RANKING_LIMIT ?? 12);
+        const FINAL_RANKING_LIMIT = 12;
         const topCandidates = allScored.slice(0, Math.min(FINAL_RANKING_LIMIT, Math.max(totalCount * 2, 20)));
         const topVaultCandidates = topCandidates.map((s) => s.candidate);
 

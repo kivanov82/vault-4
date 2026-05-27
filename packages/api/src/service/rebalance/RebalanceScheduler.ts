@@ -3,7 +3,7 @@ import { logger } from "../utils/logger";
 import { RebalanceOrchestrator } from "./RebalanceOrchestrator";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
-const DEFAULT_INTERVAL_MS = 2 * MS_PER_DAY;
+const INTERVAL_MS = 2 * MS_PER_DAY;
 
 export class RebalanceScheduler {
     private static started = false;
@@ -20,16 +20,7 @@ export class RebalanceScheduler {
             return;
         }
 
-        const intervalMs = readNumberEnv(
-            process.env.REBALANCE_INTERVAL_MS,
-            DEFAULT_INTERVAL_MS
-        );
-        if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
-            logger.warn("Rebalance scheduler disabled due to invalid interval", {
-                intervalMs,
-            });
-            return;
-        }
+        const intervalMs = INTERVAL_MS;
 
         const lastDepositTime = await getLastDepositTime();
         const now = Date.now();
@@ -98,9 +89,4 @@ async function getLastDepositTime(): Promise<number | null> {
         }
     }
     return latest;
-}
-
-function readNumberEnv(value: any, fallback: number): number {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : fallback;
 }

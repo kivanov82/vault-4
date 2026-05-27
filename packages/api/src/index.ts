@@ -186,11 +186,7 @@ app.get("/api/trace/rounds/:id", async (req, res) => {
     }
 });
 
-const CHART_LAUNCH_DATE_MS = (() => {
-    const raw = process.env.LAUNCH_DATE ?? "2026-01-06T22:17:00+01:00";
-    const parsed = Date.parse(raw);
-    return Number.isFinite(parsed) ? parsed : Date.parse("2026-01-06T22:17:00+01:00");
-})();
+const CHART_LAUNCH_DATE_MS = Date.parse("2026-01-06T22:17:00+01:00");
 
 app.get("/api/portfolio/chart", async (_req, res) => {
     try {

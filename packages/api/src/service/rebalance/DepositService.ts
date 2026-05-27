@@ -66,14 +66,14 @@ export type ExecuteDepositPlanResult = {
     actions: VaultTransferAction[];
 };
 
-const DEFAULT_MAX_ACTIVE = readNumberEnv(process.env.DEPOSIT_ACTIVE_COUNT, 10);
-const DEFAULT_HIGH_COUNT = readNumberEnv(process.env.DEPOSIT_HIGH_COUNT, 7);
-const DEFAULT_LOW_COUNT = readNumberEnv(process.env.DEPOSIT_LOW_COUNT, 3);
-const DEFAULT_HIGH_PCT = readNumberEnv(process.env.DEPOSIT_HIGH_PCT, 80);
-const DEFAULT_LOW_PCT = readNumberEnv(process.env.DEPOSIT_LOW_PCT, 20);
+const DEFAULT_MAX_ACTIVE = 10;
+const DEFAULT_HIGH_COUNT = 7;
+const DEFAULT_LOW_COUNT = 3;
+const DEFAULT_HIGH_PCT = 80;
+const DEFAULT_LOW_PCT = 20;
 // Max percentage of the post-deposit portfolio (existing + new) that can share the
 // same directional bias (long or short). Neutrals don't count toward either side.
-const MAX_SAME_DIRECTION_PCT = readNumberEnv(process.env.MAX_SAME_DIRECTION_PCT, 60);
+const MAX_SAME_DIRECTION_PCT = 60;
 // When true, the deposit pass also tops up held vaults whose currentUsd is
 // below Claude's per-vault target (totalCapital × allocationPct / 100).
 // On by default — fresh investor capital otherwise sits idle in the perps

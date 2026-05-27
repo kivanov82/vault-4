@@ -20,13 +20,10 @@ export type MarketOverlay = {
     preferred_direction: "long" | "short" | "neutral";
 };
 
-const COINGECKO_BASE =
-    process.env.COINGECKO_BASE_URL ?? "https://api.coingecko.com/api/v3";
-const FEAR_GREED_URL =
-    process.env.FEAR_GREED_URL ?? "https://api.alternative.me/fng/?limit=1";
-const HYPERLIQUID_INFO_URL =
-    process.env.HYPERLIQUID_INFO_URL ?? "https://api.hyperliquid.xyz/info";
-const CACHE_TTL_MS = Number(process.env.MARKET_DATA_TTL_MS ?? 60_000);
+const COINGECKO_BASE = "https://api.coingecko.com/api/v3";
+const FEAR_GREED_URL = "https://api.alternative.me/fng/?limit=1";
+const HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info";
+const CACHE_TTL_MS = 60_000;
 
 let cached: { fetchedAt: number; data: MarketOverlay } | null = null;
 

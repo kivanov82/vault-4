@@ -16,23 +16,14 @@ import type {
 
 dotenv.config();
 
-const VAULTS_URL =
-    process.env.HYPERLIQUID_VAULTS_URL ??
-    "https://stats-data.hyperliquid.xyz/Mainnet/vaults";
+const VAULTS_URL = "https://stats-data.hyperliquid.xyz/Mainnet/vaults";
 const HYPERLIQUID_RPC =
     process.env.HYPERLIQUID_RPC ?? "https://rpc.hyperlend.finance";
-const HYPERLIQUID_INFO_URL =
-    process.env.HYPERLIQUID_INFO_URL ?? "https://api.hyperliquid.xyz/info";
+const HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info";
 const EXCHANGE_PKEY = process.env.WALLET_PK as `0x${string}` | undefined;
-const VAULT_DETAILS_TTL_MS = Number(
-    process.env.HYPERLIQUID_VAULT_DETAILS_TTL_MS ?? 120000
-);
-const USER_LEDGER_TTL_MS = Number(
-    process.env.USER_LEDGER_TTL_MS ?? 120000
-);
-const USER_LEDGER_LOOKBACK_DAYS = Number(
-    process.env.USER_LEDGER_LOOKBACK_DAYS ?? 365
-);
+const VAULT_DETAILS_TTL_MS = 120000;
+const USER_LEDGER_TTL_MS = 120000;
+const USER_LEDGER_LOOKBACK_DAYS = 365;
 
 export type VaultRaw = {
     summary: {

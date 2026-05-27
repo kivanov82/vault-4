@@ -30,65 +30,43 @@ import type {
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-const RESERVED_NAMES = new Set(
-    (process.env.VAULT_RESERVED_NAMES ??
-        "Hyperliquidity Provider (HLP),Hyperliquidity Trader (HLT),HLP Strategy A,HLP Strategy B,HLP Strategy X,HLP Liquidator,HLP Liquidator 2,HLP Liquidator 3,HLP Liquidator 4")
-        .split(",")
-        .map((name) => name.trim())
-        .filter(Boolean)
-);
+const RESERVED_NAMES = new Set([
+    "Hyperliquidity Provider (HLP)",
+    "Hyperliquidity Trader (HLT)",
+    "HLP Strategy A",
+    "HLP Strategy B",
+    "HLP Strategy X",
+    "HLP Liquidator",
+    "HLP Liquidator 2",
+    "HLP Liquidator 3",
+    "HLP Liquidator 4",
+]);
 
 const DEFAULT_FILTERS: VaultFilters = {
-    minTvl: readNumberEnv(process.env.VAULT_MIN_TVL, 10000),
-    minAgeDays: readNumberEnv(process.env.VAULT_MIN_AGE_DAYS, 50),
-    minFollowers: readNumberEnv(process.env.VAULT_MIN_FOLLOWERS, 10),
-    minTrades7d: readNumberEnv(process.env.VAULT_MIN_TRADES_7D, 5),
-    requirePositiveWeeklyPnl:
-        (process.env.VAULT_REQUIRE_POSITIVE_WEEKLY_PNL ?? "false") === "true",
-    requirePositiveMonthlyPnl:
-        (process.env.VAULT_REQUIRE_POSITIVE_MONTHLY_PNL ?? "false") === "true",
-    requirePositiveAllTimePnl:
-        (process.env.VAULT_REQUIRE_POSITIVE_ALLTIME_PNL ?? "true") === "true",
-    maxDrawdownPct: readNumberEnv(process.env.VAULT_MAX_DRAWDOWN_PCT, 30),
-    maxMarginUtilPct: readNumberEnv(process.env.VAULT_MAX_MARGIN_UTIL_PCT, 50),
-    requireDepositsOpen: true
+    minTvl: 10000,
+    minAgeDays: 50,
+    minFollowers: 10,
+    minTrades7d: 5,
+    requirePositiveWeeklyPnl: false,
+    requirePositiveMonthlyPnl: false,
+    requirePositiveAllTimePnl: true,
+    maxDrawdownPct: 30,
+    maxMarginUtilPct: 50,
+    requireDepositsOpen: true,
 };
 
-const CANDIDATE_CACHE_TTL_MS = readNumberEnv(
-    process.env.VAULT_CACHE_TTL_MS,
-    5 * 60 * 1000
-);
-const CANDIDATE_LIMIT = readNumberEnv(
-    process.env.VAULT_CANDIDATE_LIMIT,
-    100
-);
-const RECOMMENDATION_COUNT = readNumberEnv(
-    process.env.VAULT_RECOMMENDATION_COUNT,
-    15
-);
-const HIGH_CONF_COUNT = readNumberEnv(process.env.VAULT_HIGH_CONF_COUNT, 8);
+const CANDIDATE_CACHE_TTL_MS = 5 * 60 * 1000;
+const CANDIDATE_LIMIT = 100;
+const RECOMMENDATION_COUNT = 15;
+const HIGH_CONF_COUNT = 8;
 // Matches the executor's barbell in DepositService (DEFAULT_HIGH_PCT / DEFAULT_LOW_PCT).
 const HIGH_ALLOC_PCT = 80;
 const LOW_ALLOC_PCT = 20;
-const USER_VAULTS_CACHE_TTL_MS = readNumberEnv(
-    process.env.USER_VAULTS_CACHE_TTL_MS,
-    5 * 60 * 1000
-);
-const USER_VAULTS_CONCURRENCY = Math.max(
-    1,
-    readNumberEnv(process.env.USER_VAULTS_CONCURRENCY, 3)
-);
-const USER_PORTFOLIO_CACHE_TTL_MS = readNumberEnv(
-    process.env.USER_PORTFOLIO_CACHE_TTL_MS,
-    2 * 60 * 1000
-);
-const MIN_POSITION_USD = readNumberEnv(process.env.MIN_POSITION_USD, 1);
-const LAUNCH_DATE_ISO =
-    process.env.LAUNCH_DATE ?? "2026-01-06T22:17:00+01:00";
-const LAUNCH_DATE_MS = readDateMsEnv(
-    LAUNCH_DATE_ISO,
-    "2026-01-06T22:17:00+01:00"
-);
+const USER_VAULTS_CACHE_TTL_MS = 5 * 60 * 1000;
+const USER_VAULTS_CONCURRENCY = 3;
+const USER_PORTFOLIO_CACHE_TTL_MS = 2 * 60 * 1000;
+const MIN_POSITION_USD = 1;
+const LAUNCH_DATE_MS = new Date("2026-01-06T22:17:00+01:00").getTime();
 
 type CandidateOptions = {
     refresh?: boolean;
@@ -203,7 +181,7 @@ export class VaultService {
 
         // Inter-call delay against Hyperliquid INFO API. Tunable; default 600ms is
         // conservative enough to avoid 429 storms on warmup with ~80 candidates.
-        const HL_API_DELAY_MS = Number(process.env.HL_API_DELAY_MS ?? 600);
+        const HL_API_DELAY_MS = 600;
         const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
         const candidates: VaultCandidate[] = [];
@@ -803,19 +781,6 @@ function ageInDays(createTimeMillis: number): number {
     if (!Number.isFinite(Number(createTimeMillis))) return 0;
     const delta = Date.now() - Number(createTimeMillis);
     return Math.max(0, delta / MS_PER_DAY);
-}
-
-function readNumberEnv(value: any, fallback: number): number {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-function readDateMsEnv(value: string | undefined, fallbackIso: string): number {
-    const raw = value && value.trim().length > 0 ? value : fallbackIso;
-    const parsed = Date.parse(raw);
-    if (Number.isFinite(parsed)) return parsed;
-    const fallback = Date.parse(fallbackIso);
-    return Number.isFinite(fallback) ? fallback : Date.now();
 }
 
 function toNumber(value: any, fallback: number): number {
