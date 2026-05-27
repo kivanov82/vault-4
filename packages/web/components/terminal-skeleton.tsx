@@ -13,11 +13,6 @@ export function TerminalSkeletonLine({ className = "", variant = "green" }: Skel
   return <div className={`${base} terminal-skeleton-line ${className}`} />
 }
 
-export function TerminalSkeletonText({ className = "", variant = "green" }: SkeletonProps & { size?: "sm" | "md" | "lg" }) {
-  const base = variant === "cyan" ? "terminal-skeleton-cyan" : "terminal-skeleton"
-  return <div className={`${base} terminal-skeleton-line ${className}`} />
-}
-
 export function TerminalSkeletonBlock({ className = "" }: { className?: string }) {
   return <div className={`terminal-skeleton-chart ${className}`} />
 }
