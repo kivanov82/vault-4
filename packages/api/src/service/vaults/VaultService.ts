@@ -67,8 +67,9 @@ const RECOMMENDATION_COUNT = readNumberEnv(
     15
 );
 const HIGH_CONF_COUNT = readNumberEnv(process.env.VAULT_HIGH_CONF_COUNT, 8);
-const HIGH_ALLOC_PCT = readNumberEnv(process.env.VAULT_ALLOC_HIGH_PCT, 70);
-const LOW_ALLOC_PCT = readNumberEnv(process.env.VAULT_ALLOC_LOW_PCT, 30);
+// Matches the executor's barbell in DepositService (DEFAULT_HIGH_PCT / DEFAULT_LOW_PCT).
+const HIGH_ALLOC_PCT = 80;
+const LOW_ALLOC_PCT = 20;
 const USER_VAULTS_CACHE_TTL_MS = readNumberEnv(
     process.env.USER_VAULTS_CACHE_TTL_MS,
     5 * 60 * 1000
