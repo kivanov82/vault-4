@@ -8,9 +8,9 @@ import { TraceService } from "../../db/TraceService";
 import type { PositionEventAction } from "../../db/types";
 import type { UserPosition } from "../vaults/types";
 
-const STOP_LOSS_PCT = Number(process.env.STOP_LOSS_PCT ?? -15);
-const HARD_STOP_LOSS_PCT = Number(process.env.HARD_STOP_LOSS_PCT ?? -25);
-const MIN_HOLD_DAYS = Number(process.env.MIN_HOLD_DAYS ?? 5);
+const STOP_LOSS_PCT = -15;
+const HARD_STOP_LOSS_PCT = -25;
+const MIN_HOLD_DAYS = 5;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 export type RebalanceRoundOptions = {
@@ -31,9 +31,7 @@ export type RebalanceRoundResult = {
     deposits: Awaited<ReturnType<typeof DepositService.executeDepositPlan>> | null;
 };
 
-const DEFAULT_WITHDRAWAL_DELAY_MS = Number(
-    process.env.REBALANCE_WITHDRAWAL_DELAY_MS ?? 60000
-);
+const DEFAULT_WITHDRAWAL_DELAY_MS = 60000;
 
 export class RebalanceOrchestrator {
     /**
@@ -658,45 +656,34 @@ export class RebalanceOrchestrator {
     }
 }
 
+// Min trim-target floor — matches DepositService.MIN_DEPOSIT_USD. Below this
+// we don't emit a trim entry at all (see the comment on buildTargetAllocations).
+const MIN_TRIM_TARGET_USD = 5;
+
+// Trim targets are derived from each vault's Claude allocationPct, not from an
+// even split inside the high/low buckets — so the trim pass undoes deviations
+// from Claude's intent and matches what the deposit pass aims for.
+//
+// One critical guardrail: the trim pass has NO hold-period, stop-loss, or
+// inactive-vault gates (those all live in the withdrawal pass). So if Claude
+// returns allocationPct=0 for a still-recommended vault, naively trimming to
+// $0 would full-exit the position, bypassing every protection. Instead, we
+// drop those entries from the map entirely — the trim loop's
+// `if (!targetAllocation) continue;` then skips them, and the withdrawal pass
+// handles the exit with proper gates on the next round.
 function buildTargetAllocations(
     recommendations: Awaited<ReturnType<typeof VaultService.getRecommendations>>,
     totalCapitalUsd: number
 ): Map<string, { targetUsd: number; confidence: "high" | "low" }> {
     const allocations = new Map<string, { targetUsd: number; confidence: "high" | "low" }>();
-
-    // Use barbell strategy: split total capital between confidence groups
-    const highCount = recommendations.highConfidence.length;
-    const lowCount = recommendations.lowConfidence.length;
-
-    if (highCount === 0 && lowCount === 0) {
-        return allocations;
-    }
-
-    // Get group percentages from env or use defaults (80/20 split)
-    const DEFAULT_HIGH_PCT = Number(process.env.DEPOSIT_HIGH_PCT || 80);
-    const DEFAULT_LOW_PCT = Number(process.env.DEPOSIT_LOW_PCT || 20);
-
-    const highTotalUsd = totalCapitalUsd * (DEFAULT_HIGH_PCT / 100);
-    const lowTotalUsd = totalCapitalUsd * (DEFAULT_LOW_PCT / 100);
-
-    // Split evenly within each group
-    const targetPerHighVault = highCount > 0 ? highTotalUsd / highCount : 0;
-    const targetPerLowVault = lowCount > 0 ? lowTotalUsd / lowCount : 0;
-
-    for (const rec of recommendations.highConfidence) {
-        allocations.set(rec.vaultAddress.toLowerCase(), {
-            targetUsd: targetPerHighVault,
-            confidence: "high",
-        });
-    }
-
-    for (const rec of recommendations.lowConfidence) {
-        allocations.set(rec.vaultAddress.toLowerCase(), {
-            targetUsd: targetPerLowVault,
-            confidence: "low",
-        });
-    }
-
+    const assign = (rec: { vaultAddress: string; allocationPct: number }, confidence: "high" | "low") => {
+        const pct = Number.isFinite(rec.allocationPct) ? rec.allocationPct : 0;
+        const targetUsd = totalCapitalUsd * (pct / 100);
+        if (targetUsd < MIN_TRIM_TARGET_USD) return;
+        allocations.set(rec.vaultAddress.toLowerCase(), { targetUsd, confidence });
+    };
+    for (const rec of recommendations.highConfidence) assign(rec, "high");
+    for (const rec of recommendations.lowConfidence) assign(rec, "low");
     return allocations;
 }
 

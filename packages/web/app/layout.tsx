@@ -12,7 +12,7 @@ const firaCode = Fira_Code({
 })
 
 export const metadata: Metadata = {
-  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL ?? "https://vault-4.xyz"),
+  metadataBase: new URL("https://vault-4.xyz"),
   title: "Vault 4 | AI DeFi Vault — Automated Hyperliquid Trading",
   description:
     "AI-managed ERC-4626 vault on Hyperliquid. Claude AI ranks 100+ vaults by PnL, risk and market regime, allocates with a barbell strategy, and rebalances every 48 hours. Non-custodial, daily settlement at 3PM CET.",

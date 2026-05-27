@@ -109,7 +109,6 @@ Vercel. Set Root Directory to `packages/web`.
 
 ## Gotchas
 
-- `app/globals.css` is the primary stylesheet; `styles/globals.css` also exists but is secondary
 - `next.config.mjs` has `ignoreBuildErrors: true` — TypeScript errors won't block builds
 - Action buttons are intentionally locked (beta) — they use `terminal-button-locked` class
 - `account-stats.tsx` fetches real data from `/api/positions` — no `isConnected` prop needed

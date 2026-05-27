@@ -3,7 +3,7 @@ import { logger } from "../utils/logger";
 import { RebalanceOrchestrator } from "./RebalanceOrchestrator";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
-const DEFAULT_INTERVAL_MS = 2 * MS_PER_DAY;
+const INTERVAL_MS = 2 * MS_PER_DAY;
 
 export class RebalanceScheduler {
     private static started = false;
@@ -20,25 +20,14 @@ export class RebalanceScheduler {
             return;
         }
 
-        const intervalMs = readNumberEnv(
-            process.env.REBALANCE_INTERVAL_MS,
-            DEFAULT_INTERVAL_MS
-        );
-        if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
-            logger.warn("Rebalance scheduler disabled due to invalid interval", {
-                intervalMs,
-            });
-            return;
-        }
-
         const lastDepositTime = await getLastDepositTime();
         const now = Date.now();
         const elapsed = lastDepositTime ? now - lastDepositTime : null;
         const initialDelay =
-            elapsed !== null && elapsed < intervalMs ? intervalMs - elapsed : 0;
+            elapsed !== null && elapsed < INTERVAL_MS ? INTERVAL_MS - elapsed : 0;
 
         logger.info("Rebalance scheduler initialized", {
-            intervalMs,
+            intervalMs: INTERVAL_MS,
             lastDepositTime,
             initialDelay,
         });
@@ -47,7 +36,7 @@ export class RebalanceScheduler {
             await this.runOnce();
             this.intervalHandle = setInterval(() => {
                 void this.runOnce();
-            }, intervalMs);
+            }, INTERVAL_MS);
         }, Math.max(0, initialDelay));
     }
 
@@ -98,9 +87,4 @@ async function getLastDepositTime(): Promise<number | null> {
         }
     }
     return latest;
-}
-
-function readNumberEnv(value: any, fallback: number): number {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : fallback;
 }

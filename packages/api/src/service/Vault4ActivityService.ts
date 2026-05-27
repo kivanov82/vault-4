@@ -7,10 +7,10 @@ const VAULT4FUND_ADDRESS = process.env.VAULT4FUND_ADDRESS as `0x${string}` | und
 // Hyperscan is HyperEVM's Blockscout-style explorer. Pulling logs from its
 // indexed REST API avoids the public-RPC eth_getLogs rate-limit problem
 // entirely — one HTTP call per page, server already did the indexing.
-const HYPERSCAN_API_BASE = process.env.HYPERSCAN_API_BASE ?? "https://www.hyperscan.com/api/v2";
+const HYPERSCAN_API_BASE = "https://www.hyperscan.com/api/v2";
 // Tick cadence — deposits/withdrawals are infrequent (settlement once a day)
 // so 10 minutes is plenty.
-const REFRESH_INTERVAL_MS = Number(process.env.ACTIVITY_TICK_MS ?? 10 * 60_000);
+const REFRESH_INTERVAL_MS = 10 * 60_000;
 // Hard cap on pages walked per refresh in case pagination ever loops.
 const MAX_PAGES_PER_REFRESH = 50;
 // HTTP timeout for a single Hyperscan request.

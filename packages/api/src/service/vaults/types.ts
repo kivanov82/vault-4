@@ -104,10 +104,7 @@ export type VaultMetrics = {
     vaultAddress: string;
     name?: string;
     pnl: WindowedMetric;
-    volume: WindowedMetric;
     maxDrawdown: WindowedMetric;
-    perpsAccountEquity: WindowedMetric;
-    vaultEquity: WindowedMetric;
 };
 
 export type VaultHistory = {

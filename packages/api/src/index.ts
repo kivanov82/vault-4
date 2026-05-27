@@ -12,7 +12,6 @@ import { paymentMiddleware } from "x402-express";
 import { logger } from "./service/utils/logger";
 import {
     readLedgerHistory,
-    readNetCashFlowTimeline,
     readPortfolioSeries,
     readRecentRounds,
     readRoundDetail,
@@ -46,7 +45,7 @@ app.get("/health", (req, res) => {
 // ── Discovery: x402 + OpenAPI ───────────────────────────────────────────
 // x402 agents probe /.well-known/x402 to find payable endpoints.
 app.get("/.well-known/x402", (req, res) => {
-    const wallet = process.env.X402_WALLET ?? process.env.WALLET ?? null;
+    const wallet = process.env.WALLET ?? null;
     res.json({
         version: "0.1",
         name: "VAULT-4 API",
@@ -187,11 +186,7 @@ app.get("/api/trace/rounds/:id", async (req, res) => {
     }
 });
 
-const CHART_LAUNCH_DATE_MS = (() => {
-    const raw = process.env.LAUNCH_DATE ?? "2026-01-06T22:17:00+01:00";
-    const parsed = Date.parse(raw);
-    return Number.isFinite(parsed) ? parsed : Date.parse("2026-01-06T22:17:00+01:00");
-})();
+const CHART_LAUNCH_DATE_MS = Date.parse("2026-01-06T22:17:00+01:00");
 
 app.get("/api/portfolio/chart", async (_req, res) => {
     try {
@@ -385,7 +380,7 @@ app.get("/api/strategy", async (req, res) => {
 });
 
 // x402-gated premium endpoint — AI scoring details + full allocation breakdown
-const x402Wallet = process.env.X402_WALLET ?? process.env.WALLET;
+const x402Wallet = process.env.WALLET;
 if (x402Wallet) {
     const x402Protected = paymentMiddleware(
         x402Wallet,

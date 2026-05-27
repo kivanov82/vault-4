@@ -1033,56 +1033,6 @@ export async function readPortfolioSnapshotAt(targetMs: number): Promise<Portfol
     });
 }
 
-export type NetCashFlowPoint = {
-    timestamp: number;
-    netCashDeployedUsd: number;
-};
-
-/**
- * Returns cumulative net-cash-deployed (deposits − netWithdraws) per ledger
- * event timestamp. Walked alongside `portfolio_series` in the chart endpoint
- * to compute true PnL = accountValue − netCashDeployed, which is independent
- * of the perps-wallet vs vault-equity split inside HL's reported accountValue.
- */
-export async function readNetCashFlowTimeline(): Promise<NetCashFlowPoint[]> {
-    return (
-        (await withDb<NetCashFlowPoint[]>(
-            "readNetCashFlowTimeline",
-            async (client) => {
-                const r = await client.query<{
-                    time: Date;
-                    type: "vaultDeposit" | "vaultWithdraw";
-                    usdc: string;
-                    net_withdrawn_usd: string | null;
-                }>(
-                    `SELECT time, type, usdc, net_withdrawn_usd
-                     FROM position_ledger
-                     ORDER BY time ASC, id ASC`
-                );
-                let running = 0;
-                const points: NetCashFlowPoint[] = [];
-                for (const row of r.rows) {
-                    if (row.type === "vaultDeposit") {
-                        running += Number(row.usdc);
-                    } else {
-                        const net =
-                            row.net_withdrawn_usd != null
-                                ? Number(row.net_withdrawn_usd)
-                                : Number(row.usdc);
-                        running -= net;
-                    }
-                    points.push({
-                        timestamp: row.time.getTime(),
-                        netCashDeployedUsd: running,
-                    });
-                }
-                return points;
-            },
-            []
-        )) ?? []
-    );
-}
-
 export async function readPortfolioSeries(): Promise<{
     pnl: { points: { timestamp: number; value: number }[] };
     accountValue: { points: { timestamp: number; value: number }[] };
