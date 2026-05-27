@@ -148,26 +148,6 @@ export class HyperliquidConnector {
             mergeWindowed(pnlFromPnls, pnlFromSeries)
         );
 
-        const volumeFromSummary = windowedFromPaths(vault, VOLUME_PATHS);
-        const volumeSeries = this.extractSeriesByPaths(vault, VOLUME_SERIES_PATHS);
-        const volumeFromSeries = windowedFromSeries(volumeSeries, "delta", "last");
-        const volume = mergeWindowed(volumeFromSummary, volumeFromSeries);
-
-        const perpsSeries =
-            this.extractSeriesByPaths(vault, PERPS_EQUITY_SERIES_PATHS) ??
-            this.extractSeriesByPaths(vault, ACCOUNT_VALUE_SERIES_PATHS);
-        const vaultEquitySeries =
-            this.extractSeriesByPaths(vault, VAULT_EQUITY_SERIES_PATHS) ??
-            this.extractSeriesByPaths(vault, ACCOUNT_VALUE_SERIES_PATHS);
-
-        const perpsFromSummary = windowedFromPaths(vault, PERPS_EQUITY_PATHS);
-        const perpsFromSeries = windowedFromSeries(perpsSeries, "last");
-        const perpsAccountEquity = mergeWindowed(perpsFromSummary, perpsFromSeries);
-
-        const vaultEquityFromSummary = windowedFromPaths(vault, VAULT_EQUITY_PATHS);
-        const vaultEquityFromSeries = windowedFromSeries(vaultEquitySeries, "last");
-        const vaultEquity = mergeWindowed(vaultEquityFromSummary, vaultEquityFromSeries);
-
         const drawdownSeries =
             this.extractSeriesByPaths(vault, ACCOUNT_VALUE_SERIES_PATHS) ??
             pnlSeries;
@@ -179,10 +159,7 @@ export class HyperliquidConnector {
             vaultAddress: vault.summary?.vaultAddress ?? vaultAddress,
             name: vault.summary?.name,
             pnl,
-            volume,
             maxDrawdown,
-            perpsAccountEquity,
-            vaultEquity,
         };
     }
 
@@ -720,13 +697,6 @@ const PORTFOLIO_KEYS: Record<WindowKey, string> = {
     allTime: "allTime",
 };
 
-const PERP_PORTFOLIO_KEYS: Record<WindowKey, string> = {
-    "24h": "perpDay",
-    "7d": "perpWeek",
-    "30d": "perpMonth",
-    allTime: "perpAllTime",
-};
-
 function buildMetricsFromDetails(
     details: VaultDetails,
     vaultAddress: string
@@ -735,29 +705,13 @@ function buildMetricsFromDetails(
     const portfolio = toPortfolioMap(details.portfolio);
 
     const pnl = windowedFromPortfolioSeries(portfolio, PORTFOLIO_KEYS, "pnlHistory", "delta");
-    const volume = windowedVolumeFromPortfolio(portfolio, PORTFOLIO_KEYS);
-    const vaultEquity = windowedFromPortfolioSeries(
-        portfolio,
-        PORTFOLIO_KEYS,
-        "accountValueHistory",
-        "last"
-    );
-    const perpsAccountEquity = windowedFromPortfolioSeries(
-        portfolio,
-        PERP_PORTFOLIO_KEYS,
-        "accountValueHistory",
-        "last"
-    );
     const maxDrawdown = windowedMaxDrawdownFromPortfolio(portfolio, PORTFOLIO_KEYS);
 
     return {
         vaultAddress: details.vaultAddress ?? vaultAddress,
         name: details.name,
         pnl,
-        volume,
         maxDrawdown,
-        perpsAccountEquity,
-        vaultEquity,
     };
 }
 
@@ -1054,34 +1008,6 @@ const PNL_PATHS: Record<WindowKey, string[]> = {
     ],
 };
 
-const VOLUME_PATHS: Record<WindowKey, string[]> = {
-    "24h": [
-        "summary.volume24h",
-        "summary.volume1d",
-        "summary.dailyVolume",
-        "summary.dayVolume",
-        "summary.vol24h",
-    ],
-    "7d": [
-        "summary.volume7d",
-        "summary.volume1w",
-        "summary.weeklyVolume",
-        "summary.vol7d",
-    ],
-    "30d": [
-        "summary.volume30d",
-        "summary.volume1m",
-        "summary.monthlyVolume",
-        "summary.vol30d",
-    ],
-    allTime: [
-        "summary.volumeAllTime",
-        "summary.volumeAll",
-        "summary.totalVolume",
-        "summary.volume",
-    ],
-};
-
 const MAX_DRAWDOWN_PATHS: Record<WindowKey, string[]> = {
     "24h": [
         "summary.maxDrawdown24h",
@@ -1105,44 +1031,7 @@ const MAX_DRAWDOWN_PATHS: Record<WindowKey, string[]> = {
     ],
 };
 
-const PERPS_EQUITY_PATHS: Record<WindowKey, string[]> = {
-    "24h": [
-        "summary.perpsAccountEquity24h",
-        "summary.perpsAccountValue24h",
-        "summary.accountValue24h",
-    ],
-    "7d": [
-        "summary.perpsAccountEquity7d",
-        "summary.perpsAccountValue7d",
-        "summary.accountValue7d",
-    ],
-    "30d": [
-        "summary.perpsAccountEquity30d",
-        "summary.perpsAccountValue30d",
-        "summary.accountValue30d",
-    ],
-    allTime: [
-        "summary.perpsAccountEquity",
-        "summary.perpsAccountValue",
-        "summary.accountValue",
-        "summary.accountEquity",
-    ],
-};
-
-const VAULT_EQUITY_PATHS: Record<WindowKey, string[]> = {
-    "24h": ["summary.vaultEquity24h", "summary.equity24h"],
-    "7d": ["summary.vaultEquity7d", "summary.equity7d"],
-    "30d": ["summary.vaultEquity30d", "summary.equity30d"],
-    allTime: ["summary.vaultEquity", "summary.equity", "summary.tvl"],
-};
-
 const PNL_SERIES_PATHS = ["pnlHistory", "summary.pnlHistory"];
-const VOLUME_SERIES_PATHS = [
-    "volumeHistory",
-    "summary.volumeHistory",
-    "volumeSeries",
-    "summary.volumeSeries",
-];
 const ACCOUNT_VALUE_SERIES_PATHS = [
     "accountValueHistory",
     "summary.accountValueHistory",
@@ -1152,18 +1041,6 @@ const ACCOUNT_VALUE_SERIES_PATHS = [
     "summary.accountValues",
     "equityHistory",
     "summary.equityHistory",
-];
-const PERPS_EQUITY_SERIES_PATHS = [
-    "perpsAccountEquityHistory",
-    "summary.perpsAccountEquityHistory",
-    "perpsAccountValueHistory",
-    "summary.perpsAccountValueHistory",
-];
-const VAULT_EQUITY_SERIES_PATHS = [
-    "vaultEquityHistory",
-    "summary.vaultEquityHistory",
-    "tvlHistory",
-    "summary.tvlHistory",
 ];
 
 function windowedFromPaths(root: any, paths: Record<WindowKey, string[]>): WindowedMetric {
