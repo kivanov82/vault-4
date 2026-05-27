@@ -656,14 +656,21 @@ export class RebalanceOrchestrator {
     }
 }
 
+// Min trim-target floor — matches DepositService.MIN_DEPOSIT_USD. Below this
+// we don't emit a trim entry at all (see the comment on buildTargetAllocations).
+const MIN_TRIM_TARGET_USD = 5;
+
 // Trim targets are derived from each vault's Claude allocationPct, not from an
 // even split inside the high/low buckets — so the trim pass undoes deviations
-// from Claude's intent, matching what the deposit pass aims for. A
-// recommended vault that came back with allocationPct=0 gets targetUsd=0
-// (effectively scheduled for a full trim) — that's intentional: if Claude says
-// "still on the list but allocate nothing to it", the trim pass should empty
-// it. (Pure exits for non-recommended vaults are handled in the withdrawal
-// pass, not here.)
+// from Claude's intent and matches what the deposit pass aims for.
+//
+// One critical guardrail: the trim pass has NO hold-period, stop-loss, or
+// inactive-vault gates (those all live in the withdrawal pass). So if Claude
+// returns allocationPct=0 for a still-recommended vault, naively trimming to
+// $0 would full-exit the position, bypassing every protection. Instead, we
+// drop those entries from the map entirely — the trim loop's
+// `if (!targetAllocation) continue;` then skips them, and the withdrawal pass
+// handles the exit with proper gates on the next round.
 function buildTargetAllocations(
     recommendations: Awaited<ReturnType<typeof VaultService.getRecommendations>>,
     totalCapitalUsd: number
@@ -671,10 +678,9 @@ function buildTargetAllocations(
     const allocations = new Map<string, { targetUsd: number; confidence: "high" | "low" }>();
     const assign = (rec: { vaultAddress: string; allocationPct: number }, confidence: "high" | "low") => {
         const pct = Number.isFinite(rec.allocationPct) ? rec.allocationPct : 0;
-        allocations.set(rec.vaultAddress.toLowerCase(), {
-            targetUsd: totalCapitalUsd * (pct / 100),
-            confidence,
-        });
+        const targetUsd = totalCapitalUsd * (pct / 100);
+        if (targetUsd < MIN_TRIM_TARGET_USD) return;
+        allocations.set(rec.vaultAddress.toLowerCase(), { targetUsd, confidence });
     };
     for (const rec of recommendations.highConfidence) assign(rec, "high");
     for (const rec of recommendations.lowConfidence) assign(rec, "low");
