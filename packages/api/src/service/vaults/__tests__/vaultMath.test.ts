@@ -14,6 +14,7 @@ import {
     rebasePortfolioPnl,
     safeRatio,
     scoreCandidate,
+    toSignedDrawdownPct,
 } from "../vaultMath";
 import type { UserPortfolioSummary, VaultCandidate, VaultRecommendation } from "../types";
 import type { UserLedgerUpdate } from "../../trade/HyperliquidConnector";
@@ -295,6 +296,32 @@ describe("calcVaultMaxDrawdownPct", () => {
             { timestamp: 2, value: 100 },
             { timestamp: 3, value: 80 },
         ])).toBeCloseTo(0.2, 5);
+    });
+});
+
+describe("toSignedDrawdownPct (locks in the project-wide signed-drawdown convention)", () => {
+    // Why this matters: a well-intentioned future reviewer might look at
+    // `return -(... * 100)` inside calcProRataMaxDrawdownPct and "fix" the
+    // sign, breaking the API contract that the frontend's formatPercentSigned
+    // relies on. This test pins the contract.
+    test("returns a NEGATIVE percentage from a positive drawdown fraction", () => {
+        expect(toSignedDrawdownPct(0.195)).toBeCloseTo(-19.5, 5);
+        expect(toSignedDrawdownPct(0.5)).toBe(-50);
+    });
+
+    test("returns 0 for a zero drawdown (no negation surprise on a flat series)", () => {
+        // Note JS: -(0 * 100) === -0; spec-equal to 0 but `Object.is(-0, 0)` is false.
+        // toBe uses Object.is, so we assert via toEqual / Math.abs instead.
+        expect(Math.abs(toSignedDrawdownPct(0))).toBe(0);
+    });
+
+    test("matches readMaxDrawdownFromSeries sign convention (negative percentage)", () => {
+        // The DB-backed helper readMaxDrawdownFromSeries returns negative
+        // percentages by docstring: "peak-to-trough decline as a negative
+        // percentage (e.g. -19.5)". toSignedDrawdownPct must agree.
+        for (const dd of [0.01, 0.1, 0.3, 0.99]) {
+            expect(toSignedDrawdownPct(dd)).toBeLessThan(0);
+        }
     });
 });
 

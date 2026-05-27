@@ -49,6 +49,7 @@ import {
     round,
     safeRatio,
     scoreCandidate,
+    toSignedDrawdownPct,
 } from "./vaultMath";
 
 const RESERVED_NAMES = new Set([
@@ -1089,7 +1090,7 @@ async function calcProRataMaxDrawdownPct(
     }
 
     if (!count || totalWeight <= 0) return null;
-    return -((weightedDrawdown / totalWeight) * 100);
+    return toSignedDrawdownPct(weightedDrawdown / totalWeight);
 }
 
 /**

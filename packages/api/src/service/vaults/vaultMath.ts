@@ -227,6 +227,10 @@ export function findValueAtOrBefore(
     return Number.isFinite(value) ? (value as number) : null;
 }
 
+// Returns a NON-NEGATIVE fraction in [0, 1]. Callers that want the
+// project-wide *signed* drawdown percentage (negative, matching
+// readMaxDrawdownFromSeries and `formatPercentSigned` on the frontend) must
+// transform with `toSignedDrawdownPct` below.
 export function calcVaultMaxDrawdownPct(points: TimeSeriesPoint[]): number {
     if (points.length < 2) return 0;
     let peak = points[0].value;
@@ -238,6 +242,19 @@ export function calcVaultMaxDrawdownPct(points: TimeSeriesPoint[]): number {
         if (dd > maxDd) maxDd = dd;
     }
     return maxDd;
+}
+
+/**
+ * Convert a positive drawdown fraction (0..1) into the project-wide signed
+ * percentage convention: NEGATIVE for a loss (e.g. 0.195 -> -19.5).
+ *
+ * Don't drop the negation thinking "drawdown should be positive". The whole
+ * pipeline -- DB helper `readMaxDrawdownFromSeries`, the
+ * `PlatformMetricsResponse.maxDrawdownPct` field, and the frontend's
+ * `formatPercentSigned` -- assumes signed (negative) drawdown values.
+ */
+export function toSignedDrawdownPct(positiveFraction: number): number {
+    return -(positiveFraction * 100);
 }
 
 export function calcPnlPct(
