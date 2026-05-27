@@ -24,7 +24,6 @@ import type {
     TimeSeriesPoint,
     UserPortfolioSummary,
     UserPositionsResponse,
-    UserVaultHistory,
     UserVaultEntry,
     UserVaultsResponse,
 } from "./types";
@@ -792,16 +791,6 @@ export class VaultService {
         return this.getUserPortfolio(wallet, options);
     }
 
-    static async getUserVaultHistory(
-        userAddress: string,
-        vaultAddress: string
-    ): Promise<UserVaultHistory | null> {
-        return HyperliquidConnector.getUserVaultHistory(
-            userAddress as `0x${string}`,
-            vaultAddress as `0x${string}`
-        );
-    }
-
     static async resolveVaultNames(
         vaults: string[]
     ): Promise<Map<string, string>> {
@@ -1293,60 +1282,6 @@ function findValueAtOrBefore(
     }
     return Number.isFinite(value) ? (value as number) : null;
 }
-
-function calcMaxDrawdownPct(points: TimeSeriesPoint[]): number | null {
-    if (points.length < 2) return null;
-
-    // Calculate returns-based drawdown to avoid issues with deposits/withdrawals
-    // We track cumulative returns from initial value and calculate drawdown from peak return
-    const initialValue = points[0].value;
-    if (!Number.isFinite(initialValue) || initialValue <= 0) {
-        // If initial value is 0 or negative, use absolute peak-to-trough
-        let peak = points[0].value;
-        let maxDrawdown = 0;
-        for (const point of points) {
-            const value = point.value;
-            if (!Number.isFinite(value)) continue;
-            if (value > peak) {
-                peak = value;
-                continue;
-            }
-            if (peak > 0) {
-                const drawdown = (value - peak) / peak;
-                if (drawdown < maxDrawdown) {
-                    maxDrawdown = drawdown;
-                }
-            }
-        }
-        return maxDrawdown * 100;
-    }
-
-    // Calculate cumulative return at each point: (value / initialValue) - 1
-    let peakReturn = 0; // Peak cumulative return
-    let maxDrawdown = 0;
-
-    for (const point of points) {
-        const value = point.value;
-        if (!Number.isFinite(value)) continue;
-
-        const cumulativeReturn = (value / initialValue) - 1;
-
-        if (cumulativeReturn > peakReturn) {
-            peakReturn = cumulativeReturn;
-            continue;
-        }
-
-        // Drawdown from peak: (currentReturn - peakReturn) / (1 + peakReturn)
-        // This represents the percentage loss from the peak equity value
-        const drawdown = (cumulativeReturn - peakReturn) / (1 + peakReturn);
-        if (drawdown < maxDrawdown) {
-            maxDrawdown = drawdown;
-        }
-    }
-
-    return maxDrawdown * 100;
-}
-
 
 function calcVaultMaxDrawdownPct(points: TimeSeriesPoint[]): number {
     if (points.length < 2) return 0;

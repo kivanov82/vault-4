@@ -1,14 +1,6 @@
 import { HyperliquidConnector } from "../trade/HyperliquidConnector";
 import { logger } from "../utils/logger";
 
-export type WithdrawAllOptions = {
-    userAddress?: `0x${string}`;
-    includeLocked?: boolean;
-    dryRun?: boolean;
-    usdBufferBps?: number;
-    sweepDust?: boolean;
-};
-
 export type VaultTransferAction = {
     vaultAddress: string;
     equity?: number;
@@ -17,16 +9,6 @@ export type VaultTransferAction = {
     status: "skipped" | "prepared" | "submitted" | "error";
     reason?: string;
     error?: string;
-};
-
-export type WithdrawAllResult = {
-    userAddress: `0x${string}`;
-    total: number;
-    submitted: number;
-    skipped: number;
-    errors: number;
-    dryRun: boolean;
-    actions: VaultTransferAction[];
 };
 
 export type WithdrawVaultOptions = {
@@ -75,55 +57,6 @@ export type DepositVaultResult = {
 const DEFAULT_USD_BUFFER_BPS = 10; // 0.10% buffer to avoid rounding issues
 
 export class RebalanceService {
-    static async withdrawAllUserVaults(
-        options: WithdrawAllOptions = {}
-    ): Promise<WithdrawAllResult> {
-        const userAddress = (options.userAddress ??
-            (process.env.WALLET as `0x${string}`)) as `0x${string}`;
-        if (!userAddress) {
-            throw new Error("WALLET is not set");
-        }
-        const includeLocked = options.includeLocked ?? false;
-        const dryRun = options.dryRun ?? true;
-        const usdBufferBps =
-            options.usdBufferBps ?? DEFAULT_USD_BUFFER_BPS;
-        const sweepDust = options.sweepDust ?? false;
-
-        const equities = await HyperliquidConnector.getUserVaultEquities(
-            userAddress
-        );
-        const now = Date.now();
-
-        let submitted = 0;
-        let skipped = 0;
-        let errors = 0;
-        const actions: VaultTransferAction[] = [];
-
-        for (const equity of equities) {
-            const action = await withdrawFromEquity(equity, {
-                includeLocked,
-                dryRun,
-                usdBufferBps,
-                sweepDust,
-                now,
-            });
-            actions.push(action);
-            if (action.status === "submitted") submitted += 1;
-            if (action.status === "skipped") skipped += 1;
-            if (action.status === "error") errors += 1;
-        }
-
-        return {
-            userAddress,
-            total: equities.length,
-            submitted,
-            skipped,
-            errors,
-            dryRun,
-            actions,
-        };
-    }
-
     static async withdrawAllFromVault(
         options: WithdrawVaultOptions
     ): Promise<WithdrawVaultResult> {

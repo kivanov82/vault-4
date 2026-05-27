@@ -116,8 +116,4 @@ export class PlatformSnapshotService {
             entries,
         };
     }
-
-    static refreshedAt(): number {
-        return this.snapshot.refreshedAt;
-    }
 }
