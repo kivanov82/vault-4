@@ -11,6 +11,7 @@ import { logger } from "../utils/logger";
 import { HyperliquidConnector } from "../trade/HyperliquidConnector";
 import { XPostService } from "../social/XPostService";
 import { VaultService } from "../vaults/VaultService";
+import { computeBridgeAmount } from "./settlementMath";
 
 // ── Config ──────────────────────────────────────────────────────────────
 
@@ -492,26 +493,25 @@ export class VaultContractService {
 
         // 3. If pending withdrawals, fund contract from L1
         if (hasPendingWithdraws) {
-            const withdrawValueUsdc = state.pendingWithdraws * state.sharePrice;
-            const shortfall = withdrawValueUsdc - state.idleUsdc;
+            const l1Balance = (await HyperliquidConnector.getUserPerpsBalance(WALLET!)) ?? 0;
+            const bridge = computeBridgeAmount({
+                pendingWithdraws: state.pendingWithdraws,
+                sharePrice: state.sharePrice,
+                idleUsdc: state.idleUsdc,
+                l1Balance,
+            });
 
-            if (shortfall > 0) {
-                const l1Balance = (await HyperliquidConnector.getUserPerpsBalance(WALLET!)) ?? 0;
-                const bridgeAmount = Math.min(
-                    Math.ceil(shortfall * 100) / 100,
-                    Math.floor(l1Balance * 100) / 100
-                );
-
+            if (bridge.shortfall > 0) {
                 logger.info("Settlement: need to fund contract for withdrawals", {
-                    withdrawValueUsdc: withdrawValueUsdc.toFixed(2),
+                    withdrawValueUsdc: bridge.withdrawValueUsdc.toFixed(2),
                     idleUsdc: state.idleUsdc.toFixed(2),
-                    shortfall: shortfall.toFixed(2),
+                    shortfall: bridge.shortfall.toFixed(2),
                     l1Balance: l1Balance.toFixed(2),
-                    bridgeAmount: bridgeAmount.toFixed(2),
+                    bridgeAmount: bridge.bridgeAmount.toFixed(2),
                 });
 
-                if (bridgeAmount > 0) {
-                    await this.fundContractFromL1(bridgeAmount);
+                if (bridge.bridgeAmount > 0) {
+                    await this.fundContractFromL1(bridge.bridgeAmount);
                 } else {
                     logger.warn("Settlement: no L1 balance available to fund withdrawals, will process what contract has");
                 }
