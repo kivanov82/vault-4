@@ -2,7 +2,7 @@ import { createConfig, http } from "wagmi"
 import { injected } from "wagmi/connectors"
 import { defineChain } from "viem"
 
-const rpcUrl = process.env.NEXT_PUBLIC_HYPERLIQUID_RPC ?? "https://rpc.hyperliquid.xyz/evm"
+const rpcUrl = "https://rpc.hyperliquid.xyz/evm"
 
 export const hyperliquidChain = defineChain({
   id: 999,
