@@ -1,0 +1,26 @@
+{
+  "name": "@vault-4/video",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Remotion promo videos for Vault-4 (cyberpunk terminal aesthetic)",
+  "scripts": {
+    "studio": "remotion studio",
+    "render": "remotion render VaultPromo out/vault-promo.mp4",
+    "render:gif": "remotion render VaultPromo out/vault-promo.gif --codec=gif",
+    "still": "remotion still VaultPromo out/frame.png --frame=120",
+    "music": "node scripts/gen-music.js && npm run music:mp3",
+    "music:mp3": "remotion ffmpeg -y -i public/music.wav -codec:a libmp3lame -b:a 192k public/music.mp3",
+    "upgrade": "remotion upgrade"
+  },
+  "dependencies": {
+    "@remotion/google-fonts": "^4.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "remotion": "^4.0.0"
+  },
+  "devDependencies": {
+    "@remotion/cli": "^4.0.0",
+    "@types/react": "^19.0.0",
+    "typescript": "^5.4.0"
+  }
+}
