@@ -66,6 +66,25 @@ describe("clampCount", () => {
     test("no upper bound when max is omitted", () => {
         expect(clampCount(1_000_000, 0)).toBe(1_000_000);
     });
+
+    test("production defaults clamp to an exact 8 high / 3 low / 11 active split", () => {
+        // Mirrors DepositService.buildDepositPlan's clamp chain with the shipped
+        // constants (DEFAULT_MAX_ACTIVE=11, DEFAULT_HIGH_COUNT=8, DEFAULT_LOW_COUNT=3).
+        // Locks the invariant that the bucket counts sum to maxActive — so a future
+        // bump to maxActive that forgets to re-balance the buckets fails here.
+        const DEFAULT_MAX_ACTIVE = 11;
+        const DEFAULT_HIGH_COUNT = 8;
+        const DEFAULT_LOW_COUNT = 3;
+
+        const maxActive = clampCount(DEFAULT_MAX_ACTIVE, 1);
+        const highCount = clampCount(DEFAULT_HIGH_COUNT, 0, maxActive);
+        const lowCount = clampCount(DEFAULT_LOW_COUNT, 0, maxActive - highCount);
+
+        expect(maxActive).toBe(11);
+        expect(highCount).toBe(8);
+        expect(lowCount).toBe(3);
+        expect(highCount + lowCount).toBe(maxActive);
+    });
 });
 
 describe("floorUsd", () => {

@@ -74,8 +74,8 @@ export type ExecuteDepositPlanResult = {
     actions: VaultTransferAction[];
 };
 
-const DEFAULT_MAX_ACTIVE = 10;
-const DEFAULT_HIGH_COUNT = 7;
+const DEFAULT_MAX_ACTIVE = 11;
+const DEFAULT_HIGH_COUNT = 8;
 const DEFAULT_LOW_COUNT = 3;
 const DEFAULT_HIGH_PCT = 80;
 const DEFAULT_LOW_PCT = 20;

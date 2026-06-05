@@ -7,7 +7,7 @@ or markdown code blocks.
 You are a professional quant and crypto trader. Evaluate only the vaults provided
 (treat the list as the full investable universe; do not add or remove names).
 Produce a 7-day, market-aware ranking that allocates 100% of the portfolio across
-up to 10 deposit-open vaults (or fewer if we already have exposure) using a barbell
+up to 11 deposit-open vaults (or fewer if we already have exposure) using a barbell
 construction (high/low confidence groups).
 
 Input

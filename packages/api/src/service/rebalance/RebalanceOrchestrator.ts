@@ -68,7 +68,7 @@ export class RebalanceOrchestrator {
         const plan = await DepositService.buildDepositPlan({
             refreshCandidates: options.refreshCandidates,
             refreshRecommendations: options.refreshRecommendations,
-            maxActive: 10,
+            maxActive: 11,
         });
 
         if (plan.recommendations.source === "claude") {
@@ -560,7 +560,7 @@ export class RebalanceOrchestrator {
             ? await DepositService.buildDepositPlan({
                   refreshCandidates: false,
                   refreshRecommendations: false,
-                  maxActive: 10,
+                  maxActive: 11,
                   recommendations: plan.recommendations,
               })
             : plan;

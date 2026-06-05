@@ -79,7 +79,7 @@ For every current position that is still in the Claude recommendation set: if `c
 Wait 60s after withdrawals before deposits (configurable via `REBALANCE_WITHDRAWAL_DELAY_MS`).
 
 **Deposits:**
-- Min deposit: $5, max active vaults: 10 (`DEPOSIT_ACTIVE_COUNT`)
+- Min deposit: $5, max active vaults: 11 (`DEFAULT_MAX_ACTIVE`; 8 high / 3 low)
 - Only NEW vaults (no existing exposure)
 - Barbell-weighted allocation: high-confidence group gets 70-80%, low-confidence gets 20-30%
 - Positions < $1 excluded from vault count (dust filtering)
@@ -188,7 +188,7 @@ VAULT_REQUIRE_POSITIVE_MONTHLY_PNL=false
 
 Rebalancing:
 ```
-DEPOSIT_ACTIVE_COUNT=10
+DEPOSIT_ACTIVE_COUNT=11
 DEPOSIT_HIGH_PCT=80
 DEPOSIT_LOW_PCT=20
 REBALANCE_WITHDRAWAL_DELAY_MS=60000
