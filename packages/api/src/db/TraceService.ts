@@ -274,29 +274,31 @@ export class TraceService {
     }): Promise<number> {
         const wallet = process.env.WALLET as `0x${string}` | undefined;
         if (!wallet) return 0;
-        const [raw, vaultEquities] = await Promise.all([
-            HyperliquidConnector.getUserPortfolioAllSeries(wallet).catch(() => null),
-            HyperliquidConnector.getUserVaultEquities(wallet).catch(() => []),
-        ]);
+        const roundId =
+            options?.roundId != null && Number.isFinite(options.roundId)
+                ? options.roundId
+                : null;
+        const raw = await HyperliquidConnector.getUserPortfolioAllSeries(
+            wallet
+        ).catch(() => null);
         if (!raw) return 0;
-        let vaultEquityNow: number | null = null;
-        if (Array.isArray(vaultEquities)) {
-            vaultEquityNow = 0;
-            for (const v of vaultEquities) {
-                if (Number.isFinite(v.equity)) {
-                    vaultEquityNow += Number(v.equity);
-                }
-            }
-        }
+        // vault_equity_usd is read live from HL. On a round-end stamp the
+        // deposits/withdrawals were submitted seconds ago and HL has not finished
+        // crediting them to getUserVaultEquities yet, so an immediate read freezes
+        // a pre-deposit (too-low) vault equity into the chart while `basis` below
+        // already counts the just-deposited capital → phantom unrealized loss.
+        // Poll until equity settles first. (realized/basis are already decoupled
+        // from HL's ledger propagation lag via position_event; this closes the
+        // same gap for the vault_equity component.)
+        const vaultEquityNow =
+            roundId !== null
+                ? await settleVaultEquity(wallet)
+                : await sumVaultEquity(wallet);
         const pnlByTs = new Map<number, number>();
         for (const p of raw.pnl) pnlByTs.set(p.timestamp, p.value);
         const accByTs = new Map<number, number>();
         for (const p of raw.accountValue) accByTs.set(p.timestamp, p.value);
         const nowMs = Date.now();
-        const roundId =
-            options?.roundId != null && Number.isFinite(options.roundId)
-                ? options.roundId
-                : null;
         let inserted = 0;
         await withDb("recordPortfolioPoint", async (client) => {
             let realized: number;
@@ -1102,4 +1104,65 @@ export async function readVaultTimeline(vaultAddress: string, limit: number) {
             return r.rows;
         }, [])) ?? []
     );
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Sum the user's live vault equity (vault-only, excludes the perps wallet).
+ * Returns null if HL is unreachable so the caller can stamp a null and let the
+ * chart fall back to accountValue rather than recording a bogus 0.
+ */
+async function sumVaultEquity(
+    wallet: `0x${string}`
+): Promise<number | null> {
+    const equities = await HyperliquidConnector.getUserVaultEquities(wallet).catch(
+        () => null
+    );
+    if (!Array.isArray(equities)) return null;
+    let sum = 0;
+    for (const v of equities) {
+        if (Number.isFinite(v.equity)) sum += Number(v.equity);
+    }
+    return sum;
+}
+
+/**
+ * Round-end vault-equity read. Deposits/withdrawals were just submitted and HL
+ * credits them to getUserVaultEquities with a lag of a few minutes; reading
+ * immediately would stamp a pre-deposit equity into the chart. Poll until the
+ * sum settles — two consecutive reads within `epsilon` — bounded by a max wait.
+ * Always sleeps at least once so we never stamp the instantaneous post-submit
+ * read. Tunable via REBALANCE_STAMP_POLL_MS / REBALANCE_STAMP_MAX_WAIT_MS.
+ */
+async function settleVaultEquity(
+    wallet: `0x${string}`
+): Promise<number | null> {
+    const intervalMs = Number(process.env.REBALANCE_STAMP_POLL_MS ?? 45000);
+    const maxWaitMs = Number(process.env.REBALANCE_STAMP_MAX_WAIT_MS ?? 300000);
+    const epsilon = 0.005; // 0.5% — two reads this close ⇒ propagation done
+    const deadline = Date.now() + maxWaitMs;
+    let prev = await sumVaultEquity(wallet);
+    let polls = 0;
+    let settled = false;
+    while (Date.now() < deadline) {
+        await sleep(intervalMs);
+        const next = await sumVaultEquity(wallet);
+        polls += 1;
+        if (next == null) continue;
+        const stable =
+            prev != null &&
+            Math.abs(next - prev) <= Math.max(Math.abs(prev), 1) * epsilon;
+        prev = next;
+        if (stable) {
+            settled = true;
+            break;
+        }
+    }
+    logger.info("Round-end vault equity settled", {
+        vaultEquity: prev,
+        polls,
+        settled,
+    });
+    return prev;
 }

@@ -192,6 +192,11 @@ DEPOSIT_ACTIVE_COUNT=11
 DEPOSIT_HIGH_PCT=80
 DEPOSIT_LOW_PCT=20
 REBALANCE_WITHDRAWAL_DELAY_MS=60000
+# Round-end chart stamp: poll getUserVaultEquities until vault equity settles
+# (HL credits just-submitted deposits with a few-min lag) before stamping the
+# portfolio_series point, so the chart never freezes a pre-deposit equity.
+REBALANCE_STAMP_POLL_MS=45000
+REBALANCE_STAMP_MAX_WAIT_MS=300000
 ```
 
 ## Deployment
