@@ -208,9 +208,9 @@ export class RiskMonitor {
             trailingStopExits,
             skipped: null,
         };
-        if (hardStopExits || trailingStopExits) {
-            logger.info("Risk monitor tick completed with exits", { ...result });
-        }
+        // Heartbeat on every tick — for a protective component, silence must
+        // mean "disabled", never "maybe dead".
+        logger.info("Risk monitor tick completed", { ...result });
         return result;
     }
 
