@@ -39,24 +39,28 @@ Feature engineering per vault
 - PnL series interpretation: if cumulative-like, compute deltas over the window.
 - 7-day trade stats: `trade_pnl_7d`, `winrate_7d`, `pnl_sd_7d`, `trades_7d`, `short_ratio_7d`.
 - 30-day trade stats: `trade_pnl_30d`, `winrate_30d`, `pnl_sd_30d`, `trades_30d`.
+- Drawdown: `month_max_dd` = largest peak-to-trough decline within the `month` PnL series,
+  as a fraction of TVL (positive number; larger = worse).
 - Open positions: `unrealized`, `gross_exposure`, `net_exposure`, `btc_exposure`, `majors_exposure`, `alts_exposure`.
 - Normalize by TVL with suffix `_rt`.
 
 Scoring formula
 
-Use robust z-scoring within this batch. Weights are tuned for a **48-hour deployment horizon**
-(capital is deployed for ~2 days before next rebalance), so recent momentum matters more than
-weekly trends.
+Use robust z-scoring within this batch. Weights are tuned for a **multi-day hold**
+(capital is typically deployed for ~1 week, often longer for vaults that stay recommended),
+so 30-day consistency and downside control matter as much as recent momentum. Vaults whose
+edge is one hot streak with high variance are the historical blowup profile — penalize them.
 
 ```
 base_score =
-  0.15*robust_z(week_rt) +
-  0.30*robust_z(pnl7_rt) +
-  0.25*robust_z(day_rt) +
+  0.10*robust_z(week_rt) +
+  0.20*robust_z(pnl7_rt) +
+  0.15*robust_z(day_rt) +
   0.10*robust_z(unreal_rt) +
-  0.10*robust_z(winrate_7d) +
-  0.10*robust_z(pnl30_rt)
-- 0.10*robust_z(pnl_sd_30d)
+  0.15*robust_z(winrate_30d) +
+  0.20*robust_z(pnl30_rt)
+- 0.15*robust_z(pnl_sd_30d)
+- 0.10*robust_z(month_max_dd)
 
 overlay =
   0.15*bearFlag*robust_z(-net_rt) +

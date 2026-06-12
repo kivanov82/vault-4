@@ -100,8 +100,12 @@ export type PositionEventAction =
     | "exit_soft_sl"
     | "exit_inactive"
     | "exit_not_recommended"
+    | "exit_risk_monitor"
+    | "exit_trailing_stop"
+    | "exit_retry"
     | "hold_soft_sl"
     | "hold_period"
+    | "hold_not_recommended"
     | "skip_recommended";
 
 export type PositionEventInput = {

@@ -35,6 +35,10 @@ src/
       RebalanceOrchestrator.ts       # Rebalancing orchestration
       RebalanceService.ts            # Deposit/withdraw execution
       DepositService.ts              # Deposit plan building (barbell strategy)
+      ExitPolicy.ts                  # Shared exit thresholds + pure decision helpers
+      RiskMonitor.ts                 # Intra-round (4h) hard-SL / trailing-stop checks
+      TrailingStopService.ts         # Peak-ROE tracking (position_peak) + giveback exits
+      WithdrawalVerifier.ts          # Withdrawal fill verification + zero-fill retries
     claude/
       ClaudeService.ts               # Claude API integration for two-stage vault ranking
       MarketDataService.ts           # Market overlay data fetching
@@ -65,11 +69,16 @@ For every current position that is still in the Claude recommendation set: if `c
 **Pass 2 — Withdrawal scan, evaluated per position in this exact order:**
 
 1. **Hard Stop-Loss** — `roePct <= -25` (`HARD_STOP_LOSS_PCT`) → full exit, unconditional.
-2. **Soft Stop-Loss** — `roePct <= -15` (`STOP_LOSS_PCT`) → full exit only if `(!isRecommended || !isAligned)`. `isAligned = vaultDirection === marketDirection || marketDirection === "neutral"`, where `vaultDirection` comes from `getVaultNetDirection` (long if net/gross > +0.2, short if < -0.2, else neutral). A recommended + aligned vault at -15% is **held**, but the iteration falls through to the inactive check below — it does not skip the rest of the loop.
-3. **Inactive Vault Exit** — 0 open positions + 0 trades in last 7 days → full exit. Applies to recommended vaults too.
-4. **Recommended skip** — still in recommendations after passing inactive check → leave alone.
-5. **Hold Period** — non-recommended within 5 days (`MIN_HOLD_DAYS`) of last deposit → skip.
-6. **Non-recommended past hold** — full exit.
+2. **Soft Stop-Loss** — `roePct <= -15` (`STOP_LOSS_PCT`) → full exit only if `(!isRecommended || !isAligned)`. `isAligned = vaultDirection === marketDirection || marketDirection === "neutral"`, where `vaultDirection` comes from `getVaultNetDirection` (long if net/gross > +0.2, short if < -0.2, else neutral). A recommended + aligned vault at -15% is **held**, but the iteration falls through to the trailing/inactive checks below — it does not skip the rest of the loop.
+3. **Trailing Stop** — every position's ROE ratchets a high-water in `position_peak` (shared with RiskMonitor). Once the peak reaches `TRAILING_STOP_ARM_ROE_PCT` (default +10), giving back more than `TRAILING_STOP_GIVEBACK_RATIO` (default 0.5) of the peak → full exit. Ignores hold period and recommendation status. Peaks are deleted on full exit (per-episode).
+4. **Inactive Vault Exit** — 0 open positions + 0 trades in last 7 days → full exit. Applies to recommended vaults too.
+5. **Recommended skip** — still in recommendations after passing inactive check → leave alone.
+6. **Hold Period** — non-recommended within 5 days (`MIN_HOLD_DAYS`) of last deposit → skip.
+7. **Non-recommended past hold** — hysteresis: a position with `roePct >= 0` is held for `NOT_RECOMMENDED_EXIT_ROUNDS` (default 2) consecutive non-recommended rounds (`hold_not_recommended` events count the streak; any recommended-round event resets it) before the full exit. Losing positions exit on the first non-recommended round. If the trace DB is unreachable the pre-hysteresis behavior applies (exit immediately).
+
+**Withdrawal fill verification (`WithdrawalVerifier.ts`):** after submitting withdrawals, per-vault equity is polled against the expected post-withdrawal level (0 for full exits, the trim target for trims). Withdrawals that didn't move equity by the deadline are re-submitted up to `WITHDRAWAL_VERIFY_MAX_RETRIES` (default 2) times, recording `exit_retry`/`trim` trace events. HL can fill a vault withdrawal for $0 when the vault has no free margin — previously this went undetected for a full round (the 2026-06 Otter Quant -$213 loss).
+
+**RiskMonitor (`RiskMonitor.ts`):** between rounds, every `RISK_MONITOR_INTERVAL_MS` (default 4h, first tick 10 min after boot) re-checks all open positions and fires protective exits only: hard stop-loss (`exit_risk_monitor`) and trailing stop (`exit_trailing_stop`), with the same fill verification. Soft-SL and rotation need Claude context and stay in the round scan. Skips a tick if a rebalance round is running. Disabled via `RISK_MONITOR_ENABLED=false` (or `REBALANCE_ENABLED=false`).
 
 **Important caveat about "recommended".** Claude is only told which vaults we already hold (`already_exposed`); it is *not* told our per-position ROE. The `vault-ranking.md` prompt instructs Claude to *prefer keeping* exposed vaults that still rank well. So a vault we are underwater on can absolutely still appear in the recommended set — there is no automatic rule that drops losing positions from recommendations. The soft-SL "recommended + aligned ⇒ hold" branch is therefore reachable.
 
@@ -128,8 +137,12 @@ npx ts-node scripts/backfill-ledger.ts
 # plus our-own realized PnL + open basis per timestamp
 npx ts-node scripts/backfill-series.ts
 
-# Decision-logic backtest harness (stub; not yet implemented)
-npx ts-node scripts/backtest.ts
+# Decision-logic backtest: replay exit policy with alternative thresholds
+# against /api/trace history (HTTP, no DB creds). Same ExitPolicy.ts functions
+# as production. --nr-rounds 1 --trailing-arm 9999 reproduces the pre-2026-06
+# policy exactly (validated: Δ $0.00 vs actual realized).
+npx ts-node scripts/backtest.ts --base-url https://vault-4-s6qnbk6izq-ew.a.run.app \
+  --hard-sl -25 --soft-sl -15 --nr-rounds 2 --trailing-arm 10 --trailing-giveback 0.5
 ```
 
 ## X (Twitter) posting
@@ -192,6 +205,21 @@ DEPOSIT_ACTIVE_COUNT=11
 DEPOSIT_HIGH_PCT=80
 DEPOSIT_LOW_PCT=20
 REBALANCE_WITHDRAWAL_DELAY_MS=60000
+# Exit policy (ExitPolicy.ts defaults)
+STOP_LOSS_PCT=-15
+HARD_STOP_LOSS_PCT=-25
+MIN_HOLD_DAYS=5
+NOT_RECOMMENDED_EXIT_ROUNDS=2
+TRAILING_STOP_ENABLED=true
+TRAILING_STOP_ARM_ROE_PCT=10
+TRAILING_STOP_GIVEBACK_RATIO=0.5
+# Intra-round risk monitor
+RISK_MONITOR_ENABLED=true
+RISK_MONITOR_INTERVAL_MS=14400000
+RISK_MONITOR_INITIAL_DELAY_MS=600000
+RISK_MONITOR_SETTLE_WAIT_MS=60000
+# Withdrawal fill verification
+WITHDRAWAL_VERIFY_MAX_RETRIES=2
 # Round-end chart stamp: poll getUserVaultEquities until vault equity settles
 # (HL credits just-submitted deposits with a few-min lag) before stamping the
 # portfolio_series point, so the chart never freezes a pre-deposit equity.

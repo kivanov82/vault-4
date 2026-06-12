@@ -7,10 +7,18 @@ import { logger } from "../utils/logger";
 import { TraceService } from "../../db/TraceService";
 import type { PositionEventAction } from "../../db/types";
 import type { UserPosition } from "../vaults/types";
+import { defaultExitConfig } from "./ExitPolicy";
+import {
+    verifyAndSettleWithdrawals,
+    type WithdrawalVerifyEntry,
+} from "./WithdrawalVerifier";
+import { TrailingStopService } from "./TrailingStopService";
+import * as RebalanceLock from "./RebalanceLock";
 
-const STOP_LOSS_PCT = -15;
-const HARD_STOP_LOSS_PCT = -25;
-const MIN_HOLD_DAYS = 5;
+const exitConfig = defaultExitConfig();
+const STOP_LOSS_PCT = exitConfig.stopLossPct;
+const HARD_STOP_LOSS_PCT = exitConfig.hardStopLossPct;
+const MIN_HOLD_DAYS = exitConfig.minHoldDays;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 export type RebalanceRoundOptions = {
@@ -48,6 +56,28 @@ export class RebalanceOrchestrator {
     }
 
     static async runRound(
+        options: RebalanceRoundOptions = {}
+    ): Promise<RebalanceRoundResult> {
+        // Mutual exclusion with RiskMonitor. Monitor ticks finish in well
+        // under 2 minutes, so the wait is a formality; on timeout (a stuck
+        // monitor) the round proceeds anyway — blocking all rebalancing
+        // behind a wedged monitor would be the worse failure.
+        const acquired = await RebalanceLock.acquireWithWait("round", 10 * 60 * 1000);
+        if (!acquired) {
+            logger.error(
+                "Rebalance lock not released by RiskMonitor within 10 min — proceeding anyway"
+            );
+            RebalanceLock.release("monitor");
+            RebalanceLock.tryAcquire("round");
+        }
+        try {
+            return await this.runRoundInner(options);
+        } finally {
+            RebalanceLock.release("round");
+        }
+    }
+
+    private static async runRoundInner(
         options: RebalanceRoundOptions = {}
     ): Promise<RebalanceRoundResult> {
         const startedAt = new Date().toISOString();
@@ -434,7 +464,48 @@ export class RebalanceOrchestrator {
                 });
             }
 
-            // 3. INACTIVE VAULT EXIT: Withdraw from vaults with 0 positions + 0 trades in 7d
+            // 3. TRAILING STOP: ratchet the ROE high-water; exit on giveback
+            // past the arm threshold. Runs for every position that reaches
+            // this point so peaks stay fresh round-over-round. Ignores the
+            // hold period and recommendation status — it is a protective
+            // exit (like the stop-losses) whose trigger level always sits
+            // in profit.
+            const trailing = await TrailingStopService.observeAndCheck(position);
+            if (trailing?.shouldExit) {
+                logger.info("Trailing stop triggered", {
+                    vaultAddress: position.vaultAddress,
+                    vaultName: position.vaultName,
+                    roePct,
+                    peakRoePct: trailing.peakRoePct,
+                    exitLevelRoePct: trailing.exitLevelRoePct,
+                    pnlUsd,
+                    reason: "trailing-stop",
+                });
+                const result = await RebalanceService.withdrawAllFromVault({
+                    vaultAddress: position.vaultAddress as `0x${string}`,
+                    dryRun,
+                    includeLocked,
+                    sweepDust: true,
+                    reason: "trailing-stop",
+                });
+                const snapshotId = await snapshotForPosition(position, null);
+                const withdrawn = (result.action.usdMicros ?? 0) / 1e6;
+                const submitted =
+                    result.action.status === "submitted" ||
+                    result.action.status === "prepared";
+                await recordEvent(position, "exit_trailing_stop", snapshotId, {
+                    amountUsd: submitted ? -withdrawn : 0,
+                    targetEquityUsd: 0,
+                    confidence: null,
+                    reasonText: `trailing-stop roe=${roePct} peak=${trailing.peakRoePct} exitLevel=${trailing.exitLevelRoePct?.toFixed(2)}`,
+                    txMeta: result.action,
+                    succeeded: submitted,
+                });
+                withdrawals.push(result.action);
+                continue;
+            }
+
+            // 4. INACTIVE VAULT EXIT: Withdraw from vaults with 0 positions + 0 trades in 7d
             const isInactive = await checkVaultInactive(position.vaultAddress);
 
             if (isInactive) {
@@ -469,7 +540,7 @@ export class RebalanceOrchestrator {
                 continue;
             }
 
-            // 4. Skip if still in recommendations (over-allocations already trimmed above)
+            // 5. Skip if still in recommendations (over-allocations already trimmed above)
             if (recommendedSet.has(address)) {
                 const snapshotId = await snapshotForPosition(position, null);
                 await recordEvent(position, "skip_recommended", snapshotId, {
@@ -481,7 +552,7 @@ export class RebalanceOrchestrator {
                 continue;
             }
 
-            // 5. HOLD PERIOD: Don't rotate out of recently entered vaults (unless stop-loss, handled above)
+            // 6. HOLD PERIOD: Don't rotate out of recently entered vaults (unless stop-loss, handled above)
             const lastDeposit = depositTimeMap.get(address);
             if (lastDeposit && (now - lastDeposit) < minHoldMs) {
                 const holdDaysRemaining = ((minHoldMs - (now - lastDeposit)) / MS_PER_DAY).toFixed(1);
@@ -505,7 +576,43 @@ export class RebalanceOrchestrator {
                 continue;
             }
 
-            // 6. EXIT NON-RECOMMENDED: Vault is not recommended and hold period is met — exit
+            // 7. EXIT NON-RECOMMENDED: vault is not recommended and the hold
+            // period is met. Hysteresis: a profitable position gets
+            // NOT_RECOMMENDED_EXIT_ROUNDS consecutive non-recommended rounds
+            // before rotating out — Claude's ranking has round-to-round
+            // variance, and 118 of 153 closed episodes were re-entries into
+            // vaults we had just exited (each oscillation pays the leader's
+            // profit share and resets the HL lockup + hold clock). Losing
+            // positions still exit on the first non-recommended round.
+            const exitAfterRounds = Math.max(1, exitConfig.notRecommendedRounds);
+            if (exitAfterRounds > 1 && roePct >= 0) {
+                const priorHolds = await TraceService.countHoldNotRecommendedStreak(
+                    position.vaultAddress
+                );
+                // priorHolds === null ⇒ DB unavailable — fall back to the
+                // pre-hysteresis behavior (exit now) so positions can't
+                // become unkillable when the trace layer is down.
+                const streak = priorHolds == null ? exitAfterRounds : priorHolds + 1;
+                if (streak < exitAfterRounds) {
+                    logger.info("Holding non-recommended vault (hysteresis)", {
+                        vaultAddress: position.vaultAddress,
+                        vaultName: position.vaultName,
+                        roePct,
+                        streak,
+                        exitAfterRounds,
+                        reason: "hold-not-recommended",
+                    });
+                    const snapshotId = await snapshotForPosition(position, null);
+                    await recordEvent(position, "hold_not_recommended", snapshotId, {
+                        amountUsd: 0,
+                        targetEquityUsd: position.amountUsd ?? null,
+                        confidence: null,
+                        reasonText: `hold-not-recommended streak=${streak}/${exitAfterRounds} roe=${roePct}`,
+                    });
+                    continue;
+                }
+            }
+
             logger.info("Exiting non-recommended vault", {
                 vaultAddress: position.vaultAddress,
                 vaultName: position.vaultName,
@@ -536,16 +643,67 @@ export class RebalanceOrchestrator {
             withdrawals.push(result.action);
         }
 
+        // Episode over for every submitted full exit — drop its trailing peak.
+        for (const action of withdrawals) {
+            if (action.status === "submitted") {
+                await TrailingStopService.clearPeak(action.vaultAddress);
+            }
+        }
+
         const hasSubmittedWithdrawals =
             withdrawals.some((action) => action.status === "submitted") ||
             tpWithdrawals.some((action) => action.status === "submitted");
 
+        let unsettledWithdrawals = 0;
         if (hasSubmittedWithdrawals) {
-            const withdrawnVaults = [...withdrawals, ...tpWithdrawals]
-                .filter((a) => a.status === "submitted")
-                .map((a) => a.vaultAddress.toLowerCase());
+            const settleEntries: WithdrawalVerifyEntry[] = [
+                ...withdrawals
+                    .filter((a) => a.status === "submitted")
+                    .map((a) => ({
+                        vaultAddress: a.vaultAddress.toLowerCase(),
+                        targetEquityUsd: 0,
+                        kind: "full" as const,
+                        reason: a.reason ?? "exit",
+                        includeLocked,
+                    })),
+                ...tpWithdrawals
+                    .filter((a) => a.status === "submitted")
+                    .map((a) => ({
+                        vaultAddress: a.vaultAddress.toLowerCase(),
+                        targetEquityUsd:
+                            targetAllocations.get(a.vaultAddress.toLowerCase())
+                                ?.targetUsd ?? 0,
+                        kind: "trim" as const,
+                        reason: "trim-to-target",
+                    })),
+            ];
 
-            await waitForWithdrawalsToSettle(withdrawnVaults, withdrawalDelayMs);
+            const outcomes = await verifyAndSettleWithdrawals(settleEntries, {
+                maxWaitMs: withdrawalDelayMs,
+                dryRun,
+                onRetry: async (notice) => {
+                    const submitted =
+                        notice.action.status === "submitted" ||
+                        notice.action.status === "prepared";
+                    const withdrawn = (notice.action.usdMicros ?? 0) / 1e6;
+                    await TraceService.recordPositionEvent({
+                        roundId,
+                        vaultAddress: notice.entry.vaultAddress,
+                        vaultSnapshotId: null,
+                        action: notice.entry.kind === "full" ? "exit_retry" : "trim",
+                        amountUsd: submitted ? -withdrawn : 0,
+                        preEquityUsd: notice.preEquityUsd,
+                        targetEquityUsd: notice.entry.targetEquityUsd,
+                        confidence: null,
+                        reasonText: `verify-retry attempt=${notice.attempt} original=${notice.entry.reason}`,
+                        txMeta: notice.action,
+                        succeeded: submitted,
+                        hlPnlUsd: null,
+                        platformTvlUsd,
+                    });
+                },
+            });
+            unsettledWithdrawals = outcomes.filter((o) => !o.settled).length;
 
             // Invalidate position caches so deposit plan sees fresh state
             VaultService.clearUserCaches();
@@ -625,6 +783,7 @@ export class RebalanceOrchestrator {
             marketDirection,
             recommended: recommendedSet.size,
             positionsAfter: positions.totalPositions,
+            unsettledWithdrawals,
         };
         logger.info("Rebalance round completed", {
             startedAt,
@@ -769,66 +928,6 @@ async function buildLastDepositTimeMap(): Promise<Map<string, number>> {
     } catch (error: any) {
         logger.warn("Failed to build deposit time map", { error: error?.message });
         return new Map();
-    }
-}
-
-const WITHDRAWAL_POLL_INTERVAL_MS = 10_000;
-const WITHDRAWAL_DUST_USD = 1;
-
-async function waitForWithdrawalsToSettle(
-    vaultAddresses: string[],
-    maxWaitMs: number
-): Promise<void> {
-    if (!vaultAddresses.length) return;
-    const wallet = process.env.WALLET as `0x${string}` | undefined;
-    if (!wallet) {
-        logger.warn("No WALLET set, falling back to blind sleep for withdrawal settle");
-        await sleep(maxWaitMs);
-        return;
-    }
-
-    const pending = new Set(vaultAddresses.map((a) => a.toLowerCase()));
-    const deadline = Date.now() + maxWaitMs;
-
-    logger.info("Polling for withdrawal settlement", {
-        vaults: vaultAddresses.length,
-        maxWaitMs,
-    });
-
-    while (pending.size > 0 && Date.now() < deadline) {
-        await sleep(WITHDRAWAL_POLL_INTERVAL_MS);
-        try {
-            const equities = await HyperliquidConnector.getUserVaultEquities(wallet);
-            const equityMap = new Map(
-                equities.map((e) => [e.vaultAddress.toLowerCase(), e.equity])
-            );
-
-            for (const vault of [...pending]) {
-                const equity = equityMap.get(vault) ?? 0;
-                if (equity < WITHDRAWAL_DUST_USD) {
-                    pending.delete(vault);
-                    logger.info("Withdrawal settled", { vault, remainingEquity: equity });
-                }
-            }
-
-            if (pending.size > 0) {
-                logger.info("Waiting for withdrawals to settle", {
-                    remaining: pending.size,
-                    vaults: [...pending],
-                    timeLeftMs: deadline - Date.now(),
-                });
-            }
-        } catch (error: any) {
-            logger.warn("Error polling withdrawal status", { error: error?.message });
-        }
-    }
-
-    if (pending.size > 0) {
-        logger.warn("Withdrawal settlement timed out, proceeding with deposits", {
-            unsettled: [...pending],
-        });
-    } else {
-        logger.info("All withdrawals settled");
     }
 }
 

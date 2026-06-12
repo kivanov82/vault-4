@@ -1,4 +1,5 @@
 import { RebalanceScheduler } from "./rebalance/RebalanceScheduler";
+import { RiskMonitor } from "./rebalance/RiskMonitor";
 import { SettlementScheduler } from "./settlement/SettlementScheduler";
 import { PlatformSnapshotService } from "./vaults/PlatformSnapshotService";
 import { XPostScheduler } from "./social/XPostScheduler";
@@ -89,6 +90,7 @@ export class Vault4 {
             });
         });
         await RebalanceScheduler.start();
+        await RiskMonitor.start();
         await SettlementScheduler.start();
         await XPostScheduler.start();
     }

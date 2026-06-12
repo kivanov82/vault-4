@@ -264,6 +264,44 @@ export class TraceService {
     }
 
     /**
+     * Count consecutive hold_not_recommended events for the exit-hysteresis
+     * streak. Only events newer than the vault's latest "was recommended"
+     * marker (skip_recommended / deposit / topup / trim / hold_soft_sl) count,
+     * so a vault that bounced back into the recommendation set restarts its
+     * streak. No time window is needed: every episode begins with a deposit
+     * (a marker), so holds from a previous episode can never leak in, and a
+     * window bound would silently extend the streak when a round slips past
+     * its 48h schedule. Returns null when the DB is unavailable — the
+     * orchestrator then falls back to pre-hysteresis behavior (exit
+     * immediately).
+     */
+    static async countHoldNotRecommendedStreak(
+        vaultAddress: string
+    ): Promise<number | null> {
+        const result = await withDb<number>(
+            "countHoldNotRecommendedStreak",
+            async (client) => {
+                const r = await client.query<{ count: string }>(
+                    `SELECT COUNT(*)::text AS count
+                     FROM position_event
+                     WHERE LOWER(vault_address) = LOWER($1)
+                       AND action = 'hold_not_recommended'
+                       AND occurred_at > COALESCE((
+                           SELECT MAX(occurred_at)
+                           FROM position_event
+                           WHERE LOWER(vault_address) = LOWER($1)
+                             AND action IN ('skip_recommended', 'deposit', 'topup', 'trim', 'hold_soft_sl')
+                       ), 'epoch'::timestamptz)`,
+                    [vaultAddress]
+                );
+                return Number(r.rows[0]?.count ?? 0);
+            },
+            null as any
+        );
+        return result ?? null;
+    }
+
+    /**
      * Upsert portfolio_series rows for the current moment. Stores HL's
      * `accountValueHistory` for HL portfolio context, plus our own
      * `vault_equity_usd` = sum of `getUserVaultEquities` (vault-only, no perps
