@@ -3,6 +3,12 @@ import axios from "axios";
 import dotenv from "dotenv";
 import { privateKeyToAccount } from "viem/accounts";
 import { logger } from "../utils/logger";
+import {
+    hlLimiter,
+    weightForUrl,
+    retryAfterMs,
+    HL_PRIORITY,
+} from "./RateLimiter";
 import type {
     TimeSeries,
     UserPortfolioSummary,
@@ -90,7 +96,10 @@ export class HyperliquidConnector {
 
     static async fetchVaultsRaw(): Promise<VaultRaw[]> {
         try {
-            const response = await axios.get(VAULTS_URL, { timeout: 15000 });
+            const response = await hlLimiter.schedule(
+                () => axios.get(VAULTS_URL, { timeout: 15000 }),
+                { priority: HL_PRIORITY.READ }
+            );
             if (!Array.isArray(response.data)) {
                 logger.warn("Unexpected vaults payload from Hyperliquid", {
                     type: typeof response.data,
@@ -256,22 +265,17 @@ export class HyperliquidConnector {
         return buildUserVaultPerformance(details, userAddress);
     }
 
+    /**
+     * Lenient read/UI variant: returns [] on any fetch error. Do NOT use this on
+     * the withdrawal execution path — an empty list there is indistinguishable
+     * from "this vault genuinely has no equity", which silently skips exits
+     * (incl. stop-losses). Use {@link getUserVaultEquitiesOrThrow} for that.
+     */
     static async getUserVaultEquities(
         userAddress: `0x${string}`
     ): Promise<UserVaultEquity[]> {
         try {
-            const client = this.getPublicClient();
-            const equities = await client.userVaultEquities({ user: userAddress });
-            if (!Array.isArray(equities)) return [];
-            return equities.map((entry) => ({
-                vaultAddress: entry.vaultAddress,
-                equity: Number.isFinite(Number(entry.equity))
-                    ? Number(entry.equity)
-                    : 0,
-                lockedUntilTimestamp: Number.isFinite(Number(entry.lockedUntilTimestamp))
-                    ? Number(entry.lockedUntilTimestamp)
-                    : 0,
-            }));
+            return await this.fetchUserVaultEquities(userAddress);
         } catch (error: any) {
             logger.warn("Failed to fetch user vault equities", {
                 userAddress,
@@ -279,6 +283,54 @@ export class HyperliquidConnector {
             });
             return [];
         }
+    }
+
+    /**
+     * Strict variant for the execution path: retries, then THROWS if the fetch
+     * never succeeds — so a transient failure (e.g. a 429 burst) is never
+     * mistaken for "no equity" and is surfaced as a real error instead of a
+     * silent "not-deposited" skip.
+     */
+    static async getUserVaultEquitiesOrThrow(
+        userAddress: `0x${string}`,
+        attempts = 3
+    ): Promise<UserVaultEquity[]> {
+        let lastError: any;
+        for (let attempt = 0; attempt < attempts; attempt += 1) {
+            try {
+                return await this.fetchUserVaultEquities(userAddress);
+            } catch (error: any) {
+                lastError = error;
+                logger.warn("Failed to fetch user vault equities, retrying", {
+                    userAddress,
+                    message: error?.message,
+                    attempt: attempt + 1,
+                });
+                if (attempt < attempts - 1) await sleep(1000 * (attempt + 1));
+            }
+        }
+        throw new Error(
+            `getUserVaultEquities failed after ${attempts} attempts: ${lastError?.message ?? "unknown error"}`
+        );
+    }
+
+    private static async fetchUserVaultEquities(
+        userAddress: `0x${string}`
+    ): Promise<UserVaultEquity[]> {
+        const client = this.getPublicClient();
+        const equities = await client.userVaultEquities({ user: userAddress });
+        if (!Array.isArray(equities)) {
+            throw new Error("userVaultEquities returned a non-array response");
+        }
+        return equities.map((entry) => ({
+            vaultAddress: entry.vaultAddress,
+            equity: Number.isFinite(Number(entry.equity))
+                ? Number(entry.equity)
+                : 0,
+            lockedUntilTimestamp: Number.isFinite(Number(entry.lockedUntilTimestamp))
+                ? Number(entry.lockedUntilTimestamp)
+                : 0,
+        }));
     }
 
     static async getUserVaultLedgerUpdates(
@@ -480,10 +532,14 @@ export class HyperliquidConnector {
         vaultAddress: string
     ): Promise<{ assetPositions: any[]; marginUtilPct: number | null }> {
         try {
-            const response = await axios.post(HYPERLIQUID_INFO_URL, {
-                type: "webData2",
-                user: vaultAddress,
-            });
+            const response = await hlLimiter.schedule(
+                () =>
+                    axios.post(HYPERLIQUID_INFO_URL, {
+                        type: "webData2",
+                        user: vaultAddress,
+                    }),
+                { priority: HL_PRIORITY.READ }
+            );
             const data = response?.data;
             const clearinghouse = data?.clearinghouseState;
             const assetPositions = Array.isArray(clearinghouse?.assetPositions)
@@ -498,6 +554,11 @@ export class HyperliquidConnector {
                     : null;
             return { assetPositions, marginUtilPct };
         } catch (error: any) {
+            if (error?.response?.status === 429) {
+                hlLimiter.penalize(
+                    retryAfterMs(error.response.headers?.["retry-after"])
+                );
+            }
             logger.warn("Failed to fetch vault account summary", {
                 vaultAddress,
                 message: error?.message,
@@ -510,10 +571,14 @@ export class HyperliquidConnector {
         userAddress: `0x${string}`
     ): Promise<number | null> {
         try {
-            const response = await axios.post(HYPERLIQUID_INFO_URL, {
-                type: "webData2",
-                user: userAddress,
-            });
+            const response = await hlLimiter.schedule(
+                () =>
+                    axios.post(HYPERLIQUID_INFO_URL, {
+                        type: "webData2",
+                        user: userAddress,
+                    }),
+                { priority: HL_PRIORITY.READ }
+            );
             const data = response?.data;
             const clearinghouse = data?.clearinghouseState;
             if (!clearinghouse) {
@@ -531,6 +596,11 @@ export class HyperliquidConnector {
             const accountValue = toNumberSafe(clearinghouse.marginSummary?.accountValue);
             return accountValue;
         } catch (error: any) {
+            if (error?.response?.status === 429) {
+                hlLimiter.penalize(
+                    retryAfterMs(error.response.headers?.["retry-after"])
+                );
+            }
             logger.warn("Failed to fetch user perps balance", {
                 userAddress,
                 message: error?.message,
@@ -539,49 +609,57 @@ export class HyperliquidConnector {
         }
     }
 
+    /**
+     * Builds an HL HTTP transport whose every request is gated through the
+     * global {@link hlLimiter} (via the SDK's onRequest hook) and whose 429s
+     * back off the whole fleet (via onResponse). `priority` lets exchange
+     * actions (withdrawals/deposits) jump ahead of background info polling.
+     */
+    private static makeTransport(priority: number): hl.HttpTransport {
+        return new hl.HttpTransport({
+            timeout: null,
+            server: {
+                mainnet: {
+                    rpc: HYPERLIQUID_RPC,
+                },
+            },
+            onRequest: async (request) => {
+                await hlLimiter.acquire(weightForUrl(request.url), priority);
+            },
+            onResponse: (response) => {
+                if (response.status === 429) {
+                    hlLimiter.penalize(
+                        retryAfterMs(response.headers.get("retry-after"))
+                    );
+                }
+            },
+        });
+    }
+
     static getPublicClient(): hl.InfoClient {
         if (!this.publicClient) {
-            const transport = new hl.HttpTransport({
-                timeout: null,
-                server: {
-                    mainnet: {
-                        rpc: HYPERLIQUID_RPC,
-                    },
-                },
+            this.publicClient = new hl.InfoClient({
+                transport: this.makeTransport(HL_PRIORITY.READ),
             });
-            this.publicClient = new hl.InfoClient({ transport });
         }
         return this.publicClient;
     }
 
     static getExchangeClient(defaultVaultAddress?: `0x${string}`): hl.ExchangeClient {
         if (defaultVaultAddress) {
-            const transport = new hl.HttpTransport({
-                timeout: null,
-                server: {
-                    mainnet: {
-                        rpc: HYPERLIQUID_RPC,
-                    },
-                },
-            });
             const account = this.getExchangeAccount();
             return new hl.ExchangeClient({
                 wallet: account,
-                transport,
+                transport: this.makeTransport(HL_PRIORITY.EXECUTION),
                 defaultVaultAddress,
             });
         }
         if (!this.exchangeClient) {
-            const transport = new hl.HttpTransport({
-                timeout: null,
-                server: {
-                    mainnet: {
-                        rpc: HYPERLIQUID_RPC,
-                    },
-                },
-            });
             const account = this.getExchangeAccount();
-            this.exchangeClient = new hl.ExchangeClient({ wallet: account, transport });
+            this.exchangeClient = new hl.ExchangeClient({
+                wallet: account,
+                transport: this.makeTransport(HL_PRIORITY.EXECUTION),
+            });
         }
         return this.exchangeClient;
     }

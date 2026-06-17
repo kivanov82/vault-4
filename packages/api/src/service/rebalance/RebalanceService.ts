@@ -1,4 +1,7 @@
-import { HyperliquidConnector } from "../trade/HyperliquidConnector";
+import {
+    HyperliquidConnector,
+    type UserVaultEquity,
+} from "../trade/HyperliquidConnector";
 import { logger } from "../utils/logger";
 import { toUsdMicros, toUsdMicrosFromDeposit } from "./usdMicros";
 
@@ -71,9 +74,32 @@ export class RebalanceService {
         const usdBufferBps =
             options.usdBufferBps ?? DEFAULT_USD_BUFFER_BPS;
         const sweepDust = options.sweepDust ?? false;
-        const equities = await HyperliquidConnector.getUserVaultEquities(
-            userAddress
-        );
+        let equities: UserVaultEquity[];
+        try {
+            equities = await HyperliquidConnector.getUserVaultEquitiesOrThrow(
+                userAddress
+            );
+        } catch (error: any) {
+            // A failed equity fetch must NOT be read as "no position" — that
+            // would silently skip the exit (e.g. a stop-loss). Surface it as an
+            // error so the round records it and the next round retries.
+            logger.warn("Aborting full exit: vault equity fetch failed", {
+                vaultAddress: options.vaultAddress,
+                reason: options.reason,
+                message: error?.message,
+            });
+            return {
+                userAddress,
+                dryRun,
+                action: {
+                    vaultAddress: options.vaultAddress,
+                    usdMicros: 0,
+                    status: "error",
+                    reason: "equity-fetch-failed",
+                    error: error?.message,
+                },
+            };
+        }
         const equity = equities.find(
             (entry) =>
                 entry.vaultAddress.toLowerCase() ===
@@ -114,9 +140,30 @@ export class RebalanceService {
         const usdBufferBps =
             options.usdBufferBps ?? DEFAULT_USD_BUFFER_BPS;
 
-        const equities = await HyperliquidConnector.getUserVaultEquities(
-            userAddress
-        );
+        let equities: UserVaultEquity[];
+        try {
+            equities = await HyperliquidConnector.getUserVaultEquitiesOrThrow(
+                userAddress
+            );
+        } catch (error: any) {
+            // See withdrawAllFromVault: never treat a failed fetch as "no
+            // position" — surface it so the trim is retried, not silently dropped.
+            logger.warn("Aborting trim: vault equity fetch failed", {
+                vaultAddress: options.vaultAddress,
+                message: error?.message,
+            });
+            return {
+                userAddress,
+                dryRun,
+                action: {
+                    vaultAddress: options.vaultAddress,
+                    usdMicros: 0,
+                    status: "error",
+                    reason: "equity-fetch-failed",
+                    error: error?.message,
+                },
+            };
+        }
         const equity = equities.find(
             (entry) =>
                 entry.vaultAddress.toLowerCase() ===

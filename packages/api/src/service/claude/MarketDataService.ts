@@ -1,4 +1,9 @@
 import axios from "axios";
+import {
+    hlLimiter,
+    retryAfterMs,
+    HL_PRIORITY,
+} from "../trade/RateLimiter";
 
 export type MarketOverlay = {
     btc_7d_change: number | null;
@@ -156,9 +161,13 @@ type HyperliquidData = {
 
 async function fetchHyperliquidData(): Promise<HyperliquidData | null> {
     try {
-        const response = await axios.post(HYPERLIQUID_INFO_URL, {
-            type: "metaAndAssetCtxs",
-        });
+        const response = await hlLimiter.schedule(
+            () =>
+                axios.post(HYPERLIQUID_INFO_URL, {
+                    type: "metaAndAssetCtxs",
+                }),
+            { priority: HL_PRIORITY.READ }
+        );
         const assetCtxs = Array.isArray(response?.data?.[1])
             ? response.data[1]
             : [];
@@ -200,7 +209,10 @@ async function fetchHyperliquidData(): Promise<HyperliquidData | null> {
             eth_oi: toNumber(eth?.openInterest),
             long_short_ratio: longShortRatio,
         };
-    } catch {
+    } catch (error: any) {
+        if (error?.response?.status === 429) {
+            hlLimiter.penalize(retryAfterMs(error.response.headers?.["retry-after"]));
+        }
         return null;
     }
 }

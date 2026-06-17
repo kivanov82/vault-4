@@ -225,6 +225,17 @@ WITHDRAWAL_VERIFY_MAX_RETRIES=2
 # portfolio_series point, so the chart never freezes a pre-deposit equity.
 REBALANCE_STAMP_POLL_MS=45000
 REBALANCE_STAMP_MAX_WAIT_MS=300000
+# Global HL REST rate limiter (RateLimiter.ts). HL enforces 1200 request-weight
+# per minute per IP, aggregated across info+exchange. A single process-wide
+# weighted token bucket gates EVERY HL call (SDK transports via their onRequest
+# hook + the raw axios /info posts), so fan-out sites (snapshot refresh,
+# candidate discovery, settlement, X-post) can no longer collectively overshoot
+# and trigger 429s. A 429 from any path drains the bucket and pauses the whole
+# fleet for the cooldown (honoring Retry-After). Execution traffic (withdrawals,
+# deposits) runs at a higher priority lane than background polling.
+HL_RATE_WEIGHT_PER_MIN=960
+HL_RATE_BURST=120
+HL_RATE_PENALTY_MS=10000
 ```
 
 ## Deployment
