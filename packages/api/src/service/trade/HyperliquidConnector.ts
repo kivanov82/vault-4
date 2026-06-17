@@ -27,9 +27,23 @@ const HYPERLIQUID_RPC =
     process.env.HYPERLIQUID_RPC ?? "https://rpc.hyperliquid.xyz/evm";
 const HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info";
 const EXCHANGE_PKEY = process.env.WALLET_PK as `0x${string}` | undefined;
-const VAULT_DETAILS_TTL_MS = 120000;
+const ttlEnv = (name: string, fallback: number): number => {
+    const raw = process.env[name];
+    if (raw === undefined) return fallback;
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= 0 ? n : fallback;
+};
+// Per-vault detail/summary caches must outlive the 5-min platform snapshot
+// refresh so consecutive refreshes (and the candidate-discovery loop) reuse
+// cached vault data instead of re-fetching every vault every cycle — otherwise
+// the rate-limited fleet spends most of its weight budget re-reading
+// slow-moving data. Defaults are 10 min (> the 5-min snapshot interval).
+const VAULT_DETAILS_TTL_MS = ttlEnv("VAULT_DETAILS_TTL_MS", 600000);
+const VAULT_ACCOUNT_SUMMARY_TTL_MS = ttlEnv("VAULT_ACCOUNT_SUMMARY_TTL_MS", 600000);
 const USER_LEDGER_TTL_MS = 120000;
 const USER_LEDGER_LOOKBACK_DAYS = 365;
+
+type VaultAccountSummary = { assetPositions: any[]; marginUtilPct: number | null };
 
 export type VaultRaw = {
     summary: {
@@ -84,6 +98,10 @@ export class HyperliquidConnector {
     private static vaultDetailsCache: Map<
         string,
         { fetchedAt: number; details: VaultDetails }
+    > = new Map();
+    private static vaultAccountSummaryCache: Map<
+        string,
+        { fetchedAt: number; summary: VaultAccountSummary }
     > = new Map();
     private static ledgerCache: Map<
         string,
@@ -530,7 +548,16 @@ export class HyperliquidConnector {
 
     static async getVaultAccountSummary(
         vaultAddress: string
-    ): Promise<{ assetPositions: any[]; marginUtilPct: number | null }> {
+    ): Promise<VaultAccountSummary> {
+        const cacheKey = vaultAddress.toLowerCase();
+        const cached = this.vaultAccountSummaryCache.get(cacheKey);
+        if (
+            cached &&
+            Number.isFinite(cached.fetchedAt) &&
+            Date.now() - cached.fetchedAt < VAULT_ACCOUNT_SUMMARY_TTL_MS
+        ) {
+            return cached.summary;
+        }
         try {
             const response = await hlLimiter.schedule(
                 () =>
@@ -552,7 +579,12 @@ export class HyperliquidConnector {
                 Number.isFinite(accountValue) && accountValue > 0 && Number.isFinite(totalMarginUsed)
                     ? (totalMarginUsed / accountValue) * 100
                     : null;
-            return { assetPositions, marginUtilPct };
+            const summary: VaultAccountSummary = { assetPositions, marginUtilPct };
+            this.vaultAccountSummaryCache.set(cacheKey, {
+                fetchedAt: Date.now(),
+                summary,
+            });
+            return summary;
         } catch (error: any) {
             if (error?.response?.status === 429) {
                 hlLimiter.penalize(

@@ -236,6 +236,15 @@ REBALANCE_STAMP_MAX_WAIT_MS=300000
 HL_RATE_WEIGHT_PER_MIN=960
 HL_RATE_BURST=120
 HL_RATE_PENALTY_MS=10000
+# Per-vault read caches (HyperliquidConnector.ts). Must outlive the 5-min
+# platform snapshot refresh so consecutive refreshes + the candidate-discovery
+# loop reuse cached vault data instead of re-fetching every vault every cycle
+# (which dominated the rate budget once the limiter started pacing). Defaults
+# 10 min; slow-moving data (followers, allowDeposits, TVL/pnl history, vault
+# positions/margin) so minutes of staleness is fine on a 2-day rebalance cycle.
+# Does NOT touch our-equity/withdrawal reads (those use getUserVaultEquities).
+VAULT_DETAILS_TTL_MS=600000
+VAULT_ACCOUNT_SUMMARY_TTL_MS=600000
 ```
 
 ## Deployment
