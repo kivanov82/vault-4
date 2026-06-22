@@ -25,10 +25,21 @@ export type ClaudeRanking = {
     allocationMap?: Record<string, number>;
 };
 
+function envNumber(name: string, fallback: number): number {
+    const raw = process.env[name];
+    if (raw == null || raw === "") return fallback;
+    const num = Number(raw);
+    return Number.isFinite(num) ? num : fallback;
+}
+
 const MODEL = process.env.CLAUDE_MODEL ?? "claude-sonnet-4-6";
 const DEFAULT_TEMPERATURE = 0.2;
-const SCORING_MAX_TOKENS = 4096;
-const RANKING_MAX_TOKENS = 4096;
+// Output (completion) cap. 8192 gives the bounded ranking/scoring tool calls
+// room to reason per vault without truncation; sonnet-4-6 allows up to 64K, but
+// these non-streaming calls should stay under ~16K to avoid SDK HTTP timeouts.
+// Now honors the CLAUDE_*_MAX_TOKENS env vars documented in CLAUDE.md.
+const SCORING_MAX_TOKENS = envNumber("CLAUDE_SCORING_MAX_TOKENS", 8192);
+const RANKING_MAX_TOKENS = envNumber("CLAUDE_RANKING_MAX_TOKENS", 8192);
 const MAX_TRADES = 50;
 const MAX_POSITIONS = 30;
 const MAX_PNL_POINTS = 60;

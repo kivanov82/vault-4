@@ -150,6 +150,8 @@ export class RebalanceOrchestrator {
             rec.vaultAddress.toLowerCase()
         );
         const recommendedSet = new Set(recommended);
+        // Stash for the intra-round RiskMonitor's gated soft-SL (see RiskMonitor.ts).
+        setLastRecommendedSet(recommendedSet);
 
         logger.info("Recommendation set built", {
             source: plan.recommendations.source,
@@ -878,7 +880,30 @@ async function checkVaultInactive(vaultAddress: string): Promise<boolean> {
     }
 }
 
-async function getVaultNetDirection(vaultAddress: string): Promise<"long" | "short" | "neutral"> {
+/**
+ * Last Claude recommendation set, stashed each round so the intra-round
+ * RiskMonitor can tell whether a position is still recommended without
+ * re-running the (expensive) two-stage ranking. In-memory only: after a process
+ * restart it is empty until the next round runs, and the RiskMonitor's gated
+ * soft-SL treats an empty/stale set as "unknown" and declines to fire (fail-safe
+ * — we never force-exit on a guess about recommendation status).
+ */
+let lastRecommendedSet: Set<string> = new Set();
+let lastRecommendedAt: number | null = null;
+
+export function setLastRecommendedSet(addresses: Set<string>): void {
+    lastRecommendedSet = new Set(addresses);
+    lastRecommendedAt = Date.now();
+}
+
+export function getLastRecommendedSet(): {
+    set: Set<string>;
+    recordedAt: number | null;
+} {
+    return { set: lastRecommendedSet, recordedAt: lastRecommendedAt };
+}
+
+export async function getVaultNetDirection(vaultAddress: string): Promise<"long" | "short" | "neutral"> {
     try {
         const summary = await HyperliquidConnector.getVaultAccountSummary(vaultAddress);
         if (!summary || !Array.isArray(summary.assetPositions) || summary.assetPositions.length === 0) {

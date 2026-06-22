@@ -60,6 +60,45 @@ export function shouldSoftStop(
 }
 
 /**
+ * Gated soft stop-loss for the intra-round RiskMonitor (4h cadence).
+ *
+ * The round-boundary soft stop (`shouldSoftStop`) only runs every 48h, which let
+ * the 2026-06 Realist Capital position bleed from −15% to −22% (−$78 realized)
+ * between two snapshots — its first sub-threshold observation *was* its exit, so
+ * no threshold change in the backtest could recover it (see
+ * STRATEGY-FORENSICS-2026-06.md §6). The cure is observing more often, not a
+ * tighter number.
+ *
+ * But a *blanket* −15% check every 4h would whipsaw: the same backtest showed
+ * that tightening the round-scan soft stop to −10/−12% LOST ~$67–91 by selling
+ * positions that dipped into the soft band and recovered (Otter Quant, Overdose,
+ * HODL My Perps all mean-reverted). So this intra-round variant is deliberately
+ * far stricter than the round-scan version. It fires only when ALL hold:
+ *   (a) ROE is in the soft band (≤ stopLossPct),
+ *   (b) Claude has dropped the vault from the recommended set (!isRecommended),
+ *   (c) the vault is trading against the regime (!isAligned),
+ *   (d) ROE is still falling vs the previous tick (roePct < prevRoePct).
+ *
+ * (b)+(c) together (vs the round scan's `!rec || !aligned`) isolate the
+ * Realist-Capital profile — an abandoned, counter-regime, confirmed-losing
+ * position — while (d) spares a noisy oscillation that is bouncing back.
+ * `prevRoePct == null` (first tick after boot, or a freshly-opened position)
+ * never fires: we wait for a confirmed downward step.
+ */
+export function shouldIntraRoundSoftStop(
+    roePct: number,
+    prevRoePct: number | null,
+    isRecommended: boolean,
+    isAligned: boolean,
+    config: ExitConfig
+): boolean {
+    if (roePct > config.stopLossPct) return false; // not in the soft band
+    if (isRecommended || isAligned) return false; // require both abandoned AND misaligned
+    if (prevRoePct == null) return false; // need a prior observation to confirm a trend
+    return roePct < prevRoePct; // still deteriorating, not recovering
+}
+
+/**
  * ROE level at which the trailing stop fires, or null while unarmed.
  * The trigger level is peak × (1 − giveback), so with the defaults (arm 10,
  * giveback 0.5) it always sits in profit (≥ +5%). The realized exit ROE can

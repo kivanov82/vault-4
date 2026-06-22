@@ -78,7 +78,7 @@ For every current position that is still in the Claude recommendation set: if `c
 
 **Withdrawal fill verification (`WithdrawalVerifier.ts`):** after submitting withdrawals, per-vault equity is polled against the expected post-withdrawal level (0 for full exits, the trim target for trims). Withdrawals that didn't move equity by the deadline are re-submitted up to `WITHDRAWAL_VERIFY_MAX_RETRIES` (default 2) times, recording `exit_retry`/`trim` trace events. HL can fill a vault withdrawal for $0 when the vault has no free margin — previously this went undetected for a full round (the 2026-06 Otter Quant -$213 loss).
 
-**RiskMonitor (`RiskMonitor.ts`):** between rounds, every `RISK_MONITOR_INTERVAL_MS` (default 4h, first tick 10 min after boot) re-checks all open positions and fires protective exits only: hard stop-loss (`exit_risk_monitor`) and trailing stop (`exit_trailing_stop`), with the same fill verification. Soft-SL and rotation need Claude context and stay in the round scan. Skips a tick if a rebalance round is running. Disabled via `RISK_MONITOR_ENABLED=false` (or `REBALANCE_ENABLED=false`).
+**RiskMonitor (`RiskMonitor.ts`):** between rounds, every `RISK_MONITOR_INTERVAL_MS` (default 4h, first tick 10 min after boot) re-checks all open positions and fires protective exits only: hard stop-loss (`exit_risk_monitor`) and trailing stop (`exit_trailing_stop`), with the same fill verification. By default (kill switch `RISK_MONITOR_SOFT_SL_ENABLED=false`) it also fires a **gated soft stop-loss** (`exit_soft_sl`, `round_id=null`) for a position that is below `STOP_LOSS_PCT` **and** absent from the round's stashed recommendation set (`getLastRecommendedSet`) **and** mis-aligned with the market overlay direction **and** still falling vs the previous tick's ROE (tracked in-memory per held vault). This stricter AND-gate exists because the 2026-06 backtest showed a blanket intra-round soft stop whipsaws recoverable dips; the gate isolates the Realist-Capital profile (abandoned + counter-regime + confirmed-losing) that the 48h round scan lets bleed −15% → −22%. It declines to fire when the recommendation set is empty/stale (`RISK_MONITOR_RECOMMENDED_MAX_AGE_MS`) or the regime is neutral. Full rotation still needs the live Claude ranking and stays in the round scan. Skips a tick if a rebalance round is running. Disabled via `RISK_MONITOR_ENABLED=false` (or `REBALANCE_ENABLED=false`).
 
 **Important caveat about "recommended".** Claude is only told which vaults we already hold (`already_exposed`); it is *not* told our per-position ROE. The `vault-ranking.md` prompt instructs Claude to *prefer keeping* exposed vaults that still rank well. So a vault we are underwater on can absolutely still appear in the recommended set — there is no automatic rule that drops losing positions from recommendations. The soft-SL "recommended + aligned ⇒ hold" branch is therefore reachable.
 
@@ -179,8 +179,8 @@ Claude AI (single model used for every Claude call — Stage 1, Stage 2, article
 ```
 CLAUDE_MODEL=claude-sonnet-4-6
 CLAUDE_TEMPERATURE=0.2
-CLAUDE_SCORING_MAX_TOKENS=4096
-CLAUDE_RANKING_MAX_TOKENS=4096
+CLAUDE_SCORING_MAX_TOKENS=8192
+CLAUDE_RANKING_MAX_TOKENS=8192
 CLAUDE_BATCH_SIZE=5
 CLAUDE_FINAL_RANKING_LIMIT=12
 CLAUDE_API_DELAY_MS=60000
@@ -218,6 +218,16 @@ RISK_MONITOR_ENABLED=true
 RISK_MONITOR_INTERVAL_MS=14400000
 RISK_MONITOR_INITIAL_DELAY_MS=600000
 RISK_MONITOR_SETTLE_WAIT_MS=60000
+# Gated intra-round soft stop-loss (ON by default; kill switch
+# RISK_MONITOR_SOFT_SL_ENABLED=false). A RiskMonitor tick also fires a soft-SL
+# (`exit_soft_sl`, round_id=null) for a position that is below STOP_LOSS_PCT AND
+# dropped from Claude's last recommendation set AND trading against the regime
+# AND still falling vs the previous tick. The strict AND-gate (vs the round
+# scan's `!rec || !aligned`) plus the "still falling" check avoid the
+# mean-reversion whipsaw the 2026-06 backtest flagged when soft stops were
+# tightened. Closes the 48h-latency bleed (Realist Capital -$78).
+RISK_MONITOR_SOFT_SL_ENABLED=true
+RISK_MONITOR_RECOMMENDED_MAX_AGE_MS=259200000
 # Withdrawal fill verification
 WITHDRAWAL_VERIFY_MAX_RETRIES=2
 # Round-end chart stamp: poll getUserVaultEquities until vault equity settles

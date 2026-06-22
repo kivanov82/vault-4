@@ -2,7 +2,16 @@ import { VaultService } from "../vaults/VaultService";
 import { RebalanceService } from "./RebalanceService";
 import { TrailingStopService } from "./TrailingStopService";
 import * as RebalanceLock from "./RebalanceLock";
-import { defaultExitConfig, shouldHardStop } from "./ExitPolicy";
+import {
+    defaultExitConfig,
+    shouldHardStop,
+    shouldIntraRoundSoftStop,
+} from "./ExitPolicy";
+import {
+    getLastRecommendedSet,
+    getVaultNetDirection,
+} from "./RebalanceOrchestrator";
+import { MarketDataService } from "../claude/MarketDataService";
 import {
     verifyAndSettleWithdrawals,
     type WithdrawalVerifyEntry,
@@ -22,10 +31,16 @@ import type { UserPosition } from "../vaults/types";
  *
  *  - hard stop-loss (unconditional, same threshold as the round scan)
  *  - trailing stop (peak-ROE giveback, shared TrailingStopService state)
+ *  - gated soft stop-loss (opt-in, RISK_MONITOR_SOFT_SL_ENABLED) — closes the
+ *    −15% → −22% bleed that the 48h round scan misses (2026-06 Realist Capital,
+ *    −$78), but only for positions that are non-recommended AND misaligned AND
+ *    still falling, so it does not whipsaw the recoverable dips that the
+ *    backtest showed a blanket intra-round soft stop would sell. Uses the
+ *    recommendation set stashed by the round + the current market overlay.
  *
- * Soft stop-loss and rotation decisions need the Claude recommendation set
- * and market alignment, so they stay in the round scan. A tick that finds a
- * position already being handled by a running round defers entirely.
+ * Full rotation decisions still need the live Claude ranking, so they stay in
+ * the round scan. A tick that finds a position already being handled by a
+ * running round defers entirely.
  */
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -41,9 +56,25 @@ const INTERVAL_MS = envNumber("RISK_MONITOR_INTERVAL_MS", 4 * HOUR_MS);
 const INITIAL_DELAY_MS = envNumber("RISK_MONITOR_INITIAL_DELAY_MS", 10 * 60 * 1000);
 const SETTLE_WAIT_MS = envNumber("RISK_MONITOR_SETTLE_WAIT_MS", 60_000);
 
+// Gated intra-round soft stop-loss. ON by default, with a kill switch
+// (RISK_MONITOR_SOFT_SL_ENABLED=false) matching the RISK_MONITOR_ENABLED /
+// TRAILING_STOP_ENABLED convention. The gate is deliberately strict — it fires
+// only on non-recommended + misaligned + still-falling positions — because the
+// 2026-06 backtest showed a blanket intra-round soft stop whipsaws recoverable
+// dips (see STRATEGY-FORENSICS-2026-06.md §6).
+const SOFT_SL_ENABLED = (process.env.RISK_MONITOR_SOFT_SL_ENABLED ?? "true") !== "false";
+// The recommendation set is stashed in-memory by the round. If it is older than
+// this (a round runs every ~2 days), treat it as stale and decline to fire the
+// soft stop rather than risk acting on an outdated set after a long outage.
+const RECOMMENDED_MAX_AGE_MS = envNumber(
+    "RISK_MONITOR_RECOMMENDED_MAX_AGE_MS",
+    3 * 24 * HOUR_MS
+);
+
 export type RiskMonitorRunResult = {
     checkedPositions: number;
     hardStopExits: number;
+    softStopExits: number;
     trailingStopExits: number;
     skipped: "rebalance-running" | "already-running" | null;
 };
@@ -52,6 +83,13 @@ export class RiskMonitor {
     private static started = false;
     private static intervalHandle: NodeJS.Timeout | null = null;
     private static startHandle: NodeJS.Timeout | null = null;
+    /**
+     * Last-tick ROE per held vault, for the gated soft stop's "still
+     * deteriorating" check. In-memory; pruned to currently-held vaults each
+     * tick. A vault with no prior entry (first tick / freshly opened) cannot
+     * fire the soft stop until a second observation confirms a downward step.
+     */
+    private static lastRoeByVault = new Map<string, number>();
 
     static async start(): Promise<void> {
         if (this.started) return;
@@ -111,13 +149,34 @@ export class RiskMonitor {
             positions.positions.map((p) => p.vaultAddress)
         );
 
+        // Prune the soft-stop ROE memory to currently-held vaults (mirrors the
+        // trailing-peak sweep) so a re-entered vault starts a fresh trend.
+        const heldAddrs = new Set(
+            positions.positions.map((p) => p.vaultAddress.toLowerCase())
+        );
+        for (const addr of this.lastRoeByVault.keys()) {
+            if (!heldAddrs.has(addr)) this.lastRoeByVault.delete(addr);
+        }
+
+        // Resolve the gated soft-stop context once per tick. It needs Claude's
+        // last recommendation set (stashed by the round) and the current market
+        // direction. We decline to fire — rather than guess — when the set is
+        // missing/stale or the regime is neutral (everything counts as aligned,
+        // so the soft stop could never fire anyway).
+        const softCtx = SOFT_SL_ENABLED
+            ? await this.resolveSoftStopContext()
+            : null;
+
         const settleEntries: WithdrawalVerifyEntry[] = [];
         let hardStopExits = 0;
+        let softStopExits = 0;
         let trailingStopExits = 0;
 
         for (const position of positions.positions) {
             const roePct = position.roePct;
             if (roePct == null || !Number.isFinite(roePct)) continue;
+            const addrLower = position.vaultAddress.toLowerCase();
+            const prevRoePct = this.lastRoeByVault.get(addrLower) ?? null;
 
             if (shouldHardStop(roePct, config)) {
                 logger.info("Risk monitor: hard stop-loss triggered", {
@@ -137,6 +196,53 @@ export class RiskMonitor {
                 );
                 if (submitted) hardStopExits += 1;
                 continue;
+            }
+
+            // Gated intra-round soft stop: only an abandoned (not recommended),
+            // counter-regime, still-deteriorating position in the soft band.
+            // Per-vault direction is only queried when the cheap gates already
+            // pass, so a healthy book costs no extra HL calls.
+            if (
+                softCtx &&
+                roePct <= config.stopLossPct &&
+                !softCtx.recommended.has(addrLower)
+            ) {
+                const vaultDirection = await getVaultNetDirection(
+                    position.vaultAddress
+                );
+                const isAligned =
+                    vaultDirection === softCtx.marketDirection ||
+                    softCtx.marketDirection === "neutral";
+                if (
+                    shouldIntraRoundSoftStop(
+                        roePct,
+                        prevRoePct,
+                        false, // not in the recommended set (checked above)
+                        isAligned,
+                        config
+                    )
+                ) {
+                    logger.info("Risk monitor: gated soft stop-loss triggered", {
+                        vaultAddress: position.vaultAddress,
+                        vaultName: position.vaultName,
+                        roePct,
+                        prevRoePct,
+                        threshold: config.stopLossPct,
+                        vaultDirection,
+                        marketDirection: softCtx.marketDirection,
+                        reason: "risk-monitor-soft-sl",
+                    });
+                    const submitted = await this.exitPosition(
+                        position,
+                        "exit_soft_sl",
+                        `risk-monitor soft-stop-loss roe=${roePct} prev=${prevRoePct} aligned=${isAligned} recommended=false`,
+                        "risk-monitor-soft-sl",
+                        platformTvlUsd,
+                        settleEntries
+                    );
+                    if (submitted) softStopExits += 1;
+                    continue;
+                }
             }
 
             const trailing = await TrailingStopService.observeAndCheck(position);
@@ -159,6 +265,10 @@ export class RiskMonitor {
                 );
                 if (submitted) trailingStopExits += 1;
             }
+
+            // Record this tick's ROE for next tick's "still deteriorating"
+            // check. Exited positions fall out via the held-vaults prune above.
+            this.lastRoeByVault.set(addrLower, roePct);
         }
 
         if (settleEntries.length) {
@@ -205,6 +315,7 @@ export class RiskMonitor {
         const result: RiskMonitorRunResult = {
             checkedPositions: positions.positions.length,
             hardStopExits,
+            softStopExits,
             trailingStopExits,
             skipped: null,
         };
@@ -214,10 +325,39 @@ export class RiskMonitor {
         return result;
     }
 
+    /**
+     * Resolve the gated soft-stop context for this tick, or null when we should
+     * decline to fire (no/stale recommendation set, neutral regime, or the
+     * market overlay is unavailable). Fail-safe: any uncertainty ⇒ no soft exit.
+     */
+    private static async resolveSoftStopContext(): Promise<{
+        recommended: Set<string>;
+        marketDirection: "long" | "short" | "neutral";
+    } | null> {
+        const { set, recordedAt } = getLastRecommendedSet();
+        if (set.size === 0 || recordedAt == null) return null;
+        if (Date.now() - recordedAt > RECOMMENDED_MAX_AGE_MS) {
+            logger.info("Risk monitor: soft stop skipped — recommendation set stale", {
+                ageMs: Date.now() - recordedAt,
+            });
+            return null;
+        }
+        try {
+            const market = await MarketDataService.getMarketOverlay();
+            if (market.preferred_direction === "neutral") return null;
+            return { recommended: set, marketDirection: market.preferred_direction };
+        } catch (error: any) {
+            logger.warn("Risk monitor: soft stop skipped — market overlay unavailable", {
+                error: error?.message,
+            });
+            return null;
+        }
+    }
+
     /** Submit a protective full exit + trace event. Returns true if submitted. */
     private static async exitPosition(
         position: UserPosition,
-        action: "exit_risk_monitor" | "exit_trailing_stop",
+        action: "exit_risk_monitor" | "exit_trailing_stop" | "exit_soft_sl",
         reasonText: string,
         reason: string,
         platformTvlUsd: number | null,
@@ -268,5 +408,11 @@ export class RiskMonitor {
 function emptyResult(
     skipped: RiskMonitorRunResult["skipped"]
 ): RiskMonitorRunResult {
-    return { checkedPositions: 0, hardStopExits: 0, trailingStopExits: 0, skipped };
+    return {
+        checkedPositions: 0,
+        hardStopExits: 0,
+        softStopExits: 0,
+        trailingStopExits: 0,
+        skipped,
+    };
 }

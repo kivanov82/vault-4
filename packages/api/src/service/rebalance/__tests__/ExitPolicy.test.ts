@@ -2,6 +2,7 @@ import {
     defaultExitConfig,
     shouldHardStop,
     shouldSoftStop,
+    shouldIntraRoundSoftStop,
     shouldTrailingExit,
     trailingExitLevel,
     type ExitConfig,
@@ -74,6 +75,34 @@ describe("shouldSoftStop", () => {
 
     it("never fires above threshold", () => {
         expect(shouldSoftStop(-14.9, false, false, config)).toBe(false);
+    });
+});
+
+describe("shouldIntraRoundSoftStop", () => {
+    // Realist-Capital profile: abandoned, counter-regime, still falling.
+    it("fires when below band, not recommended, mis-aligned, and deteriorating", () => {
+        expect(shouldIntraRoundSoftStop(-18, -16, false, false, config)).toBe(true);
+    });
+
+    it("holds while still recommended (even if mis-aligned and falling)", () => {
+        expect(shouldIntraRoundSoftStop(-18, -16, true, false, config)).toBe(false);
+    });
+
+    it("holds while regime-aligned (even if dropped and falling)", () => {
+        expect(shouldIntraRoundSoftStop(-18, -16, false, true, config)).toBe(false);
+    });
+
+    it("holds a recovering position — spares the mean-reversion whipsaw", () => {
+        // dipped to -20 last tick, bouncing back to -18: do not sell the bottom.
+        expect(shouldIntraRoundSoftStop(-18, -20, false, false, config)).toBe(false);
+    });
+
+    it("never fires above the soft band", () => {
+        expect(shouldIntraRoundSoftStop(-14.9, -10, false, false, config)).toBe(false);
+    });
+
+    it("never fires without a prior observation (first tick / fresh position)", () => {
+        expect(shouldIntraRoundSoftStop(-18, null, false, false, config)).toBe(false);
     });
 });
 
