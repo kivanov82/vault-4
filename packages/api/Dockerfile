@@ -1,6 +1,10 @@
 # Use the official Node.js image.
 # https://hub.docker.com/_/node
-FROM --platform=linux/amd64 node:22
+# Pinned: node 22.23.0 (pulled by an unpinned `node:22` rebuild on 2026-06-22)
+# ships an undici that throws "Premature close" on api.anthropic.com keep-alive
+# connections, breaking all Claude calls (scoring/ranking/X-posts). 22.22.3 is
+# the last known-good (revision vault-4-00105). Do NOT loosen back to `node:22`.
+FROM --platform=linux/amd64 node:22.22.3
 
 # Create and change to the app directory.
 WORKDIR /usr/src/app
