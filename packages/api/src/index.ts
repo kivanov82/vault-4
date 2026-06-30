@@ -17,6 +17,8 @@ import {
     readRoundDetail,
     readVaultTimeline,
 } from "./db/TraceService";
+import path from "path";
+import { ownershipProofsForHost } from "./service/discovery/ownershipProof";
 
 const app = express();
 const cors = require("cors");
@@ -34,8 +36,70 @@ app.use(express.json())                   //Express
         next();
     });
 
+// Branding assets (favicon, icons) so discovery crawlers (e.g. x402scan) can
+// resolve a logo for the origin.
+app.use(express.static(path.join(__dirname, "..", "public")));
+
+// Origin root returns real HTML with title/description/OpenGraph/favicon so
+// x402scan (and other indexers) scrape a name, description and logo for the
+// server card instead of falling back to the raw hostname + "No Description".
+const LANDING_HTML = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>VAULT-4 — AI Fund-of-Vaults on Hyperliquid</title>
+<meta name="title" content="VAULT-4 — AI Fund-of-Vaults on Hyperliquid" />
+<meta name="description" content="AI-managed, non-custodial fund-of-vaults on Hyperliquid. Claude AI ranks 100+ vaults by PnL, risk and market regime, allocates with a barbell strategy, and rebalances every 48 hours." />
+<meta name="theme-color" content="#00ff41" />
+<link rel="icon" href="/favicon.ico" sizes="any" />
+<link rel="icon" type="image/svg+xml" href="/icon.svg" />
+<link rel="apple-touch-icon" href="/icon-512.png" />
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="VAULT-4" />
+<meta property="og:title" content="VAULT-4 — AI Fund-of-Vaults on Hyperliquid" />
+<meta property="og:description" content="AI-managed, non-custodial fund-of-vaults on Hyperliquid. Claude AI ranks 100+ vaults, allocates with a barbell strategy, and rebalances every 48 hours." />
+<meta property="og:url" content="https://vault-4.xyz" />
+<meta property="og:image" content="https://vault-4.xyz/opengraph-image" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:site" content="@vault4_xyz" />
+<meta name="twitter:title" content="VAULT-4 — AI Fund-of-Vaults on Hyperliquid" />
+<meta name="twitter:description" content="AI-managed, non-custodial fund-of-vaults on Hyperliquid. Rebalanced every 48h by Claude AI." />
+<meta name="twitter:image" content="https://vault-4.xyz/opengraph-image" />
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; min-height:100vh; background:#000; color:#00ff41;
+    font-family:"Fira Code",ui-monospace,SFMono-Regular,Menlo,monospace;
+    display:flex; align-items:center; justify-content:center; padding:2rem; }
+  .panel { max-width:620px; border:1px solid #00ff4133; padding:2rem 2.25rem;
+    box-shadow:0 0 40px #00ff4111; }
+  h1 { font-size:1.4rem; margin:0 0 .25rem; letter-spacing:.05em; }
+  .sub { color:#00e5ff; font-size:.85rem; margin:0 0 1.25rem; }
+  p { color:#9affc4; font-size:.9rem; line-height:1.5; }
+  a { color:#00e5ff; text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  .links { margin-top:1.25rem; font-size:.82rem; }
+  .links b { color:#ffb300; font-weight:400; }
+  .dim { color:#3a7d52; }
+</style>
+</head>
+<body>
+  <main class="panel">
+    <h1>VAULT-4 <span class="dim">// API</span></h1>
+    <p class="sub">AI-managed fund-of-vaults on Hyperliquid</p>
+    <p>Claude AI ranks 100+ Hyperliquid vaults by PnL, risk and market regime, allocates with a barbell strategy, and rebalances every 48 hours. Non-custodial, with daily settlement.</p>
+    <div class="links">
+      <b>&gt;</b> <a href="https://vault-4.xyz">vault-4.xyz</a> &nbsp;·&nbsp;
+      <a href="/openapi.json">openapi.json</a> &nbsp;·&nbsp;
+      <a href="/.well-known/x402">x402 manifest</a> &nbsp;·&nbsp;
+      <a href="/api/strategy">strategy</a>
+    </div>
+  </main>
+</body>
+</html>`;
+
 app.get('/', (req, res) => {
-    res.send("Welcome to Vault 4 API");
+    res.type("html").send(LANDING_HTML);
 });
 
 app.get("/health", (req, res) => {
@@ -44,10 +108,17 @@ app.get("/health", (req, res) => {
 
 // ── Discovery: x402 + OpenAPI ───────────────────────────────────────────
 // x402 agents probe /.well-known/x402 to find payable endpoints.
-app.get("/.well-known/x402", (req, res) => {
+app.get("/.well-known/x402", async (req, res) => {
     const wallet = process.env.WALLET ?? null;
+    const origin = `https://${req.get("host")}`;
+    const ownershipProofs = await ownershipProofsForHost(req.get("host"));
     res.json({
-        version: "0.1",
+        // Spec-conformant fields (x402scan DISCOVERY.md §B): numeric version,
+        // flat resource-URL list, and signature ownership proofs.
+        version: 1,
+        resources: wallet ? [`${origin}/api/strategy/premium`] : [],
+        ownershipProofs,
+        // Descriptive extras — ignored by the spec parser, kept for humans/agents.
         name: "VAULT-4 API",
         description: "AI-managed fund-of-vaults on Hyperliquid. Premium endpoint exposes per-vault AI scores, allocation rationale, and PnL breakdown.",
         receiver: wallet,
@@ -76,8 +147,10 @@ app.get("/.well-known/x402", (req, res) => {
     });
 });
 
-// Minimal OpenAPI 3.0 manifest for indexers / API browsers.
-app.get("/openapi.json", (req, res) => {
+// OpenAPI 3.0 manifest — x402scan's preferred discovery source (DISCOVERY.md §A).
+app.get("/openapi.json", async (req, res) => {
+    const wallet = process.env.WALLET ?? null;
+    const ownershipProofs = await ownershipProofsForHost(req.get("host"));
     res.json({
         openapi: "3.0.0",
         info: {
@@ -85,6 +158,8 @@ app.get("/openapi.json", (req, res) => {
             version: "1.0.0",
             description: "Public read-only data + paid premium strategy endpoint for the VAULT-4 fund-of-vaults on Hyperliquid.",
         },
+        // Ownership proofs let x402scan verify the listing against our payTo wallet.
+        "x-discovery": { ownershipProofs },
         servers: [{ url: "https://vault-4-s6qnbk6izq-ew.a.run.app" }],
         paths: {
             "/health": { get: { summary: "Health check", responses: { "200": { description: "OK" } } } },
@@ -96,7 +171,22 @@ app.get("/openapi.json", (req, res) => {
             "/api/contract": { get: { summary: "On-chain Vault4Fund contract state" } },
             "/api/activity": { get: { summary: "Recent on-chain deposits/withdrawals (all wallets, ~90d)" } },
             "/api/strategy": { get: { summary: "Free public strategy summary" } },
-            "/api/strategy/premium": { get: { summary: "Paid (x402) — current allocations, sentiment overlay, full candidate list, and top picks", "x-x402-price": "$0.05" } },
+            "/api/strategy/premium": {
+                get: {
+                    summary: "Paid (x402) — current allocations, sentiment overlay, full candidate list, and top picks",
+                    "x-payment-info": {
+                        protocols: ["x402"],
+                        price: { mode: "fixed", currency: "USD", amount: "0.05" },
+                        network: "base",
+                        asset: "USDC",
+                        payTo: wallet,
+                    },
+                    responses: {
+                        "200": { description: "Premium strategy snapshot" },
+                        "402": { description: "Payment required — x402 challenge in the Payment-Required header / response body" },
+                    },
+                },
+            },
             "/.well-known/x402": { get: { summary: "x402 payable-endpoints manifest" } },
         },
     });
