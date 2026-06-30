@@ -110,13 +110,13 @@ app.get("/health", (req, res) => {
 // x402 agents probe /.well-known/x402 to find payable endpoints.
 app.get("/.well-known/x402", async (req, res) => {
     const wallet = process.env.WALLET ?? null;
-    const origin = `https://${req.get("host")}`;
     const ownershipProofs = await ownershipProofsForHost(req.get("host"));
     res.json({
-        // Spec-conformant fields (x402scan DISCOVERY.md §B): numeric version,
-        // flat resource-URL list, and signature ownership proofs.
+        // Spec-conformant fields (x402scan v1): numeric version + "METHOD /path"
+        // resource entries (origin-relative, so they resolve to whatever origin
+        // is being registered) + signature ownership proofs.
         version: 1,
-        resources: wallet ? [`${origin}/api/strategy/premium`] : [],
+        resources: wallet ? ["GET /api/strategy/premium"] : [],
         ownershipProofs,
         // Descriptive extras — ignored by the spec parser, kept for humans/agents.
         name: "VAULT-4 API",
@@ -157,10 +157,15 @@ app.get("/openapi.json", async (req, res) => {
             title: "VAULT-4 API",
             version: "1.0.0",
             description: "Public read-only data + paid premium strategy endpoint for the VAULT-4 fund-of-vaults on Hyperliquid.",
+            guidance: "Free endpoints expose live VAULT-4 fund state (positions, portfolio, metrics, history, on-chain contract). The single paid x402 endpoint — GET /api/strategy/premium, $0.05 USDC on Base — returns current vault allocations + ROE, the market-sentiment overlay, the full candidate-vault list, and the AI's ranked top picks.",
         },
         // Ownership proofs let x402scan verify the listing against our payTo wallet.
         "x-discovery": { ownershipProofs },
-        servers: [{ url: "https://vault-4-s6qnbk6izq-ew.a.run.app" }],
+        // servers[].url MUST equal the request origin. x402scan resolves each
+        // path against it and rejects any resource whose origin differs from the
+        // one being registered (fetch-discovery.ts `resolved.origin !== expectedOrigin`).
+        // Hardcoding one host broke registration on the other run.app origin.
+        servers: [{ url: `https://${req.get("host")}` }],
         paths: {
             "/health": { get: { summary: "Health check", responses: { "200": { description: "OK" } } } },
             "/api/positions": { get: { summary: "Current vault positions" } },
