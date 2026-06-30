@@ -81,9 +81,9 @@ export class PremiumSnapshotService {
     private static cache: CacheEntry | null = null;
     private static inFlight: Promise<PremiumPayload> | null = null;
 
-    static async get(): Promise<PremiumPayload> {
+    static async get(force = false): Promise<PremiumPayload> {
         const now = Date.now();
-        if (this.cache && now - this.cache.fetchedAt < CACHE_TTL_MS) {
+        if (!force && this.cache && now - this.cache.fetchedAt < CACHE_TTL_MS) {
             return this.cache.payload;
         }
         if (this.inFlight) return this.inFlight;

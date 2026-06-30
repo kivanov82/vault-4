@@ -184,6 +184,17 @@ app.get("/openapi.json", async (req, res) => {
             "/api/strategy/premium": {
                 get: {
                     summary: "Paid (x402) — current allocations, sentiment overlay, full candidate list, and top picks",
+                    // Input schema (x402scan requires one so agents know what to send).
+                    // The endpoint needs no input; the only knob is an optional cache bypass.
+                    parameters: [
+                        {
+                            name: "refresh",
+                            in: "query",
+                            required: false,
+                            description: "Bypass the 5-minute snapshot cache and rebuild from live upstream data.",
+                            schema: { type: "boolean" },
+                        },
+                    ],
                     "x-payment-info": {
                         protocols: ["x402"],
                         price: { mode: "fixed", currency: "USD", amount: "0.05" },
@@ -192,7 +203,26 @@ app.get("/openapi.json", async (req, res) => {
                         payTo: wallet,
                     },
                     responses: {
-                        "200": { description: "Premium strategy snapshot" },
+                        "200": {
+                            description: "Premium strategy snapshot",
+                            content: {
+                                "application/json": {
+                                    schema: {
+                                        type: "object",
+                                        properties: {
+                                            fund: { type: "object" },
+                                            currentAllocations: { type: "array", items: { type: "object" } },
+                                            marketSentiment: { type: "object" },
+                                            candidates: { type: "array", items: { type: "object" } },
+                                            candidateCount: { type: "integer" },
+                                            topPicks: { type: "array", items: { type: "object" } },
+                                            topPicksGeneratedAt: { type: "string" },
+                                            updatedAt: { type: "string" },
+                                        },
+                                    },
+                                },
+                            },
+                        },
                         "402": { description: "Payment required — x402 challenge in the Payment-Required header / response body" },
                     },
                 },
@@ -520,14 +550,15 @@ if (x402Wallet) {
 
     app.get("/api/strategy/premium", x402Protected, async (req, res) => {
         try {
-            const payload = await PremiumSnapshotService.get();
+            const force = String(req.query.refresh ?? "") === "true";
+            const payload = await PremiumSnapshotService.get(force);
             res.json(payload);
         } catch (error: any) {
             logger.error("Failed to build premium strategy", { message: error?.message });
             res.status(500).json({ error: "Failed to fetch premium strategy data" });
         }
     });
-    logger.info("x402 premium endpoint enabled", { wallet: x402Wallet });
+    logger.info("x402 premium endpoint enabled (v2)", { wallet: x402Wallet });
 }
 
 // Manual settlement trigger (dry-run by default, ?execute=true to run)
