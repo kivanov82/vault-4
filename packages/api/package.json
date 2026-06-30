@@ -18,6 +18,9 @@
     "@anthropic-ai/sdk": "^0.39.0",
     "@nktkas/hyperliquid": "^0.25.0",
     "@types/pg": "^8.20.0",
+    "@x402/core": "^2.17.0",
+    "@x402/evm": "^2.17.0",
+    "@x402/express": "^2.17.0",
     "axios": "1.8.2",
     "cors": "^2.8.5",
     "dotenv": "^16.5.0",
@@ -27,8 +30,7 @@
     "pg": "^8.21.0",
     "taapi": "^1.4.8",
     "twitter-api-v2": "^1.29.0",
-    "viem": "^2.29.1",
-    "x402-express": "^1.1.0"
+    "viem": "^2.29.1"
   },
   "devDependencies": {
     "@babel/core": "^7.26.0",

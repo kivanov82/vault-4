@@ -11,7 +11,8 @@ WORKDIR /usr/src/app
 
 # Copy application dependency manifests to the container image.
 # A wildcard is used to ensure both package.json AND package-lock.json are copied.
-COPY package*.json ./
+# .npmrc (legacy-peer-deps) must be present BEFORE install for @x402/* to resolve.
+COPY package*.json .npmrc ./
 
 # Install all dependencies (ts-node needed at runtime since we run TypeScript directly).
 RUN npm install

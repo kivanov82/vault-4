@@ -8,7 +8,12 @@ import { Vault4ActivityService } from "./service/Vault4ActivityService";
 import { PremiumSnapshotService } from "./service/PremiumSnapshotService";
 import { ArticleService } from "./service/social/ArticleService";
 import { XPostService } from "./service/social/XPostService";
-import { paymentMiddleware } from "x402-express";
+import { paymentMiddleware, x402ResourceServer } from "@x402/express";
+// Subpath exports resolved via require() (untyped) — classic "node" module
+// resolution + ts-node-on-boot don't read these packages' "exports" type maps.
+// Same pattern as the cors require below.
+const { ExactEvmScheme } = require("@x402/evm/exact/server");
+const { HTTPFacilitatorClient } = require("@x402/core/server");
 import { logger } from "./service/utils/logger";
 import {
     readLedgerHistory,
@@ -182,7 +187,7 @@ app.get("/openapi.json", async (req, res) => {
                     "x-payment-info": {
                         protocols: ["x402"],
                         price: { mode: "fixed", currency: "USD", amount: "0.05" },
-                        network: "base",
+                        network: "eip155:8453",
                         asset: "USDC",
                         payTo: wallet,
                     },
@@ -477,28 +482,40 @@ app.get("/api/strategy", async (req, res) => {
 // x402-gated premium endpoint — AI scoring details + full allocation breakdown
 const x402Wallet = process.env.WALLET;
 if (x402Wallet) {
+    // x402 v2 (Coinbase @x402/* packages). x402scan's discovery validator
+    // rejects the legacy v1 challenge ("x402 v1 response detected — migrate to
+    // v2 spec"), so we emit a v2 challenge: x402Version 2, CAIP-2 network
+    // (eip155:8453 = Base mainnet), accepts[].amount in atomic units.
+    //
+    // Settlement uses a keyless public facilitator that supports `exact` on
+    // Base mainnet (PayAI by default; OpenFacilitator at pay.openfacilitator.io
+    // also works). No Coinbase CDP API keys required. Override via
+    // X402_FACILITATOR_URL. The resource server syncs the facilitator's
+    // supported kinds on start so it can build the eip155:8453 challenge.
+    const facilitatorUrl =
+        process.env.X402_FACILITATOR_URL ?? "https://facilitator.payai.network";
+    const facilitatorClient = new HTTPFacilitatorClient({ url: facilitatorUrl });
+    const resourceServer = new x402ResourceServer(facilitatorClient).register(
+        "eip155:8453",
+        new ExactEvmScheme()
+    );
     const x402Protected = paymentMiddleware(
-        x402Wallet,
         {
             "GET /api/strategy/premium": {
-                price: "$0.05",
-                network: "base",
-                config: {
-                    description: "VAULT-4 premium snapshot: current allocations, market sentiment overlay, full candidate vault list, and ranked top picks. Refreshed every 5 minutes.",
-                    outputSchema: {
-                        fund: "object",
-                        currentAllocations: "array",
-                        marketSentiment: "object",
-                        candidates: "array",
-                        candidateCount: "number",
-                        topPicks: "array",
-                        topPicksGeneratedAt: "string",
-                        updatedAt: "string",
-                    },
+                accepts: {
+                    scheme: "exact",
+                    price: "$0.05",
+                    network: "eip155:8453",
+                    payTo: x402Wallet as `0x${string}`,
+                    maxTimeoutSeconds: 60,
                 },
+                description: "VAULT-4 premium snapshot: current allocations, market sentiment overlay, full candidate vault list, and ranked top picks. Refreshed every 5 minutes.",
             },
         },
-        { url: "https://x402.org/facilitator" }
+        resourceServer,
+        undefined, // paywallConfig — basic JSON 402 (no @x402/paywall UI)
+        undefined, // paywall provider
+        true // syncFacilitatorOnStart — fetch supported kinds (exact/eip155:8453)
     );
 
     app.get("/api/strategy/premium", x402Protected, async (req, res) => {
