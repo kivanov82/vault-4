@@ -870,6 +870,157 @@ export async function readLedgerHistory(options: {
     };
 }
 
+/**
+ * Latest Claude stage-2 recommendation set from claude_decision — the durable
+ * fallback for the in-memory set stashed by the round (which dies on process
+ * restart). Used by risk-only rounds and the RiskMonitor's gated soft-SL so a
+ * restart during a Claude outage doesn't leave the exit logic blind to
+ * recommendation status. Returns null when the DB is unavailable or no
+ * stage-2 decision has ever been recorded.
+ */
+export async function readLastClaudeRecommendedSet(): Promise<{
+    addresses: string[];
+    recordedAt: number;
+} | null> {
+    return await withDb("readLastClaudeRecommendedSet", async (client) => {
+        const r = await client.query<{
+            recorded_at: Date;
+            top10_json: any;
+        }>(
+            `SELECT recorded_at, top10_json
+             FROM claude_decision
+             WHERE stage = 2 AND top10_json IS NOT NULL
+             ORDER BY recorded_at DESC
+             LIMIT 1`
+        );
+        const row = r.rows[0];
+        if (!row) return null;
+        const top10 = row.top10_json ?? {};
+        const entries = [
+            ...(Array.isArray(top10.high) ? top10.high : []),
+            ...(Array.isArray(top10.low) ? top10.low : []),
+        ];
+        const addresses = entries
+            .map((e: any) => String(e?.vaultAddress ?? e?.address ?? "").toLowerCase())
+            .filter((a: string) => a.startsWith("0x"));
+        if (!addresses.length) return null;
+        return { addresses, recordedAt: row.recorded_at.getTime() };
+    });
+}
+
+/**
+ * Market directions of the most recent completed rounds (newest first), read
+ * from the round summaries. Drives the chop brake's "did the signal just
+ * flip?" check. Returns null when the DB is unavailable.
+ */
+export async function readRecentRoundDirections(
+    limit: number
+): Promise<("long" | "short" | "neutral")[] | null> {
+    return await withDb("readRecentRoundDirections", async (client) => {
+        const r = await client.query<{ dir: string }>(
+            `SELECT summary_json->>'marketDirection' AS dir
+             FROM rebalance_round
+             WHERE status = 'completed'
+               AND summary_json->>'marketDirection' IN ('long', 'short', 'neutral')
+             ORDER BY started_at DESC
+             LIMIT $1`,
+            [limit]
+        );
+        return r.rows.map((row) => row.dir as "long" | "short" | "neutral");
+    });
+}
+
+/**
+ * Vaults we fully exited at a meaningful realized loss within the last
+ * `cooldownDays`. These are under a re-entry cooldown: the deposit pass skips
+ * them and Claude is told not to waste recommendation slots on them. Exits
+ * from both the round scan and the RiskMonitor count (round_id may be null).
+ * Returns null when the DB is unavailable (fail-open — no filtering).
+ */
+export async function readRecentLossExitVaults(
+    cooldownDays: number,
+    minLossUsd = 0.5
+): Promise<string[] | null> {
+    if (!(cooldownDays > 0)) return [];
+    return await withDb("readRecentLossExitVaults", async (client) => {
+        const r = await client.query<{ vault_address: string }>(
+            `SELECT DISTINCT LOWER(vault_address) AS vault_address
+             FROM position_event
+             WHERE action LIKE 'exit_%'
+               AND succeeded = true
+               AND our_realized_pnl_usd < $1
+               AND occurred_at > now() - make_interval(days => $2)`,
+            [-Math.abs(minLossUsd), Math.floor(cooldownDays)]
+        );
+        return r.rows.map((row) => row.vault_address);
+    });
+}
+
+export type VaultHistorySummary = {
+    vaultAddress: string;
+    episodes: number;
+    realizedPnlUsd: number;
+    openBasisUsd: number;
+    isOpen: boolean;
+    lastEventAt: number | null;
+};
+
+/**
+ * Our own per-vault track record from position_account (FIFO books): how many
+ * deposit episodes we've had with each vault and what we actually realized.
+ * Fed to Claude so selection stops flying blind to our history with a vault.
+ * Returns null when the DB is unavailable.
+ */
+export async function readVaultHistorySummaries(): Promise<
+    VaultHistorySummary[] | null
+> {
+    return await withDb("readVaultHistorySummaries", async (client) => {
+        const r = await client.query<{
+            vault_address: string;
+            deposit_count: number;
+            our_realized_pnl_usd_total: string;
+            our_basis_usd_open: string;
+            is_open: boolean;
+            last_event_at: Date | null;
+        }>(
+            `SELECT vault_address, deposit_count, our_realized_pnl_usd_total,
+                    our_basis_usd_open, is_open, last_event_at
+             FROM position_account
+             WHERE deposit_count > 0`
+        );
+        return r.rows.map((row) => ({
+            vaultAddress: row.vault_address,
+            episodes: Number(row.deposit_count),
+            realizedPnlUsd: Number(row.our_realized_pnl_usd_total),
+            openBasisUsd: Number(row.our_basis_usd_open),
+            isOpen: row.is_open,
+            lastEventAt: row.last_event_at ? row.last_event_at.getTime() : null,
+        }));
+    });
+}
+
+/**
+ * Most recent deposit time per vault from the mirrored HL ledger. Used to
+ * compute hold-days for the per-position context fed to Claude. Returns null
+ * when the DB is unavailable.
+ */
+export async function readLastDepositTimes(): Promise<Map<
+    string,
+    number
+> | null> {
+    return await withDb("readLastDepositTimes", async (client) => {
+        const r = await client.query<{ vault_address: string; t: Date }>(
+            `SELECT LOWER(vault_address) AS vault_address, MAX(time) AS t
+             FROM position_ledger
+             WHERE type = 'vaultDeposit'
+             GROUP BY 1`
+        );
+        const map = new Map<string, number>();
+        for (const row of r.rows) map.set(row.vault_address, row.t.getTime());
+        return map;
+    });
+}
+
 export async function readRecentRounds(limit: number) {
     return (
         (await withDb<any[]>("readRecentRounds", async (client) => {

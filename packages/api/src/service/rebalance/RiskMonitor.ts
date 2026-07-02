@@ -8,8 +8,8 @@ import {
     shouldIntraRoundSoftStop,
 } from "./ExitPolicy";
 import {
-    getLastRecommendedSet,
     getVaultNetDirection,
+    resolveRecommendedSet,
 } from "./RebalanceOrchestrator";
 import { MarketDataService } from "../claude/MarketDataService";
 import {
@@ -334,14 +334,16 @@ export class RiskMonitor {
         recommended: Set<string>;
         marketDirection: "long" | "short" | "neutral";
     } | null> {
-        const { set, recordedAt } = getLastRecommendedSet();
-        if (set.size === 0 || recordedAt == null) return null;
-        if (Date.now() - recordedAt > RECOMMENDED_MAX_AGE_MS) {
-            logger.info("Risk monitor: soft stop skipped — recommendation set stale", {
-                ageMs: Date.now() - recordedAt,
-            });
+        // In-memory stash with DB fallback (persisted stage-2 decision), so a
+        // process restart between rounds doesn't blind the gated soft stop.
+        const resolved = await resolveRecommendedSet(RECOMMENDED_MAX_AGE_MS);
+        if (!resolved) {
+            logger.info(
+                "Risk monitor: soft stop skipped — recommendation set missing or stale"
+            );
             return null;
         }
+        const { set } = resolved;
         try {
             const market = await MarketDataService.getMarketOverlay();
             if (market.preferred_direction === "neutral") return null;

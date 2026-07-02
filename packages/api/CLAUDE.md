@@ -61,10 +61,14 @@ src/
 
 ### Rebalancing Logic
 
+**Round degradation (risk-only rounds).** If Claude ranking fails (heuristic fallback), the round does NOT abort anymore — it degrades to a **risk-only round**: every protective exit still runs (hard SL, soft SL against the last known recommendation set — in-memory stash with a DB fallback to the persisted stage-2 `claude_decision` — trailing stop, inactive vault) with full fill verification, while trims, rotation, and deposits are skipped. Recorded as `status=completed` with `summary_json.mode="risk-only"`. This closes the 2026-06-23→25 outage hole where full aborts left the book unmanaged for ~5 days (round 21 then realized −$103 in one cleanup).
+
+**Chop brake.** After fetching the market direction, the round compares it to the previous completed round's direction (`readRecentRoundDirections`). If the current direction is `neutral` or differs from the previous one (`isChopRegime` in `ExitPolicy.ts`), the round is a **chop round**: all planned deposits (new slots + top-ups) are scaled by `CHOP_DEPOSIT_FACTOR` (default 0.5), and non-risk rotation of profitable/flat positions is deferred (`hold_chop` events — they neither increment nor reset the hysteresis streak; the rotation clock freezes). Stop-losses, trailing stops, and losing-position rotation are unaffected. Rationale: the ledger shows the strategy earns in trends and bleeds in chop; direction flip-flopping is the observable symptom.
+
 Each round runs two passes in this order:
 
-**Pass 1 — Trim over-allocated recommended vaults to barbell target.**
-For every current position that is still in the Claude recommendation set: if `currentUsd > targetUsd`, partial-withdraw the excess back to `targetUsd`. **No profit threshold** — trims fire whenever Claude says we're overweight, regardless of ROE. **No hold-period gate** — a vault funded today can be trimmed today if it's already over target.
+**Pass 1 — Trim over-allocated recommended vaults to barbell target (profit-gated).**
+For every current position still in the Claude recommendation set with `currentUsd > targetUsd`, a partial withdrawal back to `targetUsd` fires only if `shouldTrim` passes: ROE ≥ `TRIM_MIN_ROE_PCT` (default 0 — never realize a partial loss via trim) AND the position is over target by ≥ `TRIM_OVERWEIGHT_TOLERANCE_PCT` (default 25%, mirroring the top-up tolerance). The old unconditional every-round trim was one of the two mechanisms manufacturing the ledger's negative skew (avg win $8.38 vs avg loss $11.07): winners were clipped back to target every 48h while losers rode to the stops. **No hold-period gate** — a vault funded today can be trimmed today if it passes the gate.
 
 **Pass 2 — Withdrawal scan, evaluated per position in this exact order:**
 
@@ -74,16 +78,19 @@ For every current position that is still in the Claude recommendation set: if `c
 4. **Inactive Vault Exit** — 0 open positions + 0 trades in last 7 days → full exit. Applies to recommended vaults too.
 5. **Recommended skip** — still in recommendations after passing inactive check → leave alone.
 6. **Hold Period** — non-recommended within 5 days (`MIN_HOLD_DAYS`) of last deposit → skip.
-7. **Non-recommended past hold** — hysteresis: a position with `roePct >= 0` is held for `NOT_RECOMMENDED_EXIT_ROUNDS` (default 2) consecutive non-recommended rounds (`hold_not_recommended` events count the streak; any recommended-round event resets it) before the full exit. Losing positions exit on the first non-recommended round. If the trace DB is unreachable the pre-hysteresis behavior applies (exit immediately).
+7. **Chop-brake deferral** — on a chop round, a non-recommended position with `roePct >= 0` records `hold_chop` and is left alone (rotation deferred; hysteresis streak frozen). Losing positions fall through to the next rule unchanged.
+8. **Non-recommended past hold** — hysteresis: a position with `roePct >= 0` is held for `NOT_RECOMMENDED_EXIT_ROUNDS` (default 2) consecutive non-recommended rounds (`hold_not_recommended` events count the streak; any recommended-round event resets it) before the full exit. Losing positions exit on the first non-recommended round. If the trace DB is unreachable the pre-hysteresis behavior applies (exit immediately).
 
 **Withdrawal fill verification (`WithdrawalVerifier.ts`):** after submitting withdrawals, per-vault equity is polled against the expected post-withdrawal level (0 for full exits, the trim target for trims). Withdrawals that didn't move equity by the deadline are re-submitted up to `WITHDRAWAL_VERIFY_MAX_RETRIES` (default 2) times, recording `exit_retry`/`trim` trace events. HL can fill a vault withdrawal for $0 when the vault has no free margin — previously this went undetected for a full round (the 2026-06 Otter Quant -$213 loss).
 
 **RiskMonitor (`RiskMonitor.ts`):** between rounds, every `RISK_MONITOR_INTERVAL_MS` (default 4h, first tick 10 min after boot) re-checks all open positions and fires protective exits only: hard stop-loss (`exit_risk_monitor`) and trailing stop (`exit_trailing_stop`), with the same fill verification. By default (kill switch `RISK_MONITOR_SOFT_SL_ENABLED=false`) it also fires a **gated soft stop-loss** (`exit_soft_sl`, `round_id=null`) for a position that is below `STOP_LOSS_PCT` **and** absent from the round's stashed recommendation set (`getLastRecommendedSet`) **and** mis-aligned with the market overlay direction **and** still falling vs the previous tick's ROE (tracked in-memory per held vault). This stricter AND-gate exists because the 2026-06 backtest showed a blanket intra-round soft stop whipsaws recoverable dips; the gate isolates the Realist-Capital profile (abandoned + counter-regime + confirmed-losing) that the 48h round scan lets bleed −15% → −22%. It declines to fire when the recommendation set is empty/stale (`RISK_MONITOR_RECOMMENDED_MAX_AGE_MS`) or the regime is neutral. Full rotation still needs the live Claude ranking and stays in the round scan. Skips a tick if a rebalance round is running. Disabled via `RISK_MONITOR_ENABLED=false` (or `REBALANCE_ENABLED=false`).
 
-**Important caveat about "recommended".** Claude is only told which vaults we already hold (`already_exposed`); it is *not* told our per-position ROE. The `vault-ranking.md` prompt instructs Claude to *prefer keeping* exposed vaults that still rank well. So a vault we are underwater on can absolutely still appear in the recommended set — there is no automatic rule that drops losing positions from recommendations. The soft-SL "recommended + aligned ⇒ hold" branch is therefore reachable.
+**Portfolio context fed to Claude (`portfolioContext.ts`).** Both ranking stages now receive, alongside `already_exposed`: `current_positions` (per-position `current_usd`, `roe_pct` vs OUR FIFO cost basis, `hold_days`), `our_vault_history` (per-vault episodes + realized PnL from `position_account`), and `recently_exited_at_loss` (the re-entry cooldown list). The prompts instruct Claude to (a) never boost a vault for being held, (b) treat repeated realized losses as negative evidence, (c) DROP an incumbent that is ≤ −10% ROE for us unless it is top-~8 on pure merit — keeping a loser "recommended" blocks the soft stop-loss — and (d) require a challenger to beat an incumbent by > 0.5 robust-z (estimated rotation round-trip cost) before rotating. All DB-derived fields degrade to empty arrays when the trace layer is down (old bare-addresses behavior). This closes the forensics §3 flaw where selection and risk were two disconnected brains.
 
 **Deposit filtering:**
 - Directional concentration limit: max 60% of new deposits in same direction (`MAX_SAME_DIRECTION_PCT`)
+- **Loss re-entry cooldown**: vaults we fully exited at a realized loss (< −$0.50) within `REENTRY_COOLDOWN_DAYS` (default 10) receive no NEW deposits even if re-recommended (2026-06 failure mode: Overdose exited −$39.61 on 06-21, re-entered $254 on 06-26). Top-ups of held positions are unaffected. Fail-open when the trace DB is down.
+- **Chop rounds**: every planned deposit is scaled by `CHOP_DEPOSIT_FACTOR`; the unspent balance deploys on the next confirmed-trend round.
 
 Wait 60s after withdrawals before deposits (configurable via `REBALANCE_WITHDRAWAL_DELAY_MS`).
 
@@ -108,6 +115,7 @@ Wait 60s after withdrawals before deposits (configurable via `REBALANCE_WITHDRAW
 - `GET /api/history?page=1&pageSize=15` — Transaction history (reads from `position_ledger`, falls back to live HL if DB empty)
 - `GET /api/portfolio` — Aggregated portfolio summary
 - `GET /api/metrics` — Platform metrics (TVL, 30d/60d PnL %, win rate, max drawdown)
+- `GET /api/metrics/epoch` — Fresh-epoch strategy KPIs, computed strictly from ledger activity at/after `METRICS_EPOCH_START` (2026-07-02, the risk/selection overhaul): per-close realized PnL via the same FIFO replay as `position_account` (pre-epoch basis carried in correctly), win rate, avg win/loss, **winLossRatio** (skew — lifetime was 0.76, target > 1), profit factor, expectancy/close, churn closes (0–5%-of-basis losses), deposits, round counts (incl. risk-only), event counts by action. This is the scoreboard for the 2-3 month go/no-go review — do not judge the overhaul on lifetime metrics.
 - `GET /api/trace/rounds?limit=20` — Recent rebalance rounds with summaries
 - `GET /api/trace/rounds/:id` — Round detail: market snapshot + Claude decisions + vault snapshots + position events
 - `GET /api/trace/positions/:vaultAddress?limit=100` — Chronological event timeline per vault
@@ -213,6 +221,22 @@ NOT_RECOMMENDED_EXIT_ROUNDS=2
 TRAILING_STOP_ENABLED=true
 TRAILING_STOP_ARM_ROE_PCT=10
 TRAILING_STOP_GIVEBACK_RATIO=0.5
+# Profit-gated trims (skew fix, 2026-07): only trim a recommended position
+# when its ROE >= TRIM_MIN_ROE_PCT AND it is over target by more than
+# TRIM_OVERWEIGHT_TOLERANCE_PCT. TRIM_MIN_ROE_PCT=-100 +
+# TRIM_OVERWEIGHT_TOLERANCE_PCT=0 restores the old unconditional trim.
+TRIM_MIN_ROE_PCT=0
+TRIM_OVERWEIGHT_TOLERANCE_PCT=25
+# Loss re-entry cooldown (churn fix, 2026-07): no new deposits into a vault
+# we exited at a realized loss within this many days. 0 disables.
+REENTRY_COOLDOWN_DAYS=10
+# Chop brake (regime fix, 2026-07): when market direction is neutral or just
+# flipped vs the previous completed round, scale deposits by
+# CHOP_DEPOSIT_FACTOR and defer non-risk rotation of profitable positions.
+CHOP_BRAKE_ENABLED=true
+CHOP_DEPOSIT_FACTOR=0.5
+# Fresh-epoch KPI scoreboard (/api/metrics/epoch) measures from this instant.
+METRICS_EPOCH_START=2026-07-02T00:00:00Z
 # Intra-round risk monitor
 RISK_MONITOR_ENABLED=true
 RISK_MONITOR_INTERVAL_MS=14400000

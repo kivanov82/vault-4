@@ -8,7 +8,7 @@ import type {
     VaultRecommendation,
 } from "../vaults/types";
 import { RebalanceService, type VaultTransferAction } from "./RebalanceService";
-import { TraceService } from "../../db/TraceService";
+import { TraceService, readRecentLossExitVaults } from "../../db/TraceService";
 import { computeTopupTargets } from "./topup";
 import {
     buildTargetFromAllocation,
@@ -97,6 +97,18 @@ const TOPUP_ENABLED =
 const TOPUP_TOLERANCE_PCT = readNumberEnv(
     process.env.REBALANCE_TOPUP_TOLERANCE_PCT,
     30
+);
+// Loss re-entry cooldown: vaults we fully exited at a realized loss within
+// this many days receive no NEW deposits, even if Claude recommends them
+// again. The 2026-06 ledger shows the failure mode: Overdose exited at
+// −$39.61 on 06-21 and re-entered with $254 on 06-26; Realist Capital
+// re-entered the same round after a −$78 loss earlier that month. Every such
+// round trip pays entry/exit costs against a +$0.75/close expectancy.
+// Top-ups of held positions are unaffected. 0 disables. Fail-open when the
+// trace DB is down (no filtering).
+const REENTRY_COOLDOWN_DAYS = readNumberEnv(
+    process.env.REENTRY_COOLDOWN_DAYS,
+    10
 );
 const MIN_DEPOSIT_USD = 5;
 
@@ -204,13 +216,43 @@ export class DepositService {
             dustPositionsFiltered: currentEquities.length - significantEquities.length,
         });
 
+        // Loss re-entry cooldown set (see REENTRY_COOLDOWN_DAYS above).
+        let cooldownSet = new Set<string>();
+        if (REENTRY_COOLDOWN_DAYS > 0) {
+            const recentLossExits = await readRecentLossExitVaults(
+                REENTRY_COOLDOWN_DAYS
+            );
+            if (recentLossExits) {
+                cooldownSet = new Set(
+                    recentLossExits.map((a) => a.toLowerCase())
+                );
+            }
+        }
+        const inCooldown = (rec: VaultRecommendation) =>
+            cooldownSet.has(rec.vaultAddress.toLowerCase());
+        const cooldownFiltered = [...highSelected, ...lowSelected].filter(
+            (rec) => !currentEquityMap.has(rec.vaultAddress.toLowerCase()) && inCooldown(rec)
+        );
+        if (cooldownFiltered.length) {
+            logger.info("Skipping vaults under loss re-entry cooldown", {
+                cooldownDays: REENTRY_COOLDOWN_DAYS,
+                skipped: cooldownFiltered.map((rec) => ({
+                    name: rec.name,
+                    address: rec.vaultAddress,
+                })),
+            });
+        }
+
         // Filter out vaults we already have exposure to (avoid concentration risk)
+        // and vaults under the loss re-entry cooldown.
         // Then sort by score (descending) to prioritize highest confidence vaults
         const highWithoutExposure = highSelected
             .filter((rec) => !currentEquityMap.has(rec.vaultAddress.toLowerCase()))
+            .filter((rec) => !inCooldown(rec))
             .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
         const lowWithoutExposure = lowSelected
             .filter((rec) => !currentEquityMap.has(rec.vaultAddress.toLowerCase()))
+            .filter((rec) => !inCooldown(rec))
             .sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
 
         // Limit new deposits to not exceed maxActive total vaults

@@ -305,6 +305,13 @@ async function main() {
         notRecommendedRounds: numArg("nr-rounds", defaults.notRecommendedRounds),
         trailingArmRoePct: numArg("trailing-arm", defaults.trailingArmRoePct),
         trailingGivebackRatio: numArg("trailing-giveback", defaults.trailingGivebackRatio),
+        // Trim gating happens in the trim pass, which the exit-policy replay
+        // does not simulate — carried through only to satisfy ExitConfig.
+        trimMinRoePct: numArg("trim-min-roe", defaults.trimMinRoePct),
+        trimOverweightTolerancePct: numArg(
+            "trim-tolerance",
+            defaults.trimOverweightTolerancePct
+        ),
     };
 
     console.log(`Backtest against ${baseUrl} (up to ${maxRounds} rounds)`);

@@ -20,6 +20,26 @@ Input
   - `trades`: last 30 days; each trade has `{ time(ms), dir("Long"/"Short"), closedPnl, fee }`.
   - `accountSummary.assetPositions`: array of `{ position: { coin, szi, positionValue, unrealizedPnl } }`.
 - `already_exposed` (optional): array of vault addresses we already have deposits into.
+- `current_positions` (optional): array of `{ address, current_usd, roe_pct, hold_days }` —
+  our live positions with ROE measured against OUR cost basis (not the vault's own PnL).
+- `our_vault_history` (optional): array of `{ address, episodes, realized_pnl_usd, currently_held }` —
+  our own realized track record with vaults we have traded before.
+- `recently_exited_at_loss` (optional): array of vault addresses we exited at a realized loss
+  within the last ~10 days. These are under a re-entry cooldown and CANNOT receive deposits
+  this round.
+
+Our own track record (evidence, not loyalty)
+
+- Never boost a vault's score because we already hold it — ownership is not edge.
+  Score every vault on current merit alone.
+- If `our_vault_history` shows repeated realized losses in a vault (negative
+  `realized_pnl_usd` across 2+ episodes), treat that as genuine negative evidence about
+  the vault's fit for this strategy and reduce the score accordingly.
+- A `current_positions` entry with deeply negative `roe_pct` (≤ −10) means the vault is
+  currently losing money FOR US. That is a fact about the recent window — weigh it
+  against whatever the vault's own marketing-friendly PnL series suggests.
+- Vaults in `recently_exited_at_loss` cannot receive deposits this round; do not give
+  them high scores unless the setup has clearly and materially changed.
 
 Market regime inference
 

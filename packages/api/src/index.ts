@@ -22,6 +22,7 @@ import {
     readRoundDetail,
     readVaultTimeline,
 } from "./db/TraceService";
+import { EpochKpiService } from "./db/EpochKpiService";
 import path from "path";
 import { ownershipProofsForHost } from "./service/discovery/ownershipProof";
 
@@ -462,6 +463,25 @@ app.get("/api/metrics", async (req, res) => {
             message: error?.message,
         });
         res.status(500).json({ error: "Failed to fetch platform metrics" });
+    }
+});
+
+// Fresh-epoch strategy KPIs: every statistic computed strictly from ledger
+// activity at or after METRICS_EPOCH_START (2026-07-02 — the risk/selection
+// overhaul), so the 2-3 month go/no-go review runs on clean post-change data.
+app.get("/api/metrics/epoch", async (req, res) => {
+    try {
+        const kpis = await EpochKpiService.compute();
+        if (!kpis) {
+            res.status(503).json({ error: "Trace database unavailable" });
+            return;
+        }
+        res.json(kpis);
+    } catch (error: any) {
+        logger.error("Failed to compute epoch KPIs", {
+            message: error?.message,
+        });
+        res.status(500).json({ error: "Failed to compute epoch KPIs" });
     }
 });
 

@@ -106,6 +106,7 @@ export type PositionEventAction =
     | "hold_soft_sl"
     | "hold_period"
     | "hold_not_recommended"
+    | "hold_chop"
     | "skip_recommended";
 
 export type PositionEventInput = {

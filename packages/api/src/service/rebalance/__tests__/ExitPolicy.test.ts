@@ -1,9 +1,11 @@
 import {
     defaultExitConfig,
+    isChopRegime,
     shouldHardStop,
     shouldSoftStop,
     shouldIntraRoundSoftStop,
     shouldTrailingExit,
+    shouldTrim,
     trailingExitLevel,
     type ExitConfig,
 } from "../ExitPolicy";
@@ -15,6 +17,8 @@ const config: ExitConfig = {
     notRecommendedRounds: 2,
     trailingArmRoePct: 10,
     trailingGivebackRatio: 0.5,
+    trimMinRoePct: 0,
+    trimOverweightTolerancePct: 25,
 };
 
 describe("defaultExitConfig", () => {
@@ -26,6 +30,8 @@ describe("defaultExitConfig", () => {
         expect(cfg.notRecommendedRounds).toBe(2);
         expect(cfg.trailingArmRoePct).toBe(10);
         expect(cfg.trailingGivebackRatio).toBe(0.5);
+        expect(cfg.trimMinRoePct).toBe(0);
+        expect(cfg.trimOverweightTolerancePct).toBe(25);
     });
 
     it("honors env overrides", () => {
@@ -127,5 +133,75 @@ describe("trailing stop", () => {
             expect(level).not.toBeNull();
             expect(level as number).toBeGreaterThan(0);
         }
+    });
+});
+
+describe("shouldTrim (profit-gated)", () => {
+    it("trims a winner that is meaningfully over target", () => {
+        // +30% over target, +8% ROE
+        expect(shouldTrim(130, 100, 8, config)).toBe(true);
+    });
+
+    it("never trims below target or at target", () => {
+        expect(shouldTrim(100, 100, 50, config)).toBe(false);
+        expect(shouldTrim(90, 100, 50, config)).toBe(false);
+    });
+
+    it("holds an over-target LOSER — no realizing partial losses via trim", () => {
+        expect(shouldTrim(130, 100, -3, config)).toBe(false);
+        expect(shouldTrim(200, 100, -0.1, config)).toBe(false);
+    });
+
+    it("ignores small overweight drift inside the tolerance band", () => {
+        // +24% over target: below the 25% tolerance
+        expect(shouldTrim(124, 100, 10, config)).toBe(false);
+        expect(shouldTrim(125, 100, 10, config)).toBe(true);
+    });
+
+    it("flat position (roe 0) with default gate 0 may be trimmed", () => {
+        expect(shouldTrim(130, 100, 0, config)).toBe(true);
+    });
+
+    it("min-ROE gate is configurable", () => {
+        const gated = { ...config, trimMinRoePct: 5 };
+        expect(shouldTrim(130, 100, 4.9, gated)).toBe(false);
+        expect(shouldTrim(130, 100, 5, gated)).toBe(true);
+    });
+
+    it("restoring old behavior: trimMinRoePct=-100 + tolerance 0 trims any excess", () => {
+        const legacy = {
+            ...config,
+            trimMinRoePct: -100,
+            trimOverweightTolerancePct: 0,
+        };
+        expect(shouldTrim(100.01, 100, -50, legacy)).toBe(true);
+    });
+
+    it("degenerate target (0) never trims — full exits belong to the withdrawal pass", () => {
+        expect(shouldTrim(100, 0, 50, config)).toBe(false);
+    });
+});
+
+describe("isChopRegime", () => {
+    it("neutral direction is always chop", () => {
+        expect(isChopRegime("neutral", "long")).toBe(true);
+        expect(isChopRegime("neutral", "neutral")).toBe(true);
+        expect(isChopRegime("neutral", null)).toBe(true);
+    });
+
+    it("direction flip is chop", () => {
+        expect(isChopRegime("long", "short")).toBe(true);
+        expect(isChopRegime("short", "long")).toBe(true);
+        expect(isChopRegime("long", "neutral")).toBe(true);
+    });
+
+    it("confirmed trend is not chop", () => {
+        expect(isChopRegime("long", "long")).toBe(false);
+        expect(isChopRegime("short", "short")).toBe(false);
+    });
+
+    it("no history (first round / DB down) fails open — not chop", () => {
+        expect(isChopRegime("long", null)).toBe(false);
+        expect(isChopRegime("short", null)).toBe(false);
     });
 });

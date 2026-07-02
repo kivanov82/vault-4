@@ -4,6 +4,10 @@ import path from "path";
 import { logger } from "../utils/logger";
 import { HyperliquidConnector } from "../trade/HyperliquidConnector";
 import { MarketDataService } from "./MarketDataService";
+import {
+    buildPortfolioContext,
+    type PortfolioContext,
+} from "./portfolioContext";
 import type {
     SuggestedAllocations,
     SuggestedAllocationTarget,
@@ -155,7 +159,11 @@ export class ClaudeService {
         if (!candidates.length) return null;
 
         const marketData = await MarketDataService.getMarketOverlay();
-        const alreadyExposed = await getAlreadyExposedVaults();
+        // Per-position ROE, our per-vault realized history, and the loss
+        // re-entry cooldown list — so selection stops flying blind to our own
+        // book (STRATEGY-FORENSICS-2026-06.md action #4).
+        const portfolioContext = await buildPortfolioContext();
+        const alreadyExposed = portfolioContext.alreadyExposed;
 
         logger.info("AI ranking context", {
             totalCandidates: candidates.length,
@@ -163,6 +171,9 @@ export class ClaudeService {
             highConfidenceCount,
             alreadyExposedCount: alreadyExposed.length,
             alreadyExposed,
+            currentPositions: portfolioContext.currentPositions,
+            vaultHistoryCount: portfolioContext.vaultHistory.length,
+            recentLossExits: portfolioContext.recentLossExits,
             marketDirection: marketData.preferred_direction,
             marketTrend: marketData.trend,
             btc24h: marketData.btc_24h_change,
@@ -189,7 +200,7 @@ export class ClaudeService {
                 });
                 await new Promise((resolve) => setTimeout(resolve, CLAUDE_API_DELAY_MS));
             }
-            const result = await this.scoreVaultBatch(batches[i], marketData, alreadyExposed, i);
+            const result = await this.scoreVaultBatch(batches[i], marketData, portfolioContext, i);
             batchResults.push(result);
         }
 
@@ -247,7 +258,7 @@ export class ClaudeService {
         return this.finalRanking(
             topVaultCandidates,
             marketData,
-            alreadyExposed,
+            portfolioContext,
             totalCount,
             highConfidenceCount
         );
@@ -256,11 +267,12 @@ export class ClaudeService {
     static async scoreVaultBatch(
         batch: VaultCandidate[],
         marketData: any,
-        alreadyExposed: string[],
+        portfolioContext: PortfolioContext,
         batchIndex: number
     ): Promise<ScoredVault[]> {
         const client = this.getClient();
         const systemPrompt = this.getScoringPromptTemplate();
+        const alreadyExposed = portfolioContext.alreadyExposed;
 
         const vaultsPayload = await buildVaultPayload(batch, {
             maxTrades: MAX_TRADES,
@@ -270,6 +282,12 @@ export class ClaudeService {
         const userPrompt = `market_data = ${JSON.stringify(marketData)}
 
 already_exposed = ${JSON.stringify(alreadyExposed)}
+
+current_positions = ${JSON.stringify(portfolioContext.currentPositions)}
+
+our_vault_history = ${JSON.stringify(portfolioContext.vaultHistory)}
+
+recently_exited_at_loss = ${JSON.stringify(portfolioContext.recentLossExits)}
 
 vaults_json = ${JSON.stringify(vaultsPayload)}`;
 
@@ -367,7 +385,7 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
     private static async finalRanking(
         candidates: VaultCandidate[],
         marketData: any,
-        alreadyExposed: string[],
+        portfolioContext: PortfolioContext,
         totalCount: number,
         highConfidenceCount: number
     ): Promise<ClaudeRanking | null> {
@@ -381,7 +399,13 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
 
         const userPrompt = `market_data = ${JSON.stringify(marketData)}
 
-already_exposed = ${JSON.stringify(alreadyExposed)}
+already_exposed = ${JSON.stringify(portfolioContext.alreadyExposed)}
+
+current_positions = ${JSON.stringify(portfolioContext.currentPositions)}
+
+our_vault_history = ${JSON.stringify(portfolioContext.vaultHistory)}
+
+recently_exited_at_loss = ${JSON.stringify(portfolioContext.recentLossExits)}
 
 vaults_json = ${JSON.stringify(vaultsPayload)}`;
 
@@ -834,22 +858,6 @@ async function delayBetweenRequests(): Promise<void> {
     const ms = Number.isFinite(DATA_DELAY_MS) ? DATA_DELAY_MS : 0;
     if (ms > 0) {
         await new Promise((resolve) => setTimeout(resolve, ms));
-    }
-}
-
-async function getAlreadyExposedVaults(): Promise<string[]> {
-    const wallet = process.env.WALLET as `0x${string}` | undefined;
-    if (!wallet) return [];
-    try {
-        const equities = await HyperliquidConnector.getUserVaultEquities(wallet);
-        const unique = new Set<string>();
-        for (const entry of equities) {
-            if (!entry?.vaultAddress) continue;
-            unique.add(String(entry.vaultAddress).toLowerCase());
-        }
-        return Array.from(unique);
-    } catch {
-        return [];
     }
 }
 

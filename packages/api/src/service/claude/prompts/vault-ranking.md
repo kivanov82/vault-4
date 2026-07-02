@@ -27,6 +27,13 @@ Input
   - `trades`: last 30 days; each trade has `{ time(ms), dir("Long"/"Short"), closedPnl, fee }`.
   - `accountSummary.assetPositions`: array of `{ position: { coin, szi, positionValue, unrealizedPnl } }`.
 - `already_exposed` (optional): array of vault addresses we already have deposits into.
+- `current_positions` (optional): array of `{ address, current_usd, roe_pct, hold_days }` —
+  our live positions with ROE measured against OUR cost basis (not the vault's own PnL).
+- `our_vault_history` (optional): array of `{ address, episodes, realized_pnl_usd, currently_held }` —
+  our own realized track record with vaults we have traded before.
+- `recently_exited_at_loss` (optional): array of vault addresses we exited at a realized loss
+  within the last ~10 days. These are under a re-entry cooldown and CANNOT receive deposits
+  this round.
 
 Market overlay data (provided in input)
 
@@ -126,10 +133,23 @@ Before finalizing rankings, assess each vault's **directional alignment** with t
 Ranking task
 
 1. Compute `score_market` for each vault; sort descending.
-2. Select up to 12 as the recommended vaults. **Important**: vaults in `already_exposed`
-   should be included in this list if they still rank well — keeping a good existing position
-   is better than churning into a marginally better new one. Only drop an `already_exposed`
-   vault if it ranks poorly (below rank 15) or its score dropped > 1.0 robust z.
+2. Select up to 12 as the recommended vaults, applying the incumbent-vs-challenger rules:
+   - **Rotation must pay for itself.** Every exit + re-entry round trip costs roughly
+     0.5 robust-z of edge in spread, timing, and the reset hold clock. Keep an
+     `already_exposed` incumbent over a new challenger unless the challenger's
+     `score_market` exceeds the incumbent's by MORE than 0.5, or the incumbent ranks
+     poorly (below rank 15) or its score dropped > 1.0 robust z.
+   - **EXCEPTION — underwater incumbents.** Check `current_positions.roe_pct`. If our
+     position is down more than 10% for us (`roe_pct <= -10`) and the vault is not in
+     your top ~8 on pure merit, DROP it from the recommendations. A losing vault kept
+     "recommended" blocks the system's soft stop-loss from cutting it — never keep
+     re-recommending our own underwater bags out of loyalty to the existing position.
+   - **Cooldown vaults.** Do not recommend vaults in `recently_exited_at_loss` — deposits
+     to them are blocked this round anyway — unless they now rank clearly at the very top
+     on fresh merit (in which case they may re-enter after the cooldown expires).
+   - **Repeat losers.** If `our_vault_history` shows 2+ episodes with cumulative negative
+     `realized_pnl_usd` for a vault, demand meaningfully stronger current evidence before
+     recommending it again.
 
 Allocation logic (barbell with counter-regime hedge)
 

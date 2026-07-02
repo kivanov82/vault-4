@@ -26,6 +26,21 @@ export type ExitConfig = {
     trailingArmRoePct: number;
     /** Fraction of peak ROE given back before the trailing stop fires. */
     trailingGivebackRatio: number;
+    /**
+     * Minimum ROE before an over-allocated recommended position may be
+     * trimmed. The 5-month ledger showed avg win $8.38 vs avg loss $11.07 —
+     * negative skew manufactured partly by trimming winners back to target
+     * every round with no profit gate while losers ride to the stops. 0 means
+     * "only trim positions in profit"; set to -100 to restore the old
+     * unconditional behavior.
+     */
+    trimMinRoePct: number;
+    /**
+     * How far above target (as % of target) a position must be before a trim
+     * fires. Mirrors REBALANCE_TOPUP_TOLERANCE_PCT on the deposit side so the
+     * system stops clipping every small round-to-round allocation drift.
+     */
+    trimOverweightTolerancePct: number;
 };
 
 function envNumber(name: string, fallback: number): number {
@@ -43,7 +58,48 @@ export function defaultExitConfig(): ExitConfig {
         notRecommendedRounds: envNumber("NOT_RECOMMENDED_EXIT_ROUNDS", 2),
         trailingArmRoePct: envNumber("TRAILING_STOP_ARM_ROE_PCT", 10),
         trailingGivebackRatio: envNumber("TRAILING_STOP_GIVEBACK_RATIO", 0.5),
+        trimMinRoePct: envNumber("TRIM_MIN_ROE_PCT", 0),
+        trimOverweightTolerancePct: envNumber(
+            "TRIM_OVERWEIGHT_TOLERANCE_PCT",
+            25
+        ),
     };
+}
+
+/**
+ * Profit-gated trim decision for over-allocated recommended positions.
+ * Fires only when the position is (a) actually over target by more than the
+ * overweight tolerance and (b) at or above the minimum ROE — so trims harvest
+ * winners instead of realizing partial losses, and small drift is left alone.
+ */
+export function shouldTrim(
+    currentUsd: number,
+    targetUsd: number,
+    roePct: number,
+    config: ExitConfig
+): boolean {
+    if (!(targetUsd > 0) || currentUsd <= targetUsd) return false;
+    if (roePct < config.trimMinRoePct) return false;
+    const overweightPct = ((currentUsd - targetUsd) / targetUsd) * 100;
+    return overweightPct >= config.trimOverweightTolerancePct;
+}
+
+/**
+ * Chop-regime detector for the deposit/rotation brake. The 5-month ledger
+ * shows the strategy makes money in trends and gives it back in chop (Mar,
+ * Jun 2026); the market-direction signal flip-flopping round-to-round is the
+ * observable symptom. A round counts as "chop" when the current direction is
+ * neutral (unreadable) or differs from the previous completed round's
+ * direction (the signal just flipped — the new trend is unconfirmed).
+ * `previousDirection == null` (first round, DB unavailable) is NOT chop:
+ * fail-open so a trace-layer outage can't silently halve every deposit.
+ */
+export function isChopRegime(
+    currentDirection: "long" | "short" | "neutral",
+    previousDirection: "long" | "short" | "neutral" | null
+): boolean {
+    if (currentDirection === "neutral") return true;
+    return previousDirection != null && previousDirection !== currentDirection;
 }
 
 export function shouldHardStop(roePct: number, config: ExitConfig): boolean {

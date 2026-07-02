@@ -4,10 +4,19 @@ import { VaultService } from "../vaults/VaultService";
 import { HyperliquidConnector } from "../trade/HyperliquidConnector";
 import { MarketDataService } from "../claude/MarketDataService";
 import { logger } from "../utils/logger";
-import { TraceService } from "../../db/TraceService";
+import {
+    TraceService,
+    readLastClaudeRecommendedSet,
+    readRecentRoundDirections,
+} from "../../db/TraceService";
 import type { PositionEventAction } from "../../db/types";
 import type { UserPosition } from "../vaults/types";
-import { defaultExitConfig } from "./ExitPolicy";
+import {
+    defaultExitConfig,
+    isChopRegime,
+    shouldTrim,
+} from "./ExitPolicy";
+import { floorUsd } from "./depositMath";
 import {
     verifyAndSettleWithdrawals,
     type WithdrawalVerifyEntry,
@@ -20,6 +29,33 @@ const STOP_LOSS_PCT = exitConfig.stopLossPct;
 const HARD_STOP_LOSS_PCT = exitConfig.hardStopLossPct;
 const MIN_HOLD_DAYS = exitConfig.minHoldDays;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+function envNumber(name: string, fallback: number): number {
+    const raw = process.env[name];
+    if (raw == null || raw === "") return fallback;
+    const num = Number(raw);
+    return Number.isFinite(num) ? num : fallback;
+}
+
+// Chop brake: when the market-direction signal is neutral or just flipped vs
+// the previous completed round, scale new deposits down and defer non-risk
+// rotation of profitable positions. The 5-month ledger shows the strategy
+// makes money in trends and bleeds in chop (Mar, Jun 2026) — the system
+// should trade LESS when the regime is unreadable, not chase the flip.
+const CHOP_BRAKE_ENABLED =
+    (process.env.CHOP_BRAKE_ENABLED ?? "true") !== "false";
+const CHOP_DEPOSIT_FACTOR = Math.min(
+    1,
+    Math.max(0, envNumber("CHOP_DEPOSIT_FACTOR", 0.5))
+);
+
+// How stale the stashed/persisted recommendation set may be before a
+// risk-only round declines to use it for soft-SL recommendation checks.
+// Shares the RiskMonitor's env var — the semantics are identical.
+const RECOMMENDED_SET_MAX_AGE_MS = envNumber(
+    "RISK_MONITOR_RECOMMENDED_MAX_AGE_MS",
+    3 * 24 * 60 * 60 * 1000
+);
 
 export type RebalanceRoundOptions = {
     dryRun?: boolean;
@@ -119,24 +155,23 @@ export class RebalanceOrchestrator {
             this.latestRecommendationsAt = startedAt;
         }
 
-        // If Claude ranking failed and we fell back to heuristic, abort rebalancing.
-        // Heuristic scoring is unstable across cycles and causes unnecessary churn.
+        // If Claude ranking failed and we fell back to heuristic, degrade to a
+        // RISK-ONLY round instead of aborting outright. Rotation, trims, and
+        // deposits genuinely need a live Claude ranking (heuristic scoring is
+        // unstable across cycles and causes churn) — but the protective exits
+        // do not. The old full-abort left the book unmanaged for ~5 days
+        // during the 2026-06-23→25 outage; round 21 then realized −$103 in
+        // one cleanup (Crypto_Lab28 rode to −22%, well past the soft stop).
         if (plan.recommendations.source !== "claude") {
-            logger.warn("Aborting rebalance: Claude ranking failed, heuristic fallback is too unstable for withdrawal decisions", {
-                source: plan.recommendations.source,
-            });
-            await TraceService.endRound(roundId, "aborted", {
-                reason: "claude-fallback",
-                source: plan.recommendations.source,
-            });
-            return {
+            return await this.runRiskOnlyRound({
+                roundId,
                 startedAt,
                 planTargets: plan.targets.length,
-                recommended: [],
-                tpWithdrawals: [],
-                withdrawals: [],
-                deposits: null,
-            };
+                dryRun,
+                includeLocked,
+                withdrawalDelayMs,
+                source: plan.recommendations.source,
+            });
         }
 
         // Build recommended set from the FULL recommendation list (before exposure filtering),
@@ -207,6 +242,29 @@ export class RebalanceOrchestrator {
             });
         }
 
+        // Chop brake: when the direction signal is neutral or just flipped vs
+        // the previous completed round, this round trades smaller and calmer —
+        // new deposits are scaled by CHOP_DEPOSIT_FACTOR and non-risk rotation
+        // of profitable positions is deferred (stop-losses are unaffected).
+        let chopRound = false;
+        let prevDirection: "long" | "short" | "neutral" | null = null;
+        if (CHOP_BRAKE_ENABLED) {
+            const dirs = await readRecentRoundDirections(1).catch(() => null);
+            prevDirection = dirs?.[0] ?? null;
+            chopRound = isChopRegime(marketDirection, prevDirection);
+            if (chopRound) {
+                logger.info(
+                    "Chop brake ACTIVE — regime unreadable or direction flipped",
+                    {
+                        marketDirection,
+                        prevDirection,
+                        depositFactor: CHOP_DEPOSIT_FACTOR,
+                    }
+                );
+            }
+        }
+        let rotationsDeferredByChop = 0;
+
         const platformTvlUsd = positions.totalCapitalUsd ?? null;
         const recommendationByAddress = new Map(
             [
@@ -268,7 +326,14 @@ export class RebalanceOrchestrator {
         };
 
         // Trim over-allocated recommended positions back to barbell target.
+        // Profit-gated (shouldTrim): only positions at/above TRIM_MIN_ROE_PCT
+        // and more than TRIM_OVERWEIGHT_TOLERANCE_PCT over target are trimmed.
+        // The unconditional every-round trim was one of the two mechanisms
+        // manufacturing the ledger's negative skew (avg win $8.38 vs avg loss
+        // $11.07): winners were clipped back to target every 48h while losers
+        // rode to the stops.
         const tpWithdrawals: VaultTransferAction[] = [];
+        let trimsSkippedByGate = 0;
 
         for (const position of positions.positions) {
             const address = position.vaultAddress.toLowerCase();
@@ -284,12 +349,31 @@ export class RebalanceOrchestrator {
 
             const currentUsd = position.amountUsd ?? 0;
             const targetUsd = targetAllocation.targetUsd;
+            const roePct = position.roePct ?? 0;
 
-            if (currentUsd <= targetUsd) {
+            if (!shouldTrim(currentUsd, targetUsd, roePct, exitConfig)) {
+                if (currentUsd > targetUsd) {
+                    trimsSkippedByGate += 1;
+                    logger.info(
+                        "Trim skipped by profit/tolerance gate — letting the position run",
+                        {
+                            vaultAddress: address,
+                            vaultName: position.vaultName,
+                            currentUsd,
+                            targetUsd,
+                            overweightPct:
+                                targetUsd > 0
+                                    ? ((currentUsd - targetUsd) / targetUsd) * 100
+                                    : null,
+                            roePct,
+                            trimMinRoePct: exitConfig.trimMinRoePct,
+                            trimOverweightTolerancePct:
+                                exitConfig.trimOverweightTolerancePct,
+                        }
+                    );
+                }
                 continue;
             }
-
-            const roePct = position.roePct ?? 0;
             logger.info("Trimming over-allocated recommended vault to target", {
                 vaultAddress: address,
                 vaultName: position.vaultName,
@@ -578,6 +662,32 @@ export class RebalanceOrchestrator {
                 continue;
             }
 
+            // 7a. CHOP BRAKE: defer non-risk rotation of profitable/flat
+            // positions while the regime is unreadable. `hold_chop` does not
+            // count toward the hysteresis streak and does not reset it — the
+            // rotation clock is frozen, not restarted. Losing positions fall
+            // through and still exit on their first non-recommended round
+            // (that's risk cleanup, not rotation).
+            if (chopRound && roePct >= 0) {
+                rotationsDeferredByChop += 1;
+                logger.info("Chop brake: rotation deferred", {
+                    vaultAddress: position.vaultAddress,
+                    vaultName: position.vaultName,
+                    roePct,
+                    marketDirection,
+                    prevDirection,
+                    reason: "chop-brake",
+                });
+                const snapshotId = await snapshotForPosition(position, null);
+                await recordEvent(position, "hold_chop", snapshotId, {
+                    amountUsd: 0,
+                    targetEquityUsd: position.amountUsd ?? null,
+                    confidence: null,
+                    reasonText: `chop-brake: rotation deferred direction=${marketDirection} prev=${prevDirection ?? "none"} roe=${roePct}`,
+                });
+                continue;
+            }
+
             // 7. EXIT NON-RECOMMENDED: vault is not recommended and the hold
             // period is met. Hysteresis: a profitable position gets
             // NOT_RECOMMENDED_EXIT_ROUNDS consecutive non-recommended rounds
@@ -757,6 +867,27 @@ export class RebalanceOrchestrator {
             };
         }
 
+        // Chop brake: scale every planned deposit (new slots + top-ups) down.
+        // The unspent balance stays in the perps wallet and deploys on the
+        // next confirmed-trend round — the plan rebuild reads the live balance.
+        if (chopRound && CHOP_DEPOSIT_FACTOR < 1 && depositPlan.targets.length) {
+            for (const target of depositPlan.targets) {
+                target.depositUsd = floorUsd(
+                    target.depositUsd * CHOP_DEPOSIT_FACTOR
+                );
+            }
+            logger.info("Chop brake: deposit sizing scaled down", {
+                factor: CHOP_DEPOSIT_FACTOR,
+                marketDirection,
+                prevDirection,
+                targets: depositPlan.targets.map((t) => ({
+                    name: t.name,
+                    kind: t.kind,
+                    depositUsd: t.depositUsd,
+                })),
+            });
+        }
+
         const deposits = await DepositService.executeDepositPlan(depositPlan, {
             dryRun,
             minDepositUsd,
@@ -775,6 +906,13 @@ export class RebalanceOrchestrator {
         const summary = {
             tpWithdrawals: tpWithdrawals.length,
             tpSubmitted: tpWithdrawals.filter(a => a.status === "submitted").length,
+            trimsSkippedByGate,
+            chopBrake: {
+                active: chopRound,
+                prevDirection,
+                depositFactor: chopRound ? CHOP_DEPOSIT_FACTOR : 1,
+                rotationsDeferred: rotationsDeferredByChop,
+            },
             withdrawals: withdrawals.length,
             withdrawalsSubmitted: withdrawals.filter(a => a.status === "submitted").length,
             withdrawalsByReason,
@@ -813,6 +951,249 @@ export class RebalanceOrchestrator {
             tpWithdrawals,
             withdrawals,
             deposits,
+        };
+    }
+
+    /**
+     * Risk-only round — runs when Claude ranking fails. Executes every
+     * protective exit (hard SL, soft SL against the last known recommendation
+     * set, trailing stop, inactive vault) with full fill verification, and
+     * skips everything that needs a live ranking: trims, rotation, deposits.
+     */
+    private static async runRiskOnlyRound(params: {
+        roundId: number | null;
+        startedAt: string;
+        planTargets: number;
+        dryRun: boolean;
+        includeLocked: boolean;
+        withdrawalDelayMs: number;
+        source: string;
+    }): Promise<RebalanceRoundResult> {
+        const { roundId, startedAt, dryRun, includeLocked } = params;
+        logger.warn(
+            "Claude ranking failed — running RISK-ONLY round (protective exits only; no trims, rotation, or deposits)",
+            { source: params.source }
+        );
+
+        // Last known recommendation set: in-memory stash first, then the
+        // persisted stage-2 decision (survives process restarts). When both
+        // are missing/stale, treat every position as recommended for the
+        // soft-SL check — fail-safe: misalignment alone can still trigger the
+        // exit, but we never exit on a guess about recommendation status.
+        const rec = await resolveRecommendedSet(RECOMMENDED_SET_MAX_AGE_MS);
+        const recommendedSet = rec?.set ?? null;
+
+        let marketDirection: "long" | "short" | "neutral" = "neutral";
+        try {
+            const marketData = await MarketDataService.getMarketOverlay();
+            marketDirection = marketData.preferred_direction;
+            await TraceService.recordMarketSnapshot(roundId, marketData);
+        } catch (err: any) {
+            logger.warn("Risk-only round: market overlay unavailable", {
+                error: err?.message,
+            });
+        }
+
+        const positions = await VaultService.getPlatformPositions({
+            refresh: true,
+        });
+        const platformTvlUsd = positions.totalCapitalUsd ?? null;
+        const withdrawals: VaultTransferAction[] = [];
+
+        const exitAndRecord = async (
+            position: UserPosition,
+            action: PositionEventAction,
+            reason: string,
+            reasonText: string,
+            netDirection: "long" | "short" | "neutral" | null
+        ): Promise<void> => {
+            logger.info("Risk-only round: protective exit", {
+                vaultAddress: position.vaultAddress,
+                vaultName: position.vaultName,
+                roePct: position.roePct,
+                reason,
+            });
+            const result = await RebalanceService.withdrawAllFromVault({
+                vaultAddress: position.vaultAddress as `0x${string}`,
+                dryRun,
+                includeLocked,
+                sweepDust: true,
+                reason,
+            });
+            const snapshotId = await TraceService.recordVaultSnapshot(roundId, {
+                vaultAddress: position.vaultAddress,
+                vaultName: position.vaultName ?? null,
+                netDirection,
+                assumedBias: marketDirection,
+            });
+            const withdrawn = (result.action.usdMicros ?? 0) / 1e6;
+            const submitted =
+                result.action.status === "submitted" ||
+                result.action.status === "prepared";
+            await TraceService.recordPositionEvent({
+                roundId,
+                vaultAddress: position.vaultAddress,
+                vaultSnapshotId: snapshotId,
+                action,
+                amountUsd: submitted ? -withdrawn : 0,
+                preEquityUsd: position.amountUsd ?? null,
+                targetEquityUsd: 0,
+                confidence: null,
+                reasonText,
+                txMeta: result.action,
+                succeeded: submitted,
+                hlPnlUsd: position.pnlUsd ?? null,
+                platformTvlUsd,
+            });
+            withdrawals.push(result.action);
+        };
+
+        for (const position of positions.positions) {
+            const address = position.vaultAddress.toLowerCase();
+            const roePct = position.roePct ?? 0;
+
+            if (roePct <= HARD_STOP_LOSS_PCT) {
+                await exitAndRecord(
+                    position,
+                    "exit_hard_sl",
+                    "hard-stop-loss",
+                    `risk-only hard-stop-loss roe=${roePct}`,
+                    null
+                );
+                continue;
+            }
+
+            if (roePct <= STOP_LOSS_PCT) {
+                const isRecommended = recommendedSet
+                    ? recommendedSet.has(address)
+                    : true;
+                const vaultDirection = await getVaultNetDirection(
+                    position.vaultAddress
+                );
+                const isAligned =
+                    vaultDirection === marketDirection ||
+                    marketDirection === "neutral";
+                if (!isRecommended || !isAligned) {
+                    await exitAndRecord(
+                        position,
+                        "exit_soft_sl",
+                        "stop-loss",
+                        `risk-only soft-stop-loss roe=${roePct} aligned=${isAligned} recommended=${isRecommended} recSetKnown=${recommendedSet != null}`,
+                        vaultDirection
+                    );
+                    continue;
+                }
+            }
+
+            const trailing = await TrailingStopService.observeAndCheck(position);
+            if (trailing?.shouldExit) {
+                await exitAndRecord(
+                    position,
+                    "exit_trailing_stop",
+                    "trailing-stop",
+                    `risk-only trailing-stop roe=${roePct} peak=${trailing.peakRoePct} exitLevel=${trailing.exitLevelRoePct?.toFixed(2)}`,
+                    null
+                );
+                continue;
+            }
+
+            const isInactive = await checkVaultInactive(position.vaultAddress);
+            if (isInactive) {
+                await exitAndRecord(
+                    position,
+                    "exit_inactive",
+                    "inactive-vault",
+                    "risk-only inactive: 0 positions, 0 trades 7d",
+                    null
+                );
+            }
+        }
+
+        for (const action of withdrawals) {
+            if (action.status === "submitted") {
+                await TrailingStopService.clearPeak(action.vaultAddress);
+            }
+        }
+
+        const settleEntries: WithdrawalVerifyEntry[] = withdrawals
+            .filter((a) => a.status === "submitted")
+            .map((a) => ({
+                vaultAddress: a.vaultAddress.toLowerCase(),
+                targetEquityUsd: 0,
+                kind: "full" as const,
+                reason: a.reason ?? "exit",
+                includeLocked,
+            }));
+        let unsettledWithdrawals = 0;
+        if (settleEntries.length) {
+            const outcomes = await verifyAndSettleWithdrawals(settleEntries, {
+                maxWaitMs: params.withdrawalDelayMs,
+                dryRun,
+                onRetry: async (notice) => {
+                    const submitted =
+                        notice.action.status === "submitted" ||
+                        notice.action.status === "prepared";
+                    const withdrawn = (notice.action.usdMicros ?? 0) / 1e6;
+                    await TraceService.recordPositionEvent({
+                        roundId,
+                        vaultAddress: notice.entry.vaultAddress,
+                        vaultSnapshotId: null,
+                        action: "exit_retry",
+                        amountUsd: submitted ? -withdrawn : 0,
+                        preEquityUsd: notice.preEquityUsd,
+                        targetEquityUsd: notice.entry.targetEquityUsd,
+                        confidence: null,
+                        reasonText: `verify-retry attempt=${notice.attempt} original=${notice.entry.reason}`,
+                        txMeta: notice.action,
+                        succeeded: submitted,
+                        hlPnlUsd: null,
+                        platformTvlUsd,
+                    });
+                },
+            });
+            unsettledWithdrawals = outcomes.filter((o) => !o.settled).length;
+            VaultService.clearUserCaches();
+        }
+
+        const withdrawalsByReason: Record<string, number> = {};
+        for (const w of withdrawals) {
+            const reason = w.reason ?? "unknown";
+            withdrawalsByReason[reason] = (withdrawalsByReason[reason] ?? 0) + 1;
+        }
+        const summary = {
+            mode: "risk-only",
+            reason: "claude-fallback",
+            source: params.source,
+            marketDirection,
+            recommendedSetKnown: recommendedSet != null,
+            withdrawals: withdrawals.length,
+            withdrawalsSubmitted: withdrawals.filter(
+                (a) => a.status === "submitted"
+            ).length,
+            withdrawalsByReason,
+            unsettledWithdrawals,
+            positionsAfter: positions.totalPositions,
+        };
+        logger.info("Risk-only rebalance round completed", {
+            startedAt,
+            durationMs: Date.now() - new Date(startedAt).getTime(),
+            dryRun,
+            summary,
+        });
+        await TraceService.endRound(roundId, "completed", summary);
+        await TraceService.recordPortfolioPoint({ roundId }).catch((error) => {
+            logger.warn("recordPortfolioPoint failed (risk-only round)", {
+                message: error?.message,
+            });
+        });
+
+        return {
+            startedAt,
+            planTargets: params.planTargets,
+            recommended: [],
+            tpWithdrawals: [],
+            withdrawals,
+            deposits: null,
         };
     }
 }
@@ -901,6 +1282,39 @@ export function getLastRecommendedSet(): {
     recordedAt: number | null;
 } {
     return { set: lastRecommendedSet, recordedAt: lastRecommendedAt };
+}
+
+/**
+ * Resolve the last Claude recommendation set for protective-exit decisions:
+ * the in-memory stash first (cheap, set by every completed Claude round),
+ * falling back to the persisted stage-2 claude_decision row so a process
+ * restart during a Claude outage doesn't blind the soft stop-loss. Returns
+ * null when both are missing or older than `maxAgeMs` — callers must treat
+ * that as "recommendation status unknown" and fail safe.
+ */
+export async function resolveRecommendedSet(
+    maxAgeMs: number
+): Promise<{ set: Set<string>; recordedAt: number } | null> {
+    const mem = getLastRecommendedSet();
+    if (
+        mem.set.size > 0 &&
+        mem.recordedAt != null &&
+        Date.now() - mem.recordedAt <= maxAgeMs
+    ) {
+        return { set: mem.set, recordedAt: mem.recordedAt };
+    }
+    const persisted = await readLastClaudeRecommendedSet().catch(() => null);
+    if (
+        persisted &&
+        persisted.addresses.length > 0 &&
+        Date.now() - persisted.recordedAt <= maxAgeMs
+    ) {
+        return {
+            set: new Set(persisted.addresses.map((a) => a.toLowerCase())),
+            recordedAt: persisted.recordedAt,
+        };
+    }
+    return null;
 }
 
 export async function getVaultNetDirection(vaultAddress: string): Promise<"long" | "short" | "neutral"> {
