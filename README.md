@@ -10,7 +10,7 @@ packages/
   web/    Frontend UI (Next.js + React)      -> Vercel
 ```
 
-**API** discovers and ranks deposit-open vaults using a two-stage Claude AI pipeline, then executes automated 2-day rebalancing cycles with a barbell allocation strategy. Cloud SQL Postgres persists every position lifecycle event, Claude decision, and per-vault snapshot — used to power UI stats from our own FIFO books (not HL's per-withdrawal basis) and to support backtesting.
+**API** discovers and ranks deposit-open vaults using a two-stage Claude AI pipeline (fed our per-position ROE and per-vault track record), then executes automated 2-day rebalancing cycles with a barbell allocation strategy. A layered risk stack guards the book: hard/soft stop-losses, a 4-hour intra-round RiskMonitor, trailing stops, withdrawal fill verification, profit-gated trims, a loss re-entry cooldown, and a chop brake that halves deposits when the market-direction signal is unreadable. Rounds degrade to risk-only mode (protective exits keep running) if Claude is unavailable. Cloud SQL Postgres persists every position lifecycle event, Claude decision, and per-vault snapshot — used to power UI stats from our own FIFO books (not HL's per-withdrawal basis) and to support backtesting.
 
 **Web** displays portfolio data, vault positions, performance metrics, and transaction history in a cyberpunk terminal UI. The PnL chart supports `1min`/`7D`/`30D`/`ALL` periods plus a drag-to-zoom Brush for custom date ranges.
 
@@ -46,6 +46,7 @@ npx next dev                 # http://localhost:3000 (or 3001 if api is running)
 | `GET /api/portfolio` | Aggregated portfolio summary (legacy, HL-sourced) |
 | `GET /api/portfolio/chart` | PnL + account-value chart from `portfolio_series` (own-books, perps-wallet-clean) |
 | `GET /api/metrics` | Platform metrics (TVL, PnL, win rate, drawdown) — sourced from FIFO books |
+| `GET /api/metrics/epoch` | Fresh-epoch strategy KPIs (win rate, skew ratio, profit factor, expectancy, churn) measured strictly since `METRICS_EPOCH_START` — the scoreboard for the 2026-07 strategy overhaul |
 | `GET /api/history?page=1&pageSize=15` | Transaction history from `position_ledger` |
 | `GET /api/trace/rounds?limit=N` | Recent rebalance rounds with summaries |
 | `GET /api/trace/rounds/:id` | Round detail: market snapshot, Claude decisions, vault snapshots, position events |

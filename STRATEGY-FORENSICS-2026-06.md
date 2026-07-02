@@ -1,5 +1,17 @@
 # Vault-4 Strategy Forensics — 2026-06-22
 
+> **STATUS UPDATE (2026-07-02).** This report is a historical artifact; keep for
+> context, do not treat §7 as an open action list. After the report, June chop +
+> the node-outage aborted rounds (18/19) erased the remaining edge (rounds 17–23
+> realized ≈ −$121; inception went negative). All §7 actions — plus three more —
+> shipped on 2026-07-02 (revision `vault-4-00112-mdm`, commit `8895a88`):
+> risk-only rounds on Claude failure, profit-gated trims, loss re-entry cooldown
+> (`REENTRY_COOLDOWN_DAYS`), per-position ROE + our vault history fed to Claude,
+> chop brake, and the gated intra-round soft-SL (now ON by default). Performance
+> is now measured on a **fresh epoch** starting 2026-07-02 via
+> `GET /api/metrics/epoch`; the go/no-go review is due ~2026-09/10 and should be
+> judged only on that scoreboard. Details: `packages/api/CLAUDE.md`.
+
 Forensic review of the live Hyperliquid vault-of-vaults strategy after ~5 months
 of automated operation. Two data sources:
 

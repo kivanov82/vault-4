@@ -42,6 +42,7 @@ src/
     claude/
       ClaudeService.ts               # Claude API integration for two-stage vault ranking
       MarketDataService.ts           # Market overlay data fetching
+      portfolioContext.ts            # Per-position ROE + our vault history fed to both stages
       prompts/
         vault-scoring.md             # Stage 1: Batch scoring prompt (0-100)
         vault-ranking.md             # Stage 2: Final ranking with allocations
@@ -83,7 +84,7 @@ For every current position still in the Claude recommendation set with `currentU
 
 **Withdrawal fill verification (`WithdrawalVerifier.ts`):** after submitting withdrawals, per-vault equity is polled against the expected post-withdrawal level (0 for full exits, the trim target for trims). Withdrawals that didn't move equity by the deadline are re-submitted up to `WITHDRAWAL_VERIFY_MAX_RETRIES` (default 2) times, recording `exit_retry`/`trim` trace events. HL can fill a vault withdrawal for $0 when the vault has no free margin — previously this went undetected for a full round (the 2026-06 Otter Quant -$213 loss).
 
-**RiskMonitor (`RiskMonitor.ts`):** between rounds, every `RISK_MONITOR_INTERVAL_MS` (default 4h, first tick 10 min after boot) re-checks all open positions and fires protective exits only: hard stop-loss (`exit_risk_monitor`) and trailing stop (`exit_trailing_stop`), with the same fill verification. By default (kill switch `RISK_MONITOR_SOFT_SL_ENABLED=false`) it also fires a **gated soft stop-loss** (`exit_soft_sl`, `round_id=null`) for a position that is below `STOP_LOSS_PCT` **and** absent from the round's stashed recommendation set (`getLastRecommendedSet`) **and** mis-aligned with the market overlay direction **and** still falling vs the previous tick's ROE (tracked in-memory per held vault). This stricter AND-gate exists because the 2026-06 backtest showed a blanket intra-round soft stop whipsaws recoverable dips; the gate isolates the Realist-Capital profile (abandoned + counter-regime + confirmed-losing) that the 48h round scan lets bleed −15% → −22%. It declines to fire when the recommendation set is empty/stale (`RISK_MONITOR_RECOMMENDED_MAX_AGE_MS`) or the regime is neutral. Full rotation still needs the live Claude ranking and stays in the round scan. Skips a tick if a rebalance round is running. Disabled via `RISK_MONITOR_ENABLED=false` (or `REBALANCE_ENABLED=false`).
+**RiskMonitor (`RiskMonitor.ts`):** between rounds, every `RISK_MONITOR_INTERVAL_MS` (default 4h, first tick 10 min after boot) re-checks all open positions and fires protective exits only: hard stop-loss (`exit_risk_monitor`) and trailing stop (`exit_trailing_stop`), with the same fill verification. It also fires (on by default; kill switch `RISK_MONITOR_SOFT_SL_ENABLED=false`) a **gated soft stop-loss** (`exit_soft_sl`, `round_id=null`) for a position that is below `STOP_LOSS_PCT` **and** absent from the last known recommendation set (`resolveRecommendedSet` — in-memory stash with a DB fallback to the persisted stage-2 `claude_decision`, so restarts don't blind it) **and** mis-aligned with the market overlay direction **and** still falling vs the previous tick's ROE (tracked in-memory per held vault). This stricter AND-gate exists because the 2026-06 backtest showed a blanket intra-round soft stop whipsaws recoverable dips; the gate isolates the Realist-Capital profile (abandoned + counter-regime + confirmed-losing) that the 48h round scan lets bleed −15% → −22%. It declines to fire when the recommendation set is empty/stale (`RISK_MONITOR_RECOMMENDED_MAX_AGE_MS`) or the regime is neutral. Full rotation still needs the live Claude ranking and stays in the round scan. Skips a tick if a rebalance round is running. Disabled via `RISK_MONITOR_ENABLED=false` (or `REBALANCE_ENABLED=false`).
 
 **Portfolio context fed to Claude (`portfolioContext.ts`).** Both ranking stages now receive, alongside `already_exposed`: `current_positions` (per-position `current_usd`, `roe_pct` vs OUR FIFO cost basis, `hold_days`), `our_vault_history` (per-vault episodes + realized PnL from `position_account`), and `recently_exited_at_loss` (the re-entry cooldown list). The prompts instruct Claude to (a) never boost a vault for being held, (b) treat repeated realized losses as negative evidence, (c) DROP an incumbent that is ≤ −10% ROE for us unless it is top-~8 on pure merit — keeping a loser "recommended" blocks the soft stop-loss — and (d) require a challenger to beat an incumbent by > 0.5 robust-z (estimated rotation round-trip cost) before rotating. All DB-derived fields degrade to empty arrays when the trace layer is down (old bare-addresses behavior). This closes the forensics §3 flaw where selection and risk were two disconnected brains.
 
@@ -96,7 +97,7 @@ Wait 60s after withdrawals before deposits (configurable via `REBALANCE_WITHDRAW
 
 **Deposits:**
 - Min deposit: $5, max active vaults: 11 (`DEFAULT_MAX_ACTIVE`; 8 high / 3 low)
-- Only NEW vaults (no existing exposure)
+- New-slot deposits go only into NEW vaults (no existing exposure); a top-up pass (`REBALANCE_TOPUP_ENABLED`, on by default) additionally tops up held recommended vaults ≥30% under Claude's target — new slots take budget priority
 - Barbell-weighted allocation: high-confidence group gets 70-80%, low-confidence gets 20-30%
 - Positions < $1 excluded from vault count (dust filtering)
 - Balance from Hyperliquid clearinghouse `withdrawable` field
@@ -130,8 +131,9 @@ The HL `getUserVaultLedgerUpdates` ledger is mirrored into `position_ledger` and
 `position_account` table that uses **our-own FIFO basis** — HL's `basisUsd` is stored only as
 `basis_usd_hl` for divergence audit and is never used in any logic.
 
-- Schema: `migrations/001_init.sql`. Migrations run on startup via `runMigrations()` in `Vault4.init()`.
+- Schema: `migrations/*.sql` (001 init → 005 chop brake). Migrations run on startup via `runMigrations()` in `Vault4.init()`.
 - FIFO math: `src/db/PositionAccountService.ts` (pure, unit-tested in `src/db/__tests__/`).
+- Fresh-epoch KPIs: `src/db/EpochKpiService.ts` — full-ledger FIFO replay, stats filtered to closes at/after `METRICS_EPOCH_START` (serves `/api/metrics/epoch`).
 - Trace writes are non-fatal — DB outages must never break a rebalance round.
 - Periodic ledger sync every 5 min (`LEDGER_SYNC_INTERVAL_MS`).
 

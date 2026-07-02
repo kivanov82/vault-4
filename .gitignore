@@ -37,3 +37,6 @@ coverage
 
 # Lock files tracked per-package
 package-lock.json
+
+# Claude Code session state
+.claude/scheduled_tasks.lock

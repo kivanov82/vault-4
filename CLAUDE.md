@@ -46,9 +46,12 @@ cd packages/contracts && forge test -vvv
 - `GET /api/positions` — User vault positions
 - `GET /api/history?page=1&pageSize=15` — Transaction history
 - `GET /api/portfolio` — Aggregated portfolio summary
+- `GET /api/portfolio/chart` — PnL + account-value chart series (own FIFO books)
 - `GET /api/metrics` — Platform metrics (TVL, 30d/60d PnL %, win rate, max drawdown)
+- `GET /api/metrics/epoch` — Fresh-epoch strategy KPIs since `METRICS_EPOCH_START` (2026-07-02 overhaul): win rate, avg win/loss, skew ratio, profit factor, expectancy, churn
+- `GET /api/trace/rounds`, `/api/trace/rounds/:id`, `/api/trace/positions/:vaultAddress` — Rebalance-round and position-event trace
 
-Append `?refresh=true` to bypass cache.
+Append `?refresh=true` to bypass cache. Full details in `packages/api/CLAUDE.md`.
 
 ## Environment Variables
 
