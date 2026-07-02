@@ -329,7 +329,7 @@ function formatUsd(value?: number | null) {
 
 function formatUsdSigned(value?: number | null) {
   if (value === undefined || value === null) return "--"
-  const prefix = value >= 0 ? "+" : ""
+  const prefix = value >= 0 ? "+" : "-"
   return `${prefix}$${Math.abs(value).toFixed(2)}`
 }
 
@@ -340,7 +340,7 @@ function formatPercent(value?: number | null) {
 
 function formatPercentSigned(value?: number | null) {
   if (value === undefined || value === null) return "--"
-  const prefix = value >= 0 ? "+" : ""
+  const prefix = value >= 0 ? "+" : "-"
   return `${prefix}${Math.abs(value).toFixed(2)}%`
 }
 
