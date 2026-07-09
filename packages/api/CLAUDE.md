@@ -296,6 +296,18 @@ docker push gcr.io/bright-union/vault-4:latest
 
 Then deploy the new revision via Cloud Console or `gcloud run deploy`.
 
+**Single-instance invariant (2026-07-09 incident).** The service MUST run with
+`--max-instances=1`, and revision tags must never be left on it. The schedulers
+(RebalanceScheduler / RiskMonitor / XPostScheduler) run inside every instance and
+`RebalanceLock` is in-process only — any second live instance runs duplicate
+rounds with real trades. The service uses `minScale=1` + always-on CPU, and both
+apply to **every active revision**: leftover tags (`fix`, `x402`) once kept two
+old revisions warm, producing 2-3 concurrent rounds per cycle, duplicate/dust
+trades, and ~3× Anthropic spend (which exhausted the API credits — all rounds
+then degraded to `claude-fallback`). Roll back by re-pinning traffic to an old
+revision, not by tagging it. Traffic is revision-pinned, so every deploy needs a
+manual `gcloud run services update-traffic vault-4 --to-revisions <new>=100`.
+
 ## Conventions
 
 - TypeScript services under `src/service/`; keep async Hyperliquid calls paced
