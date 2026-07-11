@@ -467,8 +467,10 @@ app.get("/api/metrics", async (req, res) => {
 });
 
 // Fresh-epoch strategy KPIs: every statistic computed strictly from ledger
-// activity at or after METRICS_EPOCH_START (2026-07-02 — the risk/selection
-// overhaul), so the 2-3 month go/no-go review runs on clean post-change data.
+// activity at or after METRICS_EPOCH_START (2026-07-09 — first clean rounds
+// after the zombie-revision incident; re-based from the 07-02 overhaul date,
+// see STRATEGY-FORENSICS-2026-07.md §2), so the 2-3 month go/no-go review
+// runs on clean post-change data. Judge on `closesOriginated`.
 app.get("/api/metrics/epoch", async (req, res) => {
     try {
         const kpis = await EpochKpiService.compute();

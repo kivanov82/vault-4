@@ -12,6 +12,7 @@ import {
 import type { PositionEventAction } from "../../db/types";
 import type { UserPosition } from "../vaults/types";
 import {
+    clearsRotationHurdle,
     defaultExitConfig,
     isChopRegime,
     shouldTrim,
@@ -23,6 +24,7 @@ import {
 } from "./WithdrawalVerifier";
 import { TrailingStopService } from "./TrailingStopService";
 import * as RebalanceLock from "./RebalanceLock";
+import { tryAcquireInstanceLock } from "../../db/DistributedLock";
 
 const exitConfig = defaultExitConfig();
 const STOP_LOSS_PCT = exitConfig.stopLossPct;
@@ -106,9 +108,37 @@ export class RebalanceOrchestrator {
             RebalanceLock.release("monitor");
             RebalanceLock.tryAcquire("round");
         }
+        // Cross-instance guard (2026-07-09 zombie-revisions incident): the
+        // in-process lock cannot see a second live Cloud Run instance running
+        // its own scheduler. A held DB advisory lock means another session is
+        // mid-round — skip entirely rather than double-trade the book. DB
+        // unavailable fails open on the in-process lock alone.
+        const instanceLock = await tryAcquireInstanceLock("round");
+        if (instanceLock.status === "held-elsewhere") {
+            RebalanceLock.release("round");
+            logger.error(
+                "ALERT_INSTANCE_LOCK: cross-instance rebalance lock held by another live session — skipping this round. If this repeats, a zombie revision is running duplicate schedulers (check Cloud Run revisions/tags; max-instances must be 1, no revision tags)."
+            );
+            return {
+                startedAt: new Date().toISOString(),
+                planTargets: 0,
+                recommended: [],
+                tpWithdrawals: [],
+                withdrawals: [],
+                deposits: null,
+            };
+        }
+        if (instanceLock.status === "db-unavailable") {
+            logger.warn(
+                "Cross-instance lock unavailable — proceeding on in-process lock only"
+            );
+        }
         try {
             return await this.runRoundInner(options);
         } finally {
+            if (instanceLock.status === "acquired") {
+                await instanceLock.release().catch(() => undefined);
+            }
             RebalanceLock.release("round");
         }
     }
@@ -264,6 +294,37 @@ export class RebalanceOrchestrator {
             }
         }
         let rotationsDeferredByChop = 0;
+
+        // Rotation cost hurdle (STRATEGY-FORENSICS-2026-07 §5): a profitable
+        // incumbent only rotates out when the best NEW deposit target
+        // out-scores it by ROTATION_SCORE_MARGIN stage-1 points. The scores
+        // ride on the recommendation object, so they are always from the same
+        // Claude run that produced recommendedSet. When the ranking carries
+        // no stage-1 scores (cached pre-upgrade set), fail open to the
+        // pre-hurdle behavior — positions must never become unkillable.
+        const stage1ScoreByAddress = new Map<string, number>();
+        for (const s of plan.recommendations.stage1Scores ?? []) {
+            stage1ScoreByAddress.set(s.address.toLowerCase(), s.score);
+        }
+        const rotationHurdleActive =
+            exitConfig.rotationScoreMargin > 0 && stage1ScoreByAddress.size > 0;
+        const heldAddressSet = new Set(
+            positions.positions.map((p) => p.vaultAddress.toLowerCase())
+        );
+        let bestChallengerScore: number | null = null;
+        for (const target of plan.targets) {
+            if (target.kind !== "new") continue;
+            const addr = target.vaultAddress.toLowerCase();
+            if (heldAddressSet.has(addr)) continue;
+            const score = stage1ScoreByAddress.get(addr);
+            if (
+                score != null &&
+                (bestChallengerScore == null || score > bestChallengerScore)
+            ) {
+                bestChallengerScore = score;
+            }
+        }
+        let rotationsHeldByHurdle = 0;
 
         const platformTvlUsd = positions.totalCapitalUsd ?? null;
         const recommendationByAddress = new Map(
@@ -662,13 +723,18 @@ export class RebalanceOrchestrator {
                 continue;
             }
 
-            // 7a. CHOP BRAKE: defer non-risk rotation of profitable/flat
-            // positions while the regime is unreadable. `hold_chop` does not
-            // count toward the hysteresis streak and does not reset it — the
-            // rotation clock is frozen, not restarted. Losing positions fall
-            // through and still exit on their first non-recommended round
-            // (that's risk cleanup, not rotation).
-            if (chopRound && roePct >= 0) {
+            // 7a. CHOP BRAKE: defer non-risk rotation of profitable and
+            // mildly-underwater positions (ROE ≥ CHOP_DEFER_MIN_ROE_PCT,
+            // default −8) while the regime is unreadable. `hold_chop` does
+            // not count toward the hysteresis streak and does not reset it —
+            // the rotation clock is frozen, not restarted. The floor exists
+            // because the old roePct >= 0 gate sold mildly-underwater
+            // positions at the bottom of exactly the mean-reverting regime
+            // the 2026-06 backtest flagged (round 38 realized −$22.6 on a
+            // chop day). Genuine losers below the floor still fall through
+            // and exit on their first non-recommended round (risk cleanup,
+            // not rotation); stop-losses ran earlier and are unaffected.
+            if (chopRound && roePct >= exitConfig.chopDeferMinRoePct) {
                 rotationsDeferredByChop += 1;
                 logger.info("Chop brake: rotation deferred", {
                     vaultAddress: position.vaultAddress,
@@ -720,6 +786,43 @@ export class RebalanceOrchestrator {
                         targetEquityUsd: position.amountUsd ?? null,
                         confidence: null,
                         reasonText: `hold-not-recommended streak=${streak}/${exitAfterRounds} roe=${roePct}`,
+                    });
+                    continue;
+                }
+            }
+
+            // 7b. ROTATION HURDLE: hold period passed, hysteresis passed —
+            // but a PROFITABLE incumbent still only rotates out when the
+            // best NEW deposit target out-scores it by the margin. Losing
+            // positions are risk cleanup and skip the hurdle. Like
+            // hold_chop, hold_rotation_hurdle neither counts toward nor
+            // resets the hysteresis streak.
+            if (roePct >= 0 && rotationHurdleActive) {
+                const incumbentScore =
+                    stage1ScoreByAddress.get(address) ?? null;
+                if (
+                    !clearsRotationHurdle(
+                        incumbentScore,
+                        bestChallengerScore,
+                        exitConfig
+                    )
+                ) {
+                    rotationsHeldByHurdle += 1;
+                    logger.info("Rotation hurdle: holding profitable incumbent", {
+                        vaultAddress: position.vaultAddress,
+                        vaultName: position.vaultName,
+                        roePct,
+                        incumbentScore,
+                        bestChallengerScore,
+                        marginRequired: exitConfig.rotationScoreMargin,
+                        reason: "rotation-hurdle",
+                    });
+                    const snapshotId = await snapshotForPosition(position, null);
+                    await recordEvent(position, "hold_rotation_hurdle", snapshotId, {
+                        amountUsd: 0,
+                        targetEquityUsd: position.amountUsd ?? null,
+                        confidence: null,
+                        reasonText: `rotation-hurdle: incumbent=${incumbentScore ?? "unscored"} challenger=${bestChallengerScore ?? "none"} margin=${exitConfig.rotationScoreMargin} roe=${roePct}`,
                     });
                     continue;
                 }
@@ -845,8 +948,8 @@ export class RebalanceOrchestrator {
         // Defense-in-depth: even with reuse, abort the deposit pass if the
         // recommendations are heuristic. Heuristic deposits are too unstable.
         if (depositPlan.recommendations.source !== "claude") {
-            logger.warn(
-                "Aborting deposit pass: recommendation source is heuristic, not deploying capital",
+            logger.error(
+                "ALERT_DEGRADED_ROUND: aborting deposit pass — recommendation source is heuristic, not deploying capital. Check Anthropic credits / API health.",
                 {
                     source: depositPlan.recommendations.source,
                     targetCount: depositPlan.targets.length,
@@ -913,6 +1016,12 @@ export class RebalanceOrchestrator {
                 depositFactor: chopRound ? CHOP_DEPOSIT_FACTOR : 1,
                 rotationsDeferred: rotationsDeferredByChop,
             },
+            rotationHurdle: {
+                active: rotationHurdleActive,
+                marginRequired: exitConfig.rotationScoreMargin,
+                bestChallengerScore,
+                rotationsHeld: rotationsHeldByHurdle,
+            },
             withdrawals: withdrawals.length,
             withdrawalsSubmitted: withdrawals.filter(a => a.status === "submitted").length,
             withdrawalsByReason,
@@ -970,8 +1079,14 @@ export class RebalanceOrchestrator {
         source: string;
     }): Promise<RebalanceRoundResult> {
         const { roundId, startedAt, dryRun, includeLocked } = params;
-        logger.warn(
-            "Claude ranking failed — running RISK-ONLY round (protective exits only; no trims, rotation, or deposits)",
+        // logger.error on purpose: a stable, alertable marker. During the
+        // 2026-07-06→08 credit exhaustion the system ran degraded for 3 days
+        // before anyone noticed — a Cloud Logging alert on "ALERT_" catches
+        // it on the first occurrence. Common causes: Anthropic credit balance
+        // ("credit balance too low" = billing, fix in the Anthropic console),
+        // API outage, broken node/undici pin.
+        logger.error(
+            "ALERT_DEGRADED_ROUND: Claude ranking failed — running RISK-ONLY round (protective exits only; no trims, rotation, or deposits). Check Anthropic credits / API health.",
             { source: params.source }
         );
 

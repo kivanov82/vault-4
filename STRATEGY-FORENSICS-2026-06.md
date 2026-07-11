@@ -1,5 +1,11 @@
 # Vault-4 Strategy Forensics — 2026-06-22
 
+> **STATUS UPDATE (2026-07-11).** Superseded by
+> `STRATEGY-FORENSICS-2026-07.md` — the fresh epoch was found contaminated by
+> the zombie-revision incident (Jul 2–8 traded by pre-overhaul code), §7.5
+> (rotation cost hurdle) was found never shipped, and the epoch scoreboard was
+> re-based to 2026-07-09. Read the July report first.
+
 > **STATUS UPDATE (2026-07-02).** This report is a historical artifact; keep for
 > context, do not treat §7 as an open action list. After the report, June chop +
 > the node-outage aborted rounds (18/19) erased the remaining edge (rounds 17–23

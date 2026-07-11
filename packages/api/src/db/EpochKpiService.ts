@@ -16,10 +16,23 @@ import {
  * ledger activity at or after METRICS_EPOCH_START — a fresh scoreboard,
  * independent of the lifetime metrics on /api/metrics.
  *
+ * RE-BASED TO 2026-07-09 (STRATEGY-FORENSICS-2026-07 §2): from Jul 2–8 the
+ * book was mostly traded by zombie pre-overhaul revisions (the 2026-07-09
+ * incident) and then by credit-exhaustion fallback rounds — the overhauled
+ * strategy's first clean rounds are 38/39 on Jul 9+. Judging the overhaul on
+ * Jul 2–8 data would judge the OLD code.
+ *
  * The per-close realized PnL uses the same FIFO replay as position_account
  * (PositionAccountService.applyEvent), replaying the FULL ledger from
  * inception so cost basis carried into the epoch is correct, then keeping
  * only closes inside the epoch window.
+ *
+ * Closes are additionally split by ORIGINATION: a close whose oldest consumed
+ * FIFO lot was deposited at/after the epoch start is `originated` (the new
+ * strategy opened AND closed it); otherwise it is `inherited` (cleanup of
+ * pre-epoch/zombie inventory — e.g. FKA −$16.42 on Jul 9 was opened pre-epoch
+ * and closed by clean round 38). The go/no-go must be judged on
+ * `closesOriginated`.
  */
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -43,6 +56,10 @@ export type EpochClose = {
     vaultAddress: string;
     realizedPnlUsd: number;
     basisConsumedUsd: number;
+    /** True when the oldest FIFO lot this close consumed was deposited at or
+     * after the epoch start — i.e. the position was opened by the current
+     * strategy, not inherited from before the epoch. */
+    originatedInEpoch: boolean;
 };
 
 export type EpochCloseStats = {
@@ -68,7 +85,14 @@ export type EpochCloseStats = {
 export type EpochKpis = {
     epochStart: string;
     days: number;
+    /** All closes inside the epoch window (backward-compatible view). */
     closes: EpochCloseStats;
+    /** Closes of positions the current strategy itself opened (oldest
+     * consumed lot deposited in-epoch). THE go/no-go scoreboard. */
+    closesOriginated: EpochCloseStats;
+    /** Cleanup of inventory opened before the epoch (or by the zombie
+     * revisions) — informative, but not attributable to the new strategy. */
+    closesInherited: EpochCloseStats;
     deposits: { count: number; totalUsd: number };
     openBasisUsd: number;
     rounds: {
@@ -104,6 +128,12 @@ export function computeEpochLedgerStats(
         if (!Number.isFinite(row.time) || !Number.isFinite(row.usdc)) continue;
         const vault = row.vaultAddress.toLowerCase();
         const state = stateByVault.get(vault) ?? createEmptyState(vault);
+        // FIFO consumes lots front-to-back, so the first lot with remaining
+        // basis BEFORE the withdrawal is the oldest lot this close consumes —
+        // its deposit time decides originated-vs-inherited attribution.
+        const oldestOpenLot = state.lots.find(
+            (l) => l.remainingBasisUsd > 1e-9
+        );
         const result = applyEvent(state, {
             time: new Date(row.time),
             type: row.type,
@@ -123,6 +153,9 @@ export function computeEpochLedgerStats(
                 vaultAddress: vault,
                 realizedPnlUsd: result.realizedPnl,
                 basisConsumedUsd: result.basisConsumed,
+                originatedInEpoch:
+                    oldestOpenLot != null &&
+                    oldestOpenLot.depositedAt.getTime() >= epochStartMs,
             });
         }
     }
@@ -197,11 +230,13 @@ export function computeCloseStats(closes: EpochClose[]): EpochCloseStats {
 
 export class EpochKpiService {
     static epochStart(): Date {
-        const raw = process.env.METRICS_EPOCH_START ?? "2026-07-02T00:00:00Z";
+        // 2026-07-09: first clean post-overhaul rounds (38/39), after the
+        // zombie revisions were killed and Anthropic credits restored.
+        const raw = process.env.METRICS_EPOCH_START ?? "2026-07-09T00:00:00Z";
         const parsed = new Date(raw);
         return Number.isFinite(parsed.getTime())
             ? parsed
-            : new Date("2026-07-02T00:00:00Z");
+            : new Date("2026-07-09T00:00:00Z");
     }
 
     /** Returns null when the trace database is unavailable. */
@@ -286,6 +321,12 @@ export class EpochKpiService {
                 epochStart: epochStart.toISOString(),
                 days: round2(Math.max(0, now - epochStartMs) / MS_PER_DAY),
                 closes: computeCloseStats(ledgerStats.closes),
+                closesOriginated: computeCloseStats(
+                    ledgerStats.closes.filter((c) => c.originatedInEpoch)
+                ),
+                closesInherited: computeCloseStats(
+                    ledgerStats.closes.filter((c) => !c.originatedInEpoch)
+                ),
                 deposits: ledgerStats.deposits,
                 openBasisUsd: ledgerStats.openBasisUsd,
                 rounds,

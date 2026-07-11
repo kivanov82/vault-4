@@ -65,6 +65,11 @@ export type RecommendationSet = {
         generatedAt: string;
     };
     suggestedAllocations?: SuggestedAllocations;
+    /** Full stage-1 score list (all scored candidates, not just the ranked
+     * set). Drives the deterministic rotation hurdle: an incumbent's stage-1
+     * score is compared against the best NEW deposit target's before a
+     * profitable rotation may execute. Absent on heuristic fallback. */
+    stage1Scores?: Array<{ address: string; name: string; score: number }>;
 };
 
 export type SuggestedAllocationTarget = {

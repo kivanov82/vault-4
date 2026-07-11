@@ -27,6 +27,9 @@ export type ClaudeRanking = {
     raw: string;
     suggestedAllocations?: SuggestedAllocations;
     allocationMap?: Record<string, number>;
+    /** Every stage-1 scored candidate (superset of the ranked set). Consumed
+     * by the orchestrator's rotation hurdle — see ExitPolicy.clearsRotationHurdle. */
+    stage1Scores?: Array<{ address: string; name: string; score: number }>;
 };
 
 function envNumber(name: string, fallback: number): number {
@@ -255,13 +258,24 @@ export class ClaudeService {
             await new Promise((resolve) => setTimeout(resolve, CLAUDE_API_DELAY_MS));
         }
 
-        return this.finalRanking(
+        const ranking = await this.finalRanking(
             topVaultCandidates,
             marketData,
             portfolioContext,
             totalCount,
             highConfidenceCount
         );
+        if (ranking) {
+            // Ride the full stage-1 score list on the ranking so the rotation
+            // hurdle always compares scores from the same run that produced
+            // the recommendation set.
+            ranking.stage1Scores = allScored.map((s) => ({
+                address: s.candidate.vaultAddress.toLowerCase(),
+                name: s.candidate.name,
+                score: s.score,
+            }));
+        }
+        return ranking;
     }
 
     static async scoreVaultBatch(

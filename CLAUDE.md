@@ -48,7 +48,7 @@ cd packages/contracts && forge test -vvv
 - `GET /api/portfolio` — Aggregated portfolio summary
 - `GET /api/portfolio/chart` — PnL + account-value chart series (own FIFO books)
 - `GET /api/metrics` — Platform metrics (TVL, 30d/60d PnL %, win rate, max drawdown)
-- `GET /api/metrics/epoch` — Fresh-epoch strategy KPIs since `METRICS_EPOCH_START` (2026-07-02 overhaul): win rate, avg win/loss, skew ratio, profit factor, expectancy, churn
+- `GET /api/metrics/epoch` — Fresh-epoch strategy KPIs since `METRICS_EPOCH_START` (2026-07-09 — re-based after the zombie-revision contamination; see `STRATEGY-FORENSICS-2026-07.md`): win rate, avg win/loss, skew ratio, profit factor, expectancy, churn, with `closesOriginated` (positions opened+closed in-epoch — the go/no-go scoreboard) vs `closesInherited`
 - `GET /api/trace/rounds`, `/api/trace/rounds/:id`, `/api/trace/positions/:vaultAddress` — Rebalance-round and position-event trace
 
 Append `?refresh=true` to bypass cache. Full details in `packages/api/CLAUDE.md`.

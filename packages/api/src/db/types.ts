@@ -107,6 +107,7 @@ export type PositionEventAction =
     | "hold_period"
     | "hold_not_recommended"
     | "hold_chop"
+    | "hold_rotation_hurdle"
     | "skip_recommended";
 
 export type PositionEventInput = {

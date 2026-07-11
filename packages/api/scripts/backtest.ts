@@ -312,6 +312,17 @@ async function main() {
             "trim-tolerance",
             defaults.trimOverweightTolerancePct
         ),
+        // The rotation hurdle and chop-deferral floor act in the round's
+        // rotation pass, which this exit-policy replay does not simulate —
+        // carried through only to satisfy ExitConfig.
+        rotationScoreMargin: numArg(
+            "rotation-margin",
+            defaults.rotationScoreMargin
+        ),
+        chopDeferMinRoePct: numArg(
+            "chop-defer-min-roe",
+            defaults.chopDeferMinRoePct
+        ),
     };
 
     console.log(`Backtest against ${baseUrl} (up to ${maxRounds} rounds)`);

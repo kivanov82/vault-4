@@ -1,4 +1,5 @@
 import {
+    clearsRotationHurdle,
     defaultExitConfig,
     isChopRegime,
     shouldHardStop,
@@ -19,6 +20,8 @@ const config: ExitConfig = {
     trailingGivebackRatio: 0.5,
     trimMinRoePct: 0,
     trimOverweightTolerancePct: 25,
+    rotationScoreMargin: 8,
+    chopDeferMinRoePct: -8,
 };
 
 describe("defaultExitConfig", () => {
@@ -203,5 +206,40 @@ describe("isChopRegime", () => {
     it("no history (first round / DB down) fails open — not chop", () => {
         expect(isChopRegime("long", null)).toBe(false);
         expect(isChopRegime("short", null)).toBe(false);
+    });
+});
+
+describe("clearsRotationHurdle", () => {
+    it("blocks rotation when the challenger's edge is inside the margin", () => {
+        // Ranking noise: challenger 72 vs incumbent 70 is not a reason to
+        // pay a round trip (margin 8).
+        expect(clearsRotationHurdle(70, 72, config)).toBe(false);
+        expect(clearsRotationHurdle(70, 77.9, config)).toBe(false);
+    });
+
+    it("allows rotation when the challenger clears the margin", () => {
+        expect(clearsRotationHurdle(70, 78, config)).toBe(true);
+        expect(clearsRotationHurdle(50, 80, config)).toBe(true);
+    });
+
+    it("allows rotation of an unscored incumbent (fell out of the prefilter)", () => {
+        expect(clearsRotationHurdle(null, 60, config)).toBe(true);
+        expect(clearsRotationHurdle(null, null, config)).toBe(true);
+    });
+
+    it("blocks rotation when there is no scored challenger to fund", () => {
+        expect(clearsRotationHurdle(70, null, config)).toBe(false);
+    });
+
+    it("margin 0 disables the hurdle entirely", () => {
+        const disabled: ExitConfig = { ...config, rotationScoreMargin: 0 };
+        expect(clearsRotationHurdle(70, 70, disabled)).toBe(true);
+        expect(clearsRotationHurdle(70, null, disabled)).toBe(true);
+    });
+
+    it("default config carries margin 8 and chop-deferral floor -8", () => {
+        const cfg = defaultExitConfig();
+        expect(cfg.rotationScoreMargin).toBe(8);
+        expect(cfg.chopDeferMinRoePct).toBe(-8);
     });
 });

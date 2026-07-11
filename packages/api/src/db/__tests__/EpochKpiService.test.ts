@@ -85,6 +85,7 @@ describe("computeCloseStats", () => {
         vaultAddress: "0xa",
         realizedPnlUsd: pnl,
         basisConsumedUsd: basis,
+        originatedInEpoch: true,
     });
 
     it("computes the full KPI block", () => {
@@ -134,5 +135,56 @@ describe("computeCloseStats", () => {
         const stats = computeCloseStats([close(-1, 0)]);
         expect(stats.churn.count).toBe(0);
         expect(stats.losses).toBe(1);
+    });
+});
+
+describe("origination attribution (STRATEGY-FORENSICS-2026-07 §2)", () => {
+    it("flags a close of a pre-epoch position as inherited", () => {
+        // FKA profile: opened before the epoch, closed by a clean round
+        // inside it — the loss is cleanup, not the new strategy's trade.
+        const rows = [
+            deposit("0xa", EPOCH - 10 * DAY, 100),
+            withdraw("0xa", EPOCH + 2 * DAY, 85),
+        ];
+        const stats = computeEpochLedgerStats(rows, EPOCH);
+        expect(stats.closes).toHaveLength(1);
+        expect(stats.closes[0].originatedInEpoch).toBe(false);
+    });
+
+    it("flags a close of an in-epoch position as originated", () => {
+        const rows = [
+            deposit("0xa", EPOCH + 1 * DAY, 100),
+            withdraw("0xa", EPOCH + 5 * DAY, 110),
+        ];
+        const stats = computeEpochLedgerStats(rows, EPOCH);
+        expect(stats.closes).toHaveLength(1);
+        expect(stats.closes[0].originatedInEpoch).toBe(true);
+    });
+
+    it("attributes by the OLDEST consumed lot when lots straddle the epoch", () => {
+        // Pre-epoch lot still open when an in-epoch top-up arrives; a partial
+        // close consumes the pre-epoch lot first (FIFO) → inherited.
+        const rows = [
+            deposit("0xa", EPOCH - 10 * DAY, 100),
+            deposit("0xa", EPOCH + 1 * DAY, 100),
+            withdraw("0xa", EPOCH + 5 * DAY, 50),
+        ];
+        const stats = computeEpochLedgerStats(rows, EPOCH);
+        expect(stats.closes).toHaveLength(1);
+        expect(stats.closes[0].originatedInEpoch).toBe(false);
+    });
+
+    it("a fresh episode after a pre-epoch full exit is originated", () => {
+        // Position fully closed before the epoch, re-entered inside it — the
+        // new episode consumes only in-epoch lots.
+        const rows = [
+            deposit("0xa", EPOCH - 20 * DAY, 100),
+            withdraw("0xa", EPOCH - 15 * DAY, 100),
+            deposit("0xa", EPOCH + 1 * DAY, 200),
+            withdraw("0xa", EPOCH + 6 * DAY, 195),
+        ];
+        const stats = computeEpochLedgerStats(rows, EPOCH);
+        expect(stats.closes).toHaveLength(1);
+        expect(stats.closes[0].originatedInEpoch).toBe(true);
     });
 });

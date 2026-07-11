@@ -41,6 +41,25 @@ export type ExitConfig = {
      * system stops clipping every small round-to-round allocation drift.
      */
     trimOverweightTolerancePct: number;
+    /**
+     * Rotation cost hurdle (STRATEGY-FORENSICS-2026-07 §5, the un-shipped
+     * 2026-06 §7.5): a PROFITABLE non-recommended incumbent that has already
+     * passed the hold period and the hysteresis streak is still only rotated
+     * out when the best NEW deposit target out-scores it by this many stage-1
+     * points. Claude's ranking is unstable round-to-round; without a margin,
+     * ranking noise alone turned over >100% of the book in 10 days for
+     * ~$0 per round trip. 0 disables (pre-hurdle behavior).
+     */
+    rotationScoreMargin: number;
+    /**
+     * Chop-brake deferral floor: during a chop round, non-recommended
+     * positions with ROE at or above this level are held instead of rotated.
+     * Was 0 (profitable-only), which meant mildly-underwater positions were
+     * still sold at the bottom of exactly the regime the 2026-06 backtest
+     * showed mean-reverts (round 38 realized −$22.6 on a chop day). −8 keeps
+     * genuine losers (and all stop-losses) unaffected.
+     */
+    chopDeferMinRoePct: number;
 };
 
 function envNumber(name: string, fallback: number): number {
@@ -63,7 +82,34 @@ export function defaultExitConfig(): ExitConfig {
             "TRIM_OVERWEIGHT_TOLERANCE_PCT",
             25
         ),
+        rotationScoreMargin: envNumber("ROTATION_SCORE_MARGIN", 8),
+        chopDeferMinRoePct: envNumber("CHOP_DEFER_MIN_ROE_PCT", -8),
     };
+}
+
+/**
+ * Rotation cost hurdle for PROFITABLE incumbents (losing positions are risk
+ * cleanup and never pass through here). Returns true when the rotation may
+ * proceed.
+ *
+ * - `incumbentScore == null` → the incumbent wasn't scored this round (it
+ *   fell out of the deterministic prefilter — TVL/age/DD deterioration).
+ *   That is a genuine exit signal: allow.
+ * - `challengerScore == null` → there is no scored NEW vault to rotate the
+ *   freed capital into. Rotating out would just park cash: block.
+ * - Otherwise the challenger must out-score the incumbent by the margin —
+ *   the deterministic version of the prompt-level "beat the incumbent by
+ *   > 0.5 robust-z" instruction, which Claude does not reliably honor.
+ */
+export function clearsRotationHurdle(
+    incumbentScore: number | null,
+    challengerScore: number | null,
+    config: ExitConfig
+): boolean {
+    if (config.rotationScoreMargin <= 0) return true;
+    if (incumbentScore == null) return true;
+    if (challengerScore == null) return false;
+    return challengerScore - incumbentScore >= config.rotationScoreMargin;
 }
 
 /**

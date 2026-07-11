@@ -17,6 +17,7 @@ import {
     type WithdrawalVerifyEntry,
 } from "./WithdrawalVerifier";
 import { TraceService } from "../../db/TraceService";
+import { tryAcquireInstanceLock } from "../../db/DistributedLock";
 import { logger } from "../utils/logger";
 import type { UserPosition } from "../vaults/types";
 
@@ -76,7 +77,7 @@ export type RiskMonitorRunResult = {
     hardStopExits: number;
     softStopExits: number;
     trailingStopExits: number;
-    skipped: "rebalance-running" | "already-running" | null;
+    skipped: "rebalance-running" | "already-running" | "instance-lock-held" | null;
 };
 
 export class RiskMonitor {
@@ -129,12 +130,28 @@ export class RiskMonitor {
             }
             return emptyResult("already-running");
         }
+        // Cross-instance guard (shares the round's advisory lock): a tick
+        // must never fire protective exits while ANOTHER instance is
+        // mid-round — that is exactly the duplicate-withdrawal scenario the
+        // 2026-07-09 zombie-revisions incident produced. DB unavailable
+        // fails open on the in-process lock alone.
+        const instanceLock = await tryAcquireInstanceLock("monitor");
+        if (instanceLock.status === "held-elsewhere") {
+            RebalanceLock.release("monitor");
+            logger.error(
+                "ALERT_INSTANCE_LOCK: cross-instance lock held by another live session — skipping risk-monitor tick. If this repeats, a zombie revision is running (check Cloud Run revisions/tags)."
+            );
+            return emptyResult("instance-lock-held");
+        }
         try {
             return await this.scanPositions();
         } catch (error: any) {
             logger.warn("Risk monitor tick failed", { error: error?.message });
             return emptyResult(null);
         } finally {
+            if (instanceLock.status === "acquired") {
+                await instanceLock.release().catch(() => undefined);
+            }
             RebalanceLock.release("monitor");
         }
     }

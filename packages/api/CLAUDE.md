@@ -62,9 +62,9 @@ src/
 
 ### Rebalancing Logic
 
-**Round degradation (risk-only rounds).** If Claude ranking fails (heuristic fallback), the round does NOT abort anymore — it degrades to a **risk-only round**: every protective exit still runs (hard SL, soft SL against the last known recommendation set — in-memory stash with a DB fallback to the persisted stage-2 `claude_decision` — trailing stop, inactive vault) with full fill verification, while trims, rotation, and deposits are skipped. Recorded as `status=completed` with `summary_json.mode="risk-only"`. This closes the 2026-06-23→25 outage hole where full aborts left the book unmanaged for ~5 days (round 21 then realized −$103 in one cleanup).
+**Round degradation (risk-only rounds).** If Claude ranking fails (heuristic fallback), the round does NOT abort anymore — it degrades to a **risk-only round**: every protective exit still runs (hard SL, soft SL against the last known recommendation set — in-memory stash with a DB fallback to the persisted stage-2 `claude_decision` — trailing stop, inactive vault) with full fill verification, while trims, rotation, and deposits are skipped. Recorded as `status=completed` with `summary_json.mode="risk-only"`, and logged at ERROR level with the stable marker `ALERT_DEGRADED_ROUND` (set up a Cloud Logging alert on `ALERT_` — the 2026-07-06→08 credit exhaustion ran 3 days before anyone noticed). The cross-instance advisory lock logs `ALERT_INSTANCE_LOCK` when another live session holds it (zombie-revision signal). This closes the 2026-06-23→25 outage hole where full aborts left the book unmanaged for ~5 days (round 21 then realized −$103 in one cleanup).
 
-**Chop brake.** After fetching the market direction, the round compares it to the previous completed round's direction (`readRecentRoundDirections`). If the current direction is `neutral` or differs from the previous one (`isChopRegime` in `ExitPolicy.ts`), the round is a **chop round**: all planned deposits (new slots + top-ups) are scaled by `CHOP_DEPOSIT_FACTOR` (default 0.5), and non-risk rotation of profitable/flat positions is deferred (`hold_chop` events — they neither increment nor reset the hysteresis streak; the rotation clock freezes). Stop-losses, trailing stops, and losing-position rotation are unaffected. Rationale: the ledger shows the strategy earns in trends and bleeds in chop; direction flip-flopping is the observable symptom.
+**Chop brake.** After fetching the market direction, the round compares it to the previous completed round's direction (`readRecentRoundDirections`). If the current direction is `neutral` or differs from the previous one (`isChopRegime` in `ExitPolicy.ts`), the round is a **chop round**: all planned deposits (new slots + top-ups) are scaled by `CHOP_DEPOSIT_FACTOR` (default 0.5), and non-risk rotation of positions with ROE ≥ `CHOP_DEFER_MIN_ROE_PCT` (default −8; was 0 until 2026-07-11) is deferred (`hold_chop` events — they neither increment nor reset the hysteresis streak; the rotation clock freezes). The −8 floor exists because the profitable-only gate still sold mildly-underwater positions at the bottom of exactly the mean-reverting regime the backtest flagged (round 38 realized −$22.6 on a chop day). Stop-losses, trailing stops, and genuine-loser rotation are unaffected. Rationale: the ledger shows the strategy earns in trends and bleeds in chop; direction flip-flopping is the observable symptom.
 
 Each round runs two passes in this order:
 
@@ -79,8 +79,9 @@ For every current position still in the Claude recommendation set with `currentU
 4. **Inactive Vault Exit** — 0 open positions + 0 trades in last 7 days → full exit. Applies to recommended vaults too.
 5. **Recommended skip** — still in recommendations after passing inactive check → leave alone.
 6. **Hold Period** — non-recommended within 5 days (`MIN_HOLD_DAYS`) of last deposit → skip.
-7. **Chop-brake deferral** — on a chop round, a non-recommended position with `roePct >= 0` records `hold_chop` and is left alone (rotation deferred; hysteresis streak frozen). Losing positions fall through to the next rule unchanged.
+7. **Chop-brake deferral** — on a chop round, a non-recommended position with `roePct >= CHOP_DEFER_MIN_ROE_PCT` (default −8) records `hold_chop` and is left alone (rotation deferred; hysteresis streak frozen). Positions below the floor fall through to the next rule unchanged.
 8. **Non-recommended past hold** — hysteresis: a position with `roePct >= 0` is held for `NOT_RECOMMENDED_EXIT_ROUNDS` (default 2) consecutive non-recommended rounds (`hold_not_recommended` events count the streak; any recommended-round event resets it) before the full exit. Losing positions exit on the first non-recommended round. If the trace DB is unreachable the pre-hysteresis behavior applies (exit immediately).
+9. **Rotation hurdle** (2026-07-11, STRATEGY-FORENSICS-2026-07 §5 — the un-shipped June §7.5) — hold period passed, hysteresis passed, but a PROFITABLE incumbent still only rotates out when the best-scored NEW deposit target beats its stage-1 score by ≥ `ROTATION_SCORE_MARGIN` (default 8 points; 0 disables). An unscored incumbent (fell out of the prefilter) may always exit; no scored challenger → the exit is blocked (`hold_rotation_hurdle` — like `hold_chop`, neither counts toward nor resets the hysteresis streak). Deterministic version of the prompt-level "beat the incumbent by > 0.5 robust-z" instruction, which Claude does not reliably honor; the epoch tape showed ranking noise alone turning over >100% of the book in 10 days (Archangel 9-day round trip for −$0.13). Stage-1 scores ride on the recommendation set (`stage1Scores`); a cached pre-upgrade set fails open. Losing positions skip the hurdle (risk cleanup, not rotation).
 
 **Withdrawal fill verification (`WithdrawalVerifier.ts`):** after submitting withdrawals, per-vault equity is polled against the expected post-withdrawal level (0 for full exits, the trim target for trims). Withdrawals that didn't move equity by the deadline are re-submitted up to `WITHDRAWAL_VERIFY_MAX_RETRIES` (default 2) times, recording `exit_retry`/`trim` trace events. HL can fill a vault withdrawal for $0 when the vault has no free margin — previously this went undetected for a full round (the 2026-06 Otter Quant -$213 loss).
 
@@ -116,7 +117,7 @@ Wait 60s after withdrawals before deposits (configurable via `REBALANCE_WITHDRAW
 - `GET /api/history?page=1&pageSize=15` — Transaction history (reads from `position_ledger`, falls back to live HL if DB empty)
 - `GET /api/portfolio` — Aggregated portfolio summary
 - `GET /api/metrics` — Platform metrics (TVL, 30d/60d PnL %, win rate, max drawdown)
-- `GET /api/metrics/epoch` — Fresh-epoch strategy KPIs, computed strictly from ledger activity at/after `METRICS_EPOCH_START` (2026-07-02, the risk/selection overhaul): per-close realized PnL via the same FIFO replay as `position_account` (pre-epoch basis carried in correctly), win rate, avg win/loss, **winLossRatio** (skew — lifetime was 0.76, target > 1), profit factor, expectancy/close, churn closes (0–5%-of-basis losses), deposits, round counts (incl. risk-only), event counts by action. This is the scoreboard for the 2-3 month go/no-go review — do not judge the overhaul on lifetime metrics.
+- `GET /api/metrics/epoch` — Fresh-epoch strategy KPIs, computed strictly from ledger activity at/after `METRICS_EPOCH_START` (**2026-07-09** — re-based from 07-02 because Jul 2–8 was traded by zombie pre-overhaul revisions + credit-exhaustion fallbacks; see STRATEGY-FORENSICS-2026-07.md §2): per-close realized PnL via the same FIFO replay as `position_account` (pre-epoch basis carried in correctly), win rate, avg win/loss, **winLossRatio** (skew — lifetime was 0.76, target > 1), profit factor, expectancy/close, churn closes (0–5%-of-basis losses), deposits, round counts (incl. risk-only), event counts by action. Closes are split by origination: **`closesOriginated`** (position opened AND closed in-epoch — THE go/no-go scoreboard) vs `closesInherited` (cleanup of pre-epoch/zombie inventory); `closes` remains the combined view. Do not judge the overhaul on lifetime metrics or on inherited closes.
 - `GET /api/trace/rounds?limit=20` — Recent rebalance rounds with summaries
 - `GET /api/trace/rounds/:id` — Round detail: market snapshot + Claude decisions + vault snapshots + position events
 - `GET /api/trace/positions/:vaultAddress?limit=100` — Chronological event timeline per vault
@@ -131,7 +132,7 @@ The HL `getUserVaultLedgerUpdates` ledger is mirrored into `position_ledger` and
 `position_account` table that uses **our-own FIFO basis** — HL's `basisUsd` is stored only as
 `basis_usd_hl` for divergence audit and is never used in any logic.
 
-- Schema: `migrations/*.sql` (001 init → 005 chop brake). Migrations run on startup via `runMigrations()` in `Vault4.init()`.
+- Schema: `migrations/*.sql` (001 init → 006 rotation hurdle). Migrations run on startup via `runMigrations()` in `Vault4.init()`.
 - FIFO math: `src/db/PositionAccountService.ts` (pure, unit-tested in `src/db/__tests__/`).
 - Fresh-epoch KPIs: `src/db/EpochKpiService.ts` — full-ledger FIFO replay, stats filtered to closes at/after `METRICS_EPOCH_START` (serves `/api/metrics/epoch`).
 - Trace writes are non-fatal — DB outages must never break a rebalance round.
@@ -237,8 +238,16 @@ REENTRY_COOLDOWN_DAYS=10
 # CHOP_DEPOSIT_FACTOR and defer non-risk rotation of profitable positions.
 CHOP_BRAKE_ENABLED=true
 CHOP_DEPOSIT_FACTOR=0.5
+# Rotation cost hurdle: a profitable non-recommended incumbent only rotates
+# out when the best NEW deposit target beats its stage-1 score by this margin.
+# 0 disables.
+ROTATION_SCORE_MARGIN=8
+# Chop-brake deferral floor: during chop, non-recommended positions at/above
+# this ROE are held (hold_chop) instead of rotated. Stops unaffected.
+CHOP_DEFER_MIN_ROE_PCT=-8
 # Fresh-epoch KPI scoreboard (/api/metrics/epoch) measures from this instant.
-METRICS_EPOCH_START=2026-07-02T00:00:00Z
+# Re-based 2026-07-11: Jul 2-8 was traded by zombie pre-overhaul revisions.
+METRICS_EPOCH_START=2026-07-09T00:00:00Z
 # Intra-round risk monitor
 RISK_MONITOR_ENABLED=true
 RISK_MONITOR_INTERVAL_MS=14400000
@@ -298,9 +307,12 @@ Then deploy the new revision via Cloud Console or `gcloud run deploy`.
 
 **Single-instance invariant (2026-07-09 incident).** The service MUST run with
 `--max-instances=1`, and revision tags must never be left on it. The schedulers
-(RebalanceScheduler / RiskMonitor / XPostScheduler) run inside every instance and
-`RebalanceLock` is in-process only — any second live instance runs duplicate
-rounds with real trades. The service uses `minScale=1` + always-on CPU, and both
+(RebalanceScheduler / RiskMonitor / XPostScheduler) run inside every instance.
+Since 2026-07-11 a Postgres advisory lock (`src/db/DistributedLock.ts`) extends
+the in-process `RebalanceLock` across instances: a second live instance now
+SKIPS its rounds/ticks and logs `ALERT_INSTANCE_LOCK` instead of double-trading.
+That is defense-in-depth, not a license for multiple instances — the lock fails
+open when the DB is unreachable, and XPostScheduler is not covered. The service uses `minScale=1` + always-on CPU, and both
 apply to **every active revision**: leftover tags (`fix`, `x402`) once kept two
 old revisions warm, producing 2-3 concurrent rounds per cycle, duplicate/dust
 trades, and ~3× Anthropic spend (which exhausted the API credits — all rounds

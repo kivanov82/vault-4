@@ -67,6 +67,34 @@ export class TraceService {
         });
     }
 
+    /**
+     * Abort rebalance_round rows stuck in status='running'. A live round
+     * finishes in ~30 min; anything hours old is a dead process that never
+     * reached endRound (round 34, 2026-07-07, sat in `running` indefinitely
+     * during the credit-exhaustion window). Runs at startup — idempotent, and
+     * the age threshold keeps it from ever touching a genuinely live round.
+     */
+    static async abortStaleRunningRounds(maxAgeHours = 6): Promise<number> {
+        const result = await withDb<number>(
+            "abortStaleRunningRounds",
+            async (client) => {
+                const r = await client.query(
+                    `UPDATE rebalance_round
+                     SET completed_at = now(),
+                         status = 'aborted',
+                         summary_json = COALESCE(summary_json, '{}'::jsonb)
+                             || '{"reason":"stale-running-cleanup"}'::jsonb
+                     WHERE status = 'running'
+                       AND started_at < now() - make_interval(hours => $1)`,
+                    [Math.max(1, Math.floor(maxAgeHours))]
+                );
+                return r.rowCount ?? 0;
+            },
+            0
+        );
+        return result ?? 0;
+    }
+
     static async recordMarketSnapshot(
         roundId: number | null,
         overlay: MarketOverlay

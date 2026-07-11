@@ -424,6 +424,7 @@ export class VaultService {
                 generatedAt: candidatesResult.generatedAt,
             },
             suggestedAllocations: aiRankingResult?.suggestedAllocations,
+            stage1Scores: aiRankingResult?.stage1Scores,
         };
         logger.info("Generated vault recommendations", {
             source,

@@ -27,6 +27,18 @@ export class Vault4 {
                 message: error?.message,
             });
         }
+        try {
+            const stale = await TraceService.abortStaleRunningRounds();
+            if (stale > 0) {
+                logger.warn("Aborted stale 'running' rebalance rounds", {
+                    count: stale,
+                });
+            }
+        } catch (error: any) {
+            logger.warn("Stale-round cleanup failed (continuing)", {
+                message: error?.message,
+            });
+        }
         TraceService.syncLedger()
             .then(async () => {
                 // Always recompute on boot — FIFO logic may have changed since
