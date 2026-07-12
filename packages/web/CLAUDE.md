@@ -38,8 +38,7 @@ components/
   terminal-header.tsx         # Header with title, uptime, wallet connect
   positions-table.tsx         # Vault positions with inline bars, vault links + history tab
   pnl-chart.tsx              # Hero PnL/account-value chart with [PNL]/[ACC_VALUE] toggle + live mode
-  performance-metrics.tsx     # Key metrics with [ANNUALIZED]/[30D_PNL] toggle, count-up animation + hover glow
-  strategy-epoch-metrics.tsx  # Current-strategy scoreboard (/api/metrics/epoch closesOriginated since 2026-07-09) — shown alongside lifetime metrics, never replacing them
+  performance-metrics.tsx     # Single epoch-anchored metrics panel: TVL (total capital incl. pending), MTM PnL [EPOCH]/[ANNUAL], max DD, plus closesOriginated trade stats (win rate, realized, expectancy, PF, W/L) — everything since LAUNCH_DATE (2026-07-09)
   live-data-ticker.tsx       # Real-time $HYPE price/volume/OI/FR ticker (cyan)
   cycling-text-panel.tsx     # Rotating system messages (amber for warnings)
   account-stats.tsx          # Account overview — fetches from /api/positions
@@ -114,7 +113,5 @@ Vercel. Set Root Directory to `packages/web`.
 - `next.config.mjs` has `ignoreBuildErrors: true` — TypeScript errors won't block builds
 - Action buttons are intentionally locked (beta) — they use `terminal-button-locked` class
 - `account-stats.tsx` fetches real data from `/api/positions` — no `isConnected` prop needed
-- Performance metric has three modes (toggle in `performance-metrics.tsx`):
-  - `ITD` (default) — compound-annualized inception-to-date PnL: `(1 + pnlChangeInceptionPct/100)^(365/daysSinceInception) - 1`
-  - `60D_ANNUAL` — linear extrapolation: `pnlChange60dPct * 6`
-  - `30D` — raw 30-day PnL %, not annualized
+- The UI presents the track record from the strategy epoch (`LAUNCH_DATE_ISO` in `lib/constants.ts` = 2026-07-09, matching the backend's `METRICS_EPOCH_START`): header uptime, PnL chart window, history tab pagination, and the metrics panel are all clipped there. Lifetime data still exists in the API but is not displayed.
+- PnL card has two modes (toggle in `performance-metrics.tsx`): `EPOCH` (MTM % since epoch, from `/api/metrics/epoch` `mtm.pnlPct`) and `ANNUAL` (same, compound-annualized over epoch days — noisy while the epoch is young)

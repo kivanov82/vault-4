@@ -4,6 +4,7 @@ import { useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { BlinkingLabel } from "./blinking-label"
 import { TerminalSkeletonLine } from "./terminal-skeleton"
+import { LAUNCH_DATE_MS } from "@/lib/constants"
 
 type PositionEntry = {
   vaultAddress: string
@@ -95,10 +96,16 @@ export function PositionsTable() {
   })
 
   const positions = positionsData?.positions ?? []
-  const history = historyData?.entries ?? []
+  // The displayed track record starts at the strategy epoch — drop older
+  // ledger entries and stop paginating once a page crosses the boundary.
+  const rawHistory = historyData?.entries ?? []
+  const history = rawHistory.filter((entry) => entry.time >= LAUNCH_DATE_MS)
+  const reachedEpochStart = rawHistory.some((entry) => entry.time < LAUNCH_DATE_MS)
   const netPnl = positionsData?.netPnlUsd ?? null
   const totalPositions = positionsData?.totalPositions ?? 0
-  const totalHistoryPages = historyData?.totalPages ?? 1
+  const totalHistoryPages = reachedEpochStart
+    ? historyPage
+    : historyData?.totalPages ?? 1
   const maxSizePct = Math.max(
     ...positions.map((p) => p.sizePct ?? 0),
     1,

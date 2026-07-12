@@ -194,7 +194,13 @@ export type PlatformHistoryResponse = {
 
 export type PlatformMetricsResponse = {
     userAddress: string;
+    /** Vault equities only — dips whenever an exit parks cash in the wallet. */
     tvlUsd: number | null;
+    /** HL accountEquity: vault equities + perps-wallet cash. The smooth
+     * headline number — show this as TVL in the UI. */
+    totalCapitalUsd: number | null;
+    /** Wallet cash awaiting redeployment (totalCapital − vault equity). */
+    pendingDeployUsd: number | null;
     tvlChange30dUsd: number | null;
     pnlChange30dPct: number | null;
     pnlChange60dPct: number | null;

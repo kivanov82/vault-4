@@ -5,6 +5,10 @@ import {
     totalOpenBasis,
     type AccountState,
 } from "./PositionAccountService";
+import {
+    readPortfolioSeries,
+    readPortfolioSnapshotAt,
+} from "./TraceService";
 
 /**
  * Fresh-epoch strategy KPIs.
@@ -82,9 +86,29 @@ export type EpochCloseStats = {
     churn: { count: number; lossUsd: number };
 };
 
+/**
+ * Mark-to-market view of the epoch, derived from portfolio_series FIFO
+ * aggregates: total strategy PnL(t) = realized(t) + (vault_equity(t) −
+ * open_basis(t)). The difference between now and the epoch start is
+ * flow-neutral (vault deposits/withdrawals move cash↔basis without PnL), so
+ * it complements the closed-trade stats, which realize losses eagerly while
+ * winners sit unrealized. Wallet cash is excluded from the % denominator
+ * (vault equity only). All fields null when portfolio_series has no
+ * usable snapshots.
+ */
+export type EpochMtm = {
+    pnlUsd: number | null;
+    pnlPct: number | null;
+    maxDrawdownPct: number | null;
+    startEquityUsd: number | null;
+    currentEquityUsd: number | null;
+    asOf: string | null;
+};
+
 export type EpochKpis = {
     epochStart: string;
     days: number;
+    mtm: EpochMtm;
     /** All closes inside the epoch window (backward-compatible view). */
     closes: EpochCloseStats;
     /** Closes of positions the current strategy itself opened (oldest
@@ -244,7 +268,7 @@ export class EpochKpiService {
         const epochStart = this.epochStart();
         const epochStartMs = epochStart.getTime();
 
-        return await withDb("epochKpis", async (client) => {
+        const base = await withDb("epochKpis", async (client) => {
             const ledger = await client.query<{
                 time: Date;
                 vault_address: string;
@@ -334,6 +358,92 @@ export class EpochKpiService {
                 calculatedAt: new Date(now).toISOString(),
             };
         });
+        if (!base) return null;
+        return { ...base, mtm: await this.computeMtm(epochStartMs) };
+    }
+
+    private static async computeMtm(epochStartMs: number): Promise<EpochMtm> {
+        const [startSnap, nowSnap, series] = await Promise.all([
+            readPortfolioSnapshotAt(epochStartMs),
+            readPortfolioSnapshotAt(Date.now()),
+            readPortfolioSeries(),
+        ]);
+        const totalPnlAt = (
+            snap: Awaited<ReturnType<typeof readPortfolioSnapshotAt>>
+        ): number | null =>
+            snap != null &&
+            snap.ourRealizedPnlUsd != null &&
+            snap.vaultEquityUsd != null &&
+            snap.ourBasisUsdOpen != null
+                ? snap.ourRealizedPnlUsd +
+                  (snap.vaultEquityUsd - snap.ourBasisUsdOpen)
+                : null;
+        const startPnl = totalPnlAt(startSnap);
+        const nowPnl = totalPnlAt(nowSnap);
+        const pnlUsd =
+            startPnl != null && nowPnl != null
+                ? round2(nowPnl - startPnl)
+                : null;
+        const startEquity = startSnap?.vaultEquityUsd ?? null;
+
+        // Flow-neutral drawdown over the epoch: walk the totalPnl curve
+        // (realized + equity − basis, which vault deposits/withdrawals do not
+        // move) and take the worst decline from its running peak, as % of
+        // epoch-start equity. account_value_usd can't be used here — the
+        // round-end stamp only fills it on an exact HL-series timestamp
+        // match, so post-epoch rows rarely carry it.
+        let maxDrawdownPct: number | null = null;
+        if (series && startEquity != null && startEquity > 0) {
+            const byTs = new Map<
+                number,
+                { e?: number; r?: number; b?: number }
+            >();
+            const slot = (ts: number) => {
+                let v = byTs.get(ts);
+                if (!v) {
+                    v = {};
+                    byTs.set(ts, v);
+                }
+                return v;
+            };
+            for (const p of series.vaultEquity.points) {
+                if (p.timestamp >= epochStartMs) slot(p.timestamp).e = p.value;
+            }
+            for (const p of series.ourRealizedPnl.points) {
+                if (p.timestamp >= epochStartMs) slot(p.timestamp).r = p.value;
+            }
+            for (const p of series.ourBasisOpen.points) {
+                if (p.timestamp >= epochStartMs) slot(p.timestamp).b = p.value;
+            }
+            let peak = startPnl ?? -Infinity;
+            let worst = 0;
+            let seen = startPnl != null;
+            for (const ts of [...byTs.keys()].sort((a, b) => a - b)) {
+                const v = byTs.get(ts)!;
+                if (v.e == null || v.r == null || v.b == null) continue;
+                const pnl = v.r + (v.e - v.b);
+                seen = true;
+                if (pnl > peak) peak = pnl;
+                const dd = (pnl - peak) / startEquity;
+                if (dd < worst) worst = dd;
+            }
+            maxDrawdownPct = seen ? round2(worst * 100) : null;
+        }
+
+        return {
+            pnlUsd,
+            pnlPct:
+                pnlUsd != null && startEquity != null && startEquity > 0
+                    ? round2((pnlUsd / startEquity) * 100)
+                    : null,
+            maxDrawdownPct,
+            startEquityUsd: startEquity != null ? round2(startEquity) : null,
+            currentEquityUsd:
+                nowSnap?.vaultEquityUsd != null
+                    ? round2(nowSnap.vaultEquityUsd)
+                    : null,
+            asOf: nowSnap ? new Date(nowSnap.ts).toISOString() : null,
+        };
     }
 }
 

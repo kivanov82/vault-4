@@ -753,9 +753,26 @@ export class VaultService {
                 ? (winRateBooks.wins / winRateBooks.totalClosures) * 100
                 : calcWinRatePct(updates, LAUNCH_DATE_MS, MIN_POSITION_USD);
 
+        // Total capital = HL accountEquity (perps wallet + vault equities).
+        // Withdrawn-but-not-yet-redeployed cash sits in the wallet between
+        // rounds, so vault-only TVL yo-yos on every exit while total capital
+        // stays smooth — the UI headline should show total capital and break
+        // out the pending slice.
+        const totalCapitalUsd = Number.isFinite(positions.totalCapitalUsd)
+            ? (positions.totalCapitalUsd as number)
+            : null;
+        const pendingDeployUsd =
+            totalCapitalUsd !== null && vaultEquityUsd !== null
+                ? Math.max(0, totalCapitalUsd - vaultEquityUsd)
+                : null;
+
         return {
             userAddress: wallet,
             tvlUsd: tvlUsd !== null ? round(tvlUsd, 6) : null,
+            totalCapitalUsd:
+                totalCapitalUsd !== null ? round(totalCapitalUsd, 6) : null,
+            pendingDeployUsd:
+                pendingDeployUsd !== null ? round(pendingDeployUsd, 6) : null,
             tvlChange30dUsd:
                 tvlChange30dUsd !== null ? round(tvlChange30dUsd, 6) : null,
             pnlChange30dPct:

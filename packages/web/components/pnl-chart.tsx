@@ -122,7 +122,14 @@ export function PnlChart() {
     const normalized = normalizeSeries(series)
     if (!normalized.length) return [{ timestamp: Date.now(), value: 0, label: "NA" }]
     const filtered = filterByPeriod(normalized, timePeriod)
-    const capped = downsample(filtered, timePeriod === "ALL" ? 120 : 60)
+    // The displayed track record starts at the strategy epoch — re-base the
+    // cumulative PnL series so the curve reads $0 at the window's left edge
+    // (PnL earned within the visible period, not lifetime carry-in).
+    const rebased =
+      chartMode === "PNL" && filtered.length
+        ? filtered.map((point) => ({ ...point, value: point.value - filtered[0].value }))
+        : filtered
+    const capped = downsample(rebased, timePeriod === "ALL" ? 120 : 60)
     return capped.map((point) => ({
       timestamp: point.timestamp,
       value: point.value,
