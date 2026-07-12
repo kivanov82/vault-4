@@ -8,6 +8,7 @@ import { FundOverview } from "./fund-overview"
 import { PnlChart } from "./pnl-chart"
 import { PositionsTable } from "./positions-table"
 import { PerformanceMetrics } from "./performance-metrics"
+import { StrategyEpochMetrics } from "./strategy-epoch-metrics"
 import { InvestPanel } from "./invest-panel"
 import { QueueStatus } from "./queue-status"
 import { RecentActivity } from "./recent-activity"
@@ -77,6 +78,9 @@ export function TerminalPortfolio() {
             <div className="space-y-3 terminal-tab-content" role="tabpanel" aria-label="Dashboard">
               <section className="boot-section boot-delay-2" aria-label="Performance metrics">
                 <PerformanceMetrics />
+              </section>
+              <section className="boot-section boot-delay-3" aria-label="Strategy epoch metrics">
+                <StrategyEpochMetrics />
               </section>
               <section className="boot-section boot-delay-3" aria-label="PnL chart">
                 <PnlChart />

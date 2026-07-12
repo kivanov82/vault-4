@@ -39,6 +39,7 @@ components/
   positions-table.tsx         # Vault positions with inline bars, vault links + history tab
   pnl-chart.tsx              # Hero PnL/account-value chart with [PNL]/[ACC_VALUE] toggle + live mode
   performance-metrics.tsx     # Key metrics with [ANNUALIZED]/[30D_PNL] toggle, count-up animation + hover glow
+  strategy-epoch-metrics.tsx  # Current-strategy scoreboard (/api/metrics/epoch closesOriginated since 2026-07-09) — shown alongside lifetime metrics, never replacing them
   live-data-ticker.tsx       # Real-time $HYPE price/volume/OI/FR ticker (cyan)
   cycling-text-panel.tsx     # Rotating system messages (amber for warnings)
   account-stats.tsx          # Account overview — fetches from /api/positions
@@ -62,6 +63,7 @@ The UI consumes endpoints from the API package (`packages/api/`):
 - `GET /api/positions` — User vault positions
 - `GET /api/portfolio` — Aggregated portfolio summary
 - `GET /api/metrics` — Platform metrics (TVL, 30d/60d PnL %, win rate, max drawdown)
+- `GET /api/metrics/epoch` — Current-strategy epoch KPIs (`closesOriginated` = trades the current strategy opened AND closed; `closesInherited` = pre-epoch cleanup shown as a footnote)
 - `GET /api/history?page=1&pageSize=15` — Transaction history
 
 Append `?refresh=true` to bypass cache.
