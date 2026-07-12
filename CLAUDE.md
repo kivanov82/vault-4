@@ -71,8 +71,8 @@ Production frontend points to the Cloud Run URL.
 
 ## Deployment
 
-- **API** (`packages/api`): Google Cloud Run — `Dockerfile` in `packages/api/`, exposes port 8080
-- **Web** (`packages/web`): Vercel — set Root Directory to `packages/web`
+- **API** (`packages/api`): Google Cloud Run — `Dockerfile` in `packages/api/`, exposes port 8080. Traffic is revision-pinned: every deploy needs a manual `update-traffic` (see `packages/api/CLAUDE.md`)
+- **Web** (`packages/web`): Vercel project `v0-vault-4-ui` — Root Directory `packages/web`, auto-deploys production on every push to `main`. Live at https://vault-4.xyz
 
 ## Conventions
 

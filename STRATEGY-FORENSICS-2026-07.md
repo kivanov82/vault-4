@@ -206,8 +206,26 @@ before it can compound.
    ~$1/day gross edge, is this an absolute-return product or a strategy R&D
    platform? If the former, hold-period/turnover redesign is mandatory.
 
-### Implementation status (2026-07-11)
+### Implementation status (updated 2026-07-12)
 
-Items 1, 2 (lock + stale-round auto-abort + fallback alert log), 3, and 4 are
-implemented in this repo alongside this report — see
-`packages/api/CLAUDE.md` for the new env vars and defaults.
+All shipped and live:
+
+- **2026-07-11, rev `vault-4-00114-b4j`** (`:rotation-hurdle`, commit
+  `ee334a2`) — items 1–4: epoch re-base to 2026-07-09 + `closesOriginated`/
+  `closesInherited` split, rotation hurdle (`ROTATION_SCORE_MARGIN=8`,
+  migration 006), chop-brake floor (`CHOP_DEFER_MIN_ROE_PCT=-8`),
+  cross-instance advisory lock, stale-round auto-abort (cleared stuck round
+  34), `ALERT_DEGRADED_ROUND`/`ALERT_INSTANCE_LOCK` log markers.
+- **2026-07-12, rev `vault-4-00116-5kz`** (`:epoch-ui`, commit `0447c5a`) —
+  `/api/metrics/epoch` gained a flow-neutral **`mtm`** block (PnL + max DD
+  since epoch from the realized+equity−basis curve); `/api/metrics` gained
+  `totalCapitalUsd`/`pendingDeployUsd` (vault equities + wallet cash, so the
+  TVL headline no longer dips when exits park cash between rounds).
+- **Web (vault-4.xyz)** now presents the entire track record from the epoch:
+  merged performance panel (MTM PnL, epoch DD, `closesOriginated` trade
+  stats), header uptime, PnL chart (clipped + re-based to $0), and history
+  tab all anchored to 2026-07-09. Lifetime data remains in the API only.
+
+See `packages/api/CLAUDE.md` for env vars and defaults. Still open:
+recommendation 5 (the structural go/no-go question) and the manual alert
+setup (Cloud Logging alert on `ALERT_`, Anthropic billing alert).

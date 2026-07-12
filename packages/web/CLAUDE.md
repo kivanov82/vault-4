@@ -99,7 +99,10 @@ Cyberpunk terminal aesthetic defined in `app/globals.css`:
 
 ## Deployment
 
-Vercel. Set Root Directory to `packages/web`.
+Vercel — project `v0-vault-4-ui` (team `kivanov82s-projects`), Root Directory
+`packages/web`. **Auto-deploys production on every push to `main`** (~50s
+build). Production domain: **https://vault-4.xyz**. Check status with
+`npx vercel ls` from this directory.
 
 ## Conventions
 

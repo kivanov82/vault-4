@@ -45,8 +45,8 @@ Base URL: `https://vault-4-s6qnbk6izq-ew.a.run.app`
 
 | Endpoint | What it gives |
 | --- | --- |
-| `/api/metrics` | All-time: TVL, 30d/60d/inception PnL %, win rate, max DD |
-| `/api/metrics/epoch` | Fresh-epoch KPIs since `METRICS_EPOCH_START`: `closes` / **`closesOriginated`** / `closesInherited` (win rate, avg win/loss, winLossRatio, PF, expectancy, churn), deposits, round counts, event counts |
+| `/api/metrics` | All-time: TVL (vault-only `tvlUsd` vs smooth `totalCapitalUsd` + `pendingDeployUsd`), 30d/60d/inception PnL %, win rate, max DD |
+| `/api/metrics/epoch` | Fresh-epoch KPIs since `METRICS_EPOCH_START`: `closes` / **`closesOriginated`** / `closesInherited` (win rate, avg win/loss, winLossRatio, PF, expectancy, churn), **`mtm`** (flow-neutral PnL $/% + max DD since epoch), deposits, round counts, event counts |
 | `/api/history?page=1&pageSize=100` | HL ledger, FIFO realized PnL per close — the per-trade tape |
 | `/api/trace/rounds` | Round list with `summary_json` (chopBrake, rotationHurdle, withdrawalsByReason, mode/reason) |
 | `/api/trace/rounds/:id` | Per-round position events (amounts, reasons) |
@@ -68,10 +68,13 @@ Then do the arithmetic explicitly in the report:
 
 - breakeven win rate = avgLoss / (avgWin + avgLoss); compare to actual
 - annualize the inception return; compare to risk-free and to max DD (Calmar)
-- MTM cross-check: TVL_now − TVL_then, net of external flows; state it next
-  to realized. **TVL excludes cash in the perps wallet** — after a big exit,
-  withdrawn proceeds sit in the wallet until the next round's deposits, so a
-  TVL drop right after an exit is mostly cash-in-transit, not loss.
+- MTM cross-check: use the epoch endpoint's `mtm` block (flow-neutral:
+  Δrealized + Δ(vault_equity − open_basis) from portfolio_series) and state
+  it next to realized — the closed-trade stats realize losses eagerly while
+  winners sit unrealized, so the two can disagree in sign. `tvlUsd` excludes
+  cash in the perps wallet — after a big exit, proceeds sit in the wallet
+  until the next round's deposits, so a raw-TVL drop right after an exit is
+  mostly cash-in-transit; use `totalCapitalUsd` for capital comparisons.
 
 ## Step 3 — Contamination & ops check (do this BEFORE judging the strategy)
 
@@ -168,3 +171,7 @@ and the root `CLAUDE.md`.
   apart after the fact — never delete summary keys casually.
 - Go/no-go review (~2026-09-15→10-01) is judged ONLY on
   `/api/metrics/epoch` → `closesOriginated`, epoch basis 2026-07-09.
+- The web UI (vault-4.xyz) presents the entire track record from the epoch
+  (uptime, chart re-based to $0, history clipped) — lifetime numbers exist
+  ONLY in the API. A forensic must still pull the lifetime view; don't
+  mistake the UI's epoch framing for the full history.
