@@ -40,3 +40,10 @@ package-lock.json
 
 # Claude Code session state
 .claude/scheduled_tasks.lock
+
+# Playwright MCP verification artifacts
+.playwright-mcp/
+*-panel.png
+check-numbers.png
+prod-live.png
+final-check.png
