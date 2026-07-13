@@ -168,7 +168,7 @@ export function PerformanceMetrics() {
     {
       label: "REALIZED_PNL",
       title: "Realized PnL of closed strategy trades (open positions not included)",
-      value: stats ? formatUsdSigned(stats.realizedPnlUsd) : null,
+      value: stats ? (stats.count > 0 ? formatUsdSigned(stats.realizedPnlUsd) : "--") : null,
       negative: (stats?.realizedPnlUsd ?? 0) < 0,
     },
     {
@@ -205,12 +205,6 @@ export function PerformanceMetrics() {
           SINCE {epochDate}{days != null ? ` // D+${Math.floor(days)}` : ""}
         </span>
       </div>
-
-      {awaitingFirstCloses && (
-        <p className="text-[10px] text-[color:var(--terminal-amber)] mt-2">
-          AWAITING_FIRST_CLOSED_TRADES — trade stats populate as strategy positions close
-        </p>
-      )}
 
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mt-3">
         {items.map((metric) => (
@@ -260,12 +254,15 @@ export function PerformanceMetrics() {
         ))}
       </div>
 
-      {inherited != null && inherited.count > 0 && (
+      {(awaitingFirstCloses || (inherited != null && inherited.count > 0)) && (
         <p
           className="text-[10px] text-[color:var(--terminal-cyan-dim)] mt-2"
-          title="Exits of positions opened before the epoch start — cleanup, not attributed to the current strategy"
+          title="Trade stats cover only positions the current strategy opened and closed; pre-epoch exits are cleanup, not attributed to it"
         >
-          + pre-epoch inventory cleanup: {inherited.count} closes, {formatUsdSigned(inherited.realizedPnlUsd)} (not attributed)
+          {awaitingFirstCloses && "no closed trades yet — stats populate as positions close"}
+          {awaitingFirstCloses && inherited != null && inherited.count > 0 && " · "}
+          {inherited != null && inherited.count > 0 &&
+            `pre-epoch cleanup: ${inherited.count} closes, ${formatUsdSigned(inherited.realizedPnlUsd)} (not attributed)`}
         </p>
       )}
     </div>
