@@ -141,13 +141,14 @@ export function PerformanceMetrics() {
   }> = [
     {
       label: "TVL",
-      title: "Total capital: vault equities + wallet cash awaiting redeployment",
+      title: "Total capital under management: funds deployed into vaults plus cash between deployments (shown as pending). Includes profits.",
       value: formatUsd(tvl),
       sub: pending != null && pending >= 1 ? `incl. $${pending.toFixed(0)} pending deploy` : null,
       negative: false,
     },
     {
       label: "PNL",
+      title: "Strategy profit & loss since the epoch start, marked to market (realized + unrealized). [EPOCH] shows the raw figure; [ANNUAL] compounds it to a yearly rate — noisy while the track record is young.",
       value: formatPercentSigned(pnlValue),
       sub: epoch?.mtm?.pnlUsd != null ? formatUsdSigned(epoch.mtm.pnlUsd) : null,
       negative: (pnlRaw ?? 0) < 0,
@@ -155,43 +156,43 @@ export function PerformanceMetrics() {
     },
     {
       label: "MAX_DRAWDOWN",
-      title: "Peak-to-trough decline of account value since the epoch start",
+      title: "Worst peak-to-trough decline of the strategy's value since the epoch start. Smaller is better.",
       value: formatPercentSigned(epoch?.mtm?.maxDrawdownPct ?? null),
       negative: true,
     },
     {
       label: "WIN_RATE",
-      title: "Wins / decisive closes — trades the current strategy opened and closed",
+      title: "Share of closed trades that ended profitable. Counts only trades the current strategy opened and closed.",
       value: formatPercent(stats?.winRatePct),
       negative: false,
     },
     {
       label: "REALIZED_PNL",
-      title: "Realized PnL of closed strategy trades (open positions not included)",
+      title: "Profit locked in from closed strategy trades. Gains on still-open positions are not included here — they show in PNL.",
       value: stats ? (stats.count > 0 ? formatUsdSigned(stats.realizedPnlUsd) : "--") : null,
       negative: (stats?.realizedPnlUsd ?? 0) < 0,
     },
     {
       label: "CLOSES",
-      title: "Closed trades (wins/losses) originated by the current strategy",
+      title: "Completed round-trip trades (wins/losses) by the current strategy. Open positions don't count until they close.",
       value: stats ? `${stats.count} (${stats.wins}W/${stats.losses}L)` : null,
       negative: false,
     },
     {
       label: "EXPECTANCY",
-      title: "Average realized $ per closed trade",
+      title: "Average profit per closed trade. Positive means the strategy makes money on a typical trade.",
       value: stats ? formatUsdSigned(stats.expectancyUsdPerClose) : null,
       negative: (stats?.expectancyUsdPerClose ?? 0) < 0,
     },
     {
       label: "PROFIT_FACTOR",
-      title: "Gross wins / gross losses",
+      title: "Total gross profits divided by total gross losses on closed trades. Above 1.00 = profitable.",
       value: formatRatio(stats?.profitFactor),
       negative: stats?.profitFactor != null && stats.profitFactor < 1,
     },
     {
       label: "AVG_WIN/LOSS",
-      title: "Average win vs average loss",
+      title: "Average winning trade divided by average losing trade. Above 1.00 means wins are bigger than losses.",
       value: formatRatio(stats?.winLossRatio),
       negative: stats?.winLossRatio != null && stats.winLossRatio < 1,
     },
@@ -210,8 +211,17 @@ export function PerformanceMetrics() {
         {items.map((metric) => (
           <div
             key={metric.label}
-            className={`terminal-border-inset p-2 metric-card ${metric.negative ? "metric-card-negative" : ""}`}
+            tabIndex={metric.title ? 0 : undefined}
+            className={`relative group terminal-border-inset p-2 metric-card outline-none ${metric.negative ? "metric-card-negative" : ""}`}
           >
+            {metric.title && (
+              <div
+                role="tooltip"
+                className="pointer-events-none absolute inset-x-0 bottom-full mb-1 z-20 border border-[color:var(--terminal-cyan-dim)] bg-black/95 p-2 text-[10px] leading-relaxed text-[color:var(--terminal-cyan)] opacity-0 translate-y-1 transition-all duration-150 delay-150 group-hover:opacity-100 group-hover:translate-y-0 group-focus-within:opacity-100 group-focus-within:translate-y-0"
+              >
+                {metric.title}
+              </div>
+            )}
             {metric.switcher ? (
               <div className="flex items-center gap-1 text-[10px]">
                 <span className="text-[color:var(--terminal-cyan-dim)]">PnL:</span>
@@ -234,7 +244,6 @@ export function PerformanceMetrics() {
               </div>
             ) : (
               <span
-                title={metric.title}
                 className={`text-[10px] text-[color:var(--terminal-cyan-dim)] block truncate ${metric.title ? "cursor-help" : ""}`}
               >
                 {metric.label}
