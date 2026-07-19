@@ -144,6 +144,23 @@ export class RiskMonitor {
             return emptyResult("instance-lock-held");
         }
         try {
+            // Housekeeping: abort rounds orphaned in 'running' by an instance
+            // that died mid-round (e.g. a Cloud Run instance recycle — round 43
+            // on 2026-07-18 sat stuck for 37h because the startup-only cleanup
+            // never re-ran while the replacement instance stayed up). Safe to
+            // run here: both the in-process and cross-instance locks are held,
+            // so no round is live on this OR any other instance, and the 6h age
+            // floor inside abortStaleRunningRounds can never touch a legitimate
+            // ~30-min round. This turns the 4h tick into the recurring reaper
+            // the startup-only path could not be. Non-fatal.
+            const swept = await TraceService.abortStaleRunningRounds().catch(
+                () => 0
+            );
+            if (swept > 0) {
+                logger.warn("Risk monitor aborted stale 'running' rounds", {
+                    count: swept,
+                });
+            }
             return await this.scanPositions();
         } catch (error: any) {
             logger.warn("Risk monitor tick failed", { error: error?.message });
