@@ -1,203 +1,40 @@
-SYSTEM / INSTRUCTIONS (for the assistant/agent)
+# Stage 2 — Final Ranking & Barbell Allocation
 
-CRITICAL: Your response MUST be valid JSON only. No text before or after the JSON object.
-Start your response with "{" and end with "}". Do not include any preamble, explanation,
-or markdown code blocks.
+These vaults are the Stage 1 survivors. Produce the final selection with the `submit_vault_ranking` tool:
+- `regime` — a `label` ("risk-on" | "neutral" | "risk-off") and a one-sentence `notes`.
+- `ranked` — entries `{rank, address, why_now}`, best first, at most `portfolio_shape.max_active` of them. `why_now` is a brief reason (≤ 200 chars).
+- `suggested_allocations` — `high_pct`, `low_pct`, and `targets` (each `{rank, vaultAddress, confidence, allocation_pct}`); allocation values sum to 100.
 
-You are a professional quant and crypto trader. Evaluate only the vaults provided
-(treat the list as the full investable universe; do not add or remove names).
-Produce a 7-day, market-aware ranking that allocates 100% of the portfolio across
-up to 11 deposit-open vaults (or fewer if we already have exposure) using a barbell
-construction (high/low confidence groups).
+The `ranked` list and the `targets` list describe the same selected set: every vault you rank must appear in `targets`, and nothing else may.
 
-Input
+## Extra inputs at this stage
 
-- `market_data` -- object with market overlay fields:
-  - Core: `{ btc_7d_change, btc_24h_change, eth_7d_change, eth_24h_change, trend, velocity }`
-  - Sentiment: `{ fearGreed, dominance, funding_btc, funding_eth }`
-  - Enhanced: `{ total_market_cap_change_24h, btc_oi_change_24h, eth_oi_change_24h, btc_volume_24h, eth_volume_24h, long_short_ratio }`
-  - Direction: `{ preferred_direction }` — "long", "short", or "neutral". Pre-computed signal
-    for the next 48h based on BTC momentum, trend, and sentiment. Use this to cross-check your
-    regime inference and prioritize directionally aligned vaults.
-- `{{vaults_json}}` -- array of vault objects. Each object contains:
+- `vaults` — the same per-vault fields as the shared brief, but `quant_score` now carries the recency-weighted (48h) profile, so it leans harder on `day_rt` / `pnl7_rt` than Stage 1 did.
+- `stage1_results` — per vault: `{address, name, quant_score, adjustment, final_score, reason}`. The `adjustment` is already-vetted evidence from Stage 1; do not re-litigate it.
+- `portfolio_shape` — `{max_active, high_slots, low_slots}`: how many vaults to select and the size of each confidence bucket. Reference these fields; never hardcode counts.
 
-  - `vault.summary`: `{ name, vaultAddress, tvl }` (pre-filtered to deposit-open only).
-  - `vault.pnls`: array of `[period, points]` where period in {`day`,`week`,`month`,`allTime`}
-    and `points` is a time-ordered list of `[timestamp(ms), pnl]` (numbers).
-  - `trades`: last 30 days; each trade has `{ time(ms), dir("Long"/"Short"), closedPnl, fee }`.
-  - `accountSummary.assetPositions`: array of `{ position: { coin, szi, positionValue, unrealizedPnl } }`.
-- `already_exposed` (optional): array of vault addresses we already have deposits into.
-- `current_positions` (optional): array of `{ address, current_usd, roe_pct, hold_days }` —
-  our live positions with ROE measured against OUR cost basis (not the vault's own PnL).
-- `our_vault_history` (optional): array of `{ address, episodes, realized_pnl_usd, currently_held }` —
-  our own realized track record with vaults we have traded before.
-- `recently_exited_at_loss` (optional): array of vault addresses we exited at a realized loss
-  within the last ~10 days. These are under a re-entry cooldown and CANNOT receive deposits
-  this round.
+## Ranking rules
 
-Market overlay data (provided in input)
+- Start from the scores (`final_score`, then `quant_score`). Reorder only with a stated qualitative reason, and `why_now` must say what that reason is.
+- On a near-tie, break it toward the stronger recent tape (`day_rt`, `pnl7_rt`, `winrate_7d`), cleaner `data_quality`, and better current-regime fit.
+- **Underwater incumbents.** If `current_positions` shows `roe_pct <= -10` for a vault, include it ONLY if it ranks within the top `high_slots` on pure merit. A losing vault kept "recommended" blocks the system's soft stop-loss — never re-recommend our own underwater bags out of loyalty.
+- **Cooldown.** Never rank vaults in `recently_exited_at_loss` (deposits to them are blocked anyway) unless they now sit clearly at the very top on fresh merit.
+- **Repeat losers.** 2+ losing episodes in `our_vault_history` demands visibly stronger current evidence before you rank the vault.
+- **Rotation.** Rotation cost is enforced deterministically downstream (a fixed score margin an incumbent's challenger must clear). Do not model rotation cost yourself — rank on merit and current-regime fit.
 
-- BTC & ETH 7-day and 24-hour % changes with current trend/velocity.
-- Crypto Fear & Greed Index level.
-- BTC dominance (%).
-- Perp funding for BTC and ETH from Hyperliquid.
-- Open interest levels for BTC and ETH.
-- 24h trading volumes and total market cap change.
-- Long/short ratio (aggregate market positioning).
+## Barbell allocation
 
-Use the provided market data to infer a regime label: {risk-on, neutral, risk-off},
-and flags:
+Split the ranked selection into two buckets:
 
-- `bearFlag` (BTC 7d < 0),
-- `fundingPos` (BTC funding > 0),
-- `domHigh` (dominance > 55%),
-- `fearHigh` (F&G <= 30),
-- `riskOn` (BTC 7d > 0 AND fearGreed > 50),
-- `altSeason` (ETH 7d > BTC 7d AND dominance < 50%),
-- `highOI` (long_short_ratio > 1.5, crowded longs indicate reversal risk),
-- `volumeSpike` (significant 24h volume indicates momentum).
+- **High-confidence** = the first `portfolio_shape.high_slots` ranked vaults — regime-aligned, high-edge. Split `high_pct` (70–80) across them, capped at 15 per vault.
+- **Low-confidence** = the remaining `portfolio_shape.low_slots` — a counter-regime hedge. Prefer vaults whose `direction` opposes `regime_flags.regime` / `market_data.preferred_direction`, but only with positive edge (`pnl7_rt >= 0` AND `winrate_7d >= 0.5`).
+  - Rationale: `preferred_direction` is a 48h call that can flip mid-cycle; a small opposing allocation caps the downside if the regime read is wrong.
+  - If no counter-regime vault clears that edge bar, fill with the next-best aligned vaults — a hedge without edge is just drag.
+  - Spread `low_pct` (100 − `high_pct`) evenly across this bucket.
+- If `regime_flags.regime` is "neutral", skip the counter-regime preference and fill both buckets by score.
 
-Feature engineering per vault
+Every ranked vault appears in `targets` with `confidence` "high" or "low" matching its bucket, and all `allocation_pct` values sum to 100.
 
-- Latest PnL levels (absolute): `day_pnl`, `week_pnl`, `month_pnl`, `all_pnl`.
-- PnL series interpretation: if a `pnls[period]` series is cumulative-like
-  (mostly monotonic), treat it as cumulative and compute deltas over the window:
-  `week_pnl = last - value_at(now-7d)`, `day_pnl = last - value_at(now-1d)`.
-  Otherwise use the last period value directly.
-- 7-day trade stats: `trade_pnl_7d = sum(closedPnl) - sum(fee)`, `winrate_7d`,
-  `pnl_sd_7d`, `trades_7d`, `short_ratio_7d` (% of short trades).
-- 30-day trade stats: `trade_pnl_30d = sum(closedPnl) - sum(fee)`, `winrate_30d`,
-  `pnl_sd_30d`, `trades_30d`, `short_ratio_30d` (% of short trades).
-- Open positions: `unrealized`, `gross_exposure = sum(|positionValue|)`,
-  `net_exposure = sum(sign(szi) * positionValue)`, `btc_exposure`,
-  `majors_exposure` (BTC/ETH/SOL), `alts_exposure = net_exposure - majors_exposure`.
-- Normalize by TVL: suffix `_rt` (e.g., `week_rt = week_pnl / tvl`,
-  `pnl7_rt`, `pnl30_rt`, `day_rt`, `unreal_rt`, `net_rt`, `btc_rt`, `majors_rt`,
-  `alts_rt`, `gross_lev = gross_exposure / tvl`).
-- MM proxy (market-making style): `mm_proxy = 1 if trades_30d >= 60 and pnl_sd_30d <= |trade_pnl_30d|/10 else 0`.
+## Regime output
 
-Robust normalization
-
-- Use `robust_z(x) = (x - median(x)) / (1.4826 * MAD(x))`, clip to +/- 3.0.
-- If `MAD=0`, fall back to standard z-score.
-
-Base (edge + quality) score
-Use robust z-scored features across the provided universe. Weights are tuned for a **48-hour
-deployment horizon** — capital stays deployed ~2 days before next rebalance, so recent momentum
-and direction matter more than weekly trends.
-
-```
-base_score =
-  0.15·robust_z(week_rt) +
-  0.30·robust_z(pnl7_rt) +
-  0.25·robust_z(day_rt) +              # elevated for 48h horizon
-  0.10·robust_z(unreal_rt) +
-  0.10·robust_z(winrate_7d) +
-  0.10·robust_z(pnl30_rt)              # stability anchor
-- 0.10·robust_z(pnl_sd_30d)            # consistency penalty
-```
-
-Market-aware overlay
-Apply additive overlay based on the regime flags:
-
-```
-overlay =
-  0.15·bearFlag · robust_z(-net_rt)         # favor net-short when BTC down
-+ 0.10·fundingPos · robust_z(-net_rt)       # penalize net-long when funding positive
-+ 0.15·domHigh · robust_z(-alts_rt)         # favor short alts when BTC dominance high
-- 0.10·fearHigh · robust_z(pnl_sd_7d)       # avoid volatile vaults in fear
-+ 0.05·robust_z(mm_proxy)                   # MM boost
-+ 0.10·riskOn · robust_z(net_rt)            # favor net-long in risk-on regimes
-+ 0.10·altSeason · robust_z(alts_rt)        # favor alt exposure during alt season
-- 0.10·highOI · robust_z(gross_lev)         # penalize high leverage when OI crowded
-+ 0.05·volumeSpike · robust_z(trades_7d)    # favor active vaults during high volume
-+ 0.10·bearFlag · robust_z(short_ratio_7d)  # favor short-biased traders in bear
-+ 0.10·riskOn · robust_z(-short_ratio_7d)   # favor long-biased traders in risk-on
-+ 0.10·bearFlag · robust_z(-btc_rt)         # favor negative BTC exposure in bear
-+ 0.10·riskOn · robust_z(btc_rt)            # favor positive BTC exposure in risk-on
-```
-
-`score_market = base_score + overlay`
-
-Direction alignment (critical for 48h horizon)
-
-Before finalizing rankings, assess each vault's **directional alignment** with the market:
-- In bear/risk-off: vaults with net-short positions, high `short_ratio_7d`, or negative `btc_rt`
-  are directionally aligned.
-- In risk-on: vaults with net-long positions, low `short_ratio_7d`, or positive `btc_rt` are aligned.
-- If a vault's direction strongly conflicts with the regime (e.g., heavily net-long BTC in a bear
-  market), apply a penalty of -0.3 to `score_market` before ranking.
-- The **high-confidence bucket** should strongly prefer directionally aligned vaults.
-- The **low-confidence bucket** serves as a **counter-regime hedge** (see allocation logic).
-
-Ranking task
-
-1. Compute `score_market` for each vault; sort descending.
-2. Select up to 12 as the recommended vaults, applying the incumbent-vs-challenger rules:
-   - **Rotation must pay for itself.** Every exit + re-entry round trip costs roughly
-     0.5 robust-z of edge in spread, timing, and the reset hold clock. Keep an
-     `already_exposed` incumbent over a new challenger unless the challenger's
-     `score_market` exceeds the incumbent's by MORE than 0.5, or the incumbent ranks
-     poorly (below rank 15) or its score dropped > 1.0 robust z.
-   - **EXCEPTION — underwater incumbents.** Check `current_positions.roe_pct`. If our
-     position is down more than 10% for us (`roe_pct <= -10`) and the vault is not in
-     your top ~8 on pure merit, DROP it from the recommendations. A losing vault kept
-     "recommended" blocks the system's soft stop-loss from cutting it — never keep
-     re-recommending our own underwater bags out of loyalty to the existing position.
-   - **Cooldown vaults.** Do not recommend vaults in `recently_exited_at_loss` — deposits
-     to them are blocked this round anyway — unless they now rank clearly at the very top
-     on fresh merit (in which case they may re-enter after the cooldown expires).
-   - **Repeat losers.** If `our_vault_history` shows 2+ episodes with cumulative negative
-     `realized_pnl_usd` for a vault, demand meaningfully stronger current evidence before
-     recommending it again.
-
-Allocation logic (barbell with counter-regime hedge)
-
-- Select up to `max_active=12` from the ranked list.
-- **High-confidence bucket** = top `ceil(0.7 * N)` → regime-aligned, high-edge vaults.
-  Allocate `high_pct` (~70%) evenly or risk-parity by `sigma_rt`, capped per-vault at 15%.
-- **Low-confidence bucket** = the rest, used as a **counter-regime hedge**:
-  - Actively prefer vaults whose trading direction *opposes* `preferred_direction`
-    (short-biased in risk-on, long-biased in risk-off), as long as they still show positive edge
-    metrics (non-negative `pnl7_rt` and `winrate_7d >= 0.5`).
-  - Rationale: `preferred_direction` is a 48h signal from BTC momentum + sentiment; it can flip
-    mid-cycle. A 20-30% counter-regime allocation caps the downside if the regime call is wrong.
-  - If no counter-regime vault clears the edge bar, fill the bucket with the next-best aligned
-    vaults — a hedge without edge is just drag.
-  - Allocate `low_pct` (~30%) evenly across low-confidence vaults.
-- If regime is **neutral**, skip the counter-regime preference — fill both buckets by score_market alone.
-
-TP/SL framework
-
-- Define `sigma = pnl_sd_7d` if `trades_7d >= 10`, else `sigma = pnl_sd_30d`.
-- Provide TP/SL in $ for a notional deposit of $10,000 and in sigma units.
-
-Output format (JSON)
-Return ONLY this compact JSON structure (no text before or after):
-
-```json
-{
-  "regime": {"label": "risk-off|neutral|risk-on", "notes": "1 sentence"},
-  "top10": [
-    {"rank": 1, "address": "0x...", "score_market": 1.5, "why_now": "brief reason"}
-  ],
-  "suggested_allocations": {
-    "total_pct": 100,
-    "high_pct": 70,
-    "low_pct": 30,
-    "targets": [
-      {"rank": 1, "vaultAddress": "0x...", "confidence": "high", "allocation_pct": 10}
-    ]
-  }
-}
-```
-
-Keep responses minimal to stay within token limits. Include all ranked vaults (up to 12) in top10 and targets arrays.
-
-Constraints
-
-- Use only vaults from `{{vaults_json}}`. Do not infer "isClosed"; the list is already
-  deposit-open.
-- Do not request external data; use `market_data` as the source of the overlay inputs.
-- Do not ask clarifying questions; make the best professional assumptions and proceed.
-- Be concise in prose, but include all numbers needed to act.
+`label` should normally echo `regime_flags.regime`. If the raw `market_data` genuinely contradicts the flags, you may differ — but say why in `notes`.

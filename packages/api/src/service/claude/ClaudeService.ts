@@ -13,6 +13,14 @@ import type {
     SuggestedAllocationTarget,
     VaultCandidate,
 } from "../vaults/types";
+import { VaultFeatureService } from "./VaultFeatureService";
+import type {
+    VaultRawData,
+    VaultTradeRow,
+    VaultQuantFeatures,
+    VaultQuantScore,
+    RegimeFlags,
+} from "./featureTypes";
 
 type ClaudeRankedVault = {
     vaultAddress: string;
@@ -40,6 +48,7 @@ function envNumber(name: string, fallback: number): number {
 }
 
 const MODEL = process.env.CLAUDE_MODEL ?? "claude-sonnet-4-6";
+// NOTE: temperature is rejected with a 400 on Sonnet 5 / Opus 4.7+ — remove if CLAUDE_MODEL is ever bumped
 const DEFAULT_TEMPERATURE = 0.2;
 // Output (completion) cap. 8192 gives the bounded ranking/scoring tool calls
 // room to reason per vault without truncation; sonnet-4-6 allows up to 64K, but
@@ -47,89 +56,129 @@ const DEFAULT_TEMPERATURE = 0.2;
 // Now honors the CLAUDE_*_MAX_TOKENS env vars documented in CLAUDE.md.
 const SCORING_MAX_TOKENS = envNumber("CLAUDE_SCORING_MAX_TOKENS", 8192);
 const RANKING_MAX_TOKENS = envNumber("CLAUDE_RANKING_MAX_TOKENS", 8192);
-const MAX_TRADES = 50;
-const MAX_POSITIONS = 30;
-const MAX_PNL_POINTS = 60;
-const BATCH_SIZE = 5;
-const CLAUDE_API_DELAY_MS = 60000;
+const BATCH_SIZE = envNumber("CLAUDE_BATCH_SIZE", 5);
+const CLAUDE_API_DELAY_MS = envNumber("CLAUDE_API_DELAY_MS", 60000);
+// Module scope: consumed by the stage-1 → stage-2 selection slice.
+const FINAL_RANKING_LIMIT = envNumber("CLAUDE_FINAL_RANKING_LIMIT", 12);
+// Default rises 50 → 250 deliberately: trades no longer reach Claude (token cost
+// gone), they only feed local feature computation, and 30-day stats want more
+// than 50 fills.
+const MAX_TRADES = envNumber("CLAUDE_MAX_TRADES_PER_VAULT", 250);
+const MAX_POSITIONS = envNumber("CLAUDE_MAX_POSITIONS_PER_VAULT", 30);
+const MAX_PNL_POINTS = envNumber("CLAUDE_MAX_PNL_POINTS", 60);
 
 const PROMPT_PATH = path.join(__dirname, "prompts", "vault-ranking.md");
 const SCORING_PROMPT_PATH = path.join(__dirname, "prompts", "vault-scoring.md");
+const SHARED_PROMPT_PATH = path.join(__dirname, "prompts", "_shared.md");
 const DATA_DELAY_MS = 200;
 
 const SCORING_TOOL = {
     name: "submit_vault_scores",
-    description: "Submit a 0-100 score for every vault in this batch. Score all vaults, do not skip any.",
+    description:
+        "Submit a bounded qualitative adjustment for every vault in this batch. Do not skip any vault.",
+    strict: true,
     input_schema: {
         type: "object" as const,
+        additionalProperties: false,
+        required: ["scores"],
         properties: {
             scores: {
                 type: "array",
                 items: {
                     type: "object",
+                    additionalProperties: false,
+                    required: ["address", "adjustment", "reason"],
                     properties: {
-                        address: { type: "string", description: "Vault address (0x...)" },
-                        name: { type: "string" },
-                        score: { type: "number", description: "0-100 score" },
-                        reason: { type: "string", description: "Brief rationale" },
+                        address: {
+                            type: "string",
+                            description: "Vault address (0x…), exactly as given",
+                        },
+                        adjustment: {
+                            type: "number",
+                            description:
+                                "Points added to quant_score, between -15 and +15. 0 = no qualitative evidence beyond the computed score.",
+                        },
+                        reason: {
+                            type: "string",
+                            description:
+                                "One sentence, <= 200 chars. Required even when adjustment is 0.",
+                        },
                     },
-                    required: ["address", "score"],
                 },
             },
         },
-        required: ["scores"],
     },
 } as const;
 
 const RANKING_TOOL = {
     name: "submit_vault_ranking",
-    description: "Submit final barbell ranking and per-vault allocations.",
+    description: "Submit the final ranked selection and barbell allocations.",
+    strict: true,
     input_schema: {
         type: "object" as const,
+        additionalProperties: false,
+        required: ["regime", "ranked", "suggested_allocations"],
         properties: {
             regime: {
                 type: "object",
+                additionalProperties: false,
+                required: ["label", "notes"],
                 properties: {
-                    label: { type: "string", description: "risk-off | neutral | risk-on" },
-                    notes: { type: "string" },
+                    label: {
+                        type: "string",
+                        description: "risk-on | neutral | risk-off",
+                    },
+                    notes: { type: "string", description: "1 sentence" },
                 },
             },
-            top10: {
+            ranked: {
                 type: "array",
                 items: {
                     type: "object",
+                    additionalProperties: false,
+                    required: ["rank", "address", "why_now"],
                     properties: {
                         rank: { type: "number" },
                         address: { type: "string" },
-                        score_market: { type: "number" },
-                        why_now: { type: "string" },
+                        why_now: {
+                            type: "string",
+                            description: "Brief reason, <= 200 chars",
+                        },
                     },
-                    required: ["rank", "address"],
                 },
             },
             suggested_allocations: {
                 type: "object",
+                additionalProperties: false,
+                required: ["high_pct", "low_pct", "targets"],
                 properties: {
-                    total_pct: { type: "number" },
                     high_pct: { type: "number" },
                     low_pct: { type: "number" },
                     targets: {
                         type: "array",
                         items: {
                             type: "object",
+                            additionalProperties: false,
+                            required: [
+                                "rank",
+                                "vaultAddress",
+                                "confidence",
+                                "allocation_pct",
+                            ],
                             properties: {
                                 rank: { type: "number" },
                                 vaultAddress: { type: "string" },
-                                confidence: { type: "string", description: "high | low" },
+                                confidence: {
+                                    type: "string",
+                                    description: "high | low",
+                                },
                                 allocation_pct: { type: "number" },
                             },
-                            required: ["vaultAddress", "confidence", "allocation_pct"],
                         },
                     },
                 },
             },
         },
-        required: ["top10"],
     },
 } as const;
 
@@ -139,6 +188,17 @@ type ScoredVault = {
     score: number;
     reason?: string;
     candidate: VaultCandidate;
+    quantScore: number;
+    adjustment: number;
+};
+
+// Universe lookups computed once per round and shared across both stages.
+type UniverseLookups = {
+    regime: RegimeFlags;
+    featuresByAddress: Map<string, VaultQuantFeatures>;
+    scoringByAddress: Map<string, VaultQuantScore>;
+    rankingByAddress: Map<string, VaultQuantScore>;
+    rawByAddress: Map<string, VaultRawData>;
 };
 
 export class ClaudeService {
@@ -185,6 +245,56 @@ export class ClaudeService {
             longShortRatio: marketData.long_short_ratio,
         });
 
+        // Fetch all vault data ONCE, then compute the entire universe (features +
+        // universe-wide robust z + stage-specific quant scores) deterministically.
+        // This replaces the old per-batch fetch inside scoreVaultBatch and the
+        // stage-2 refetch inside finalRanking (also saving HL rate budget).
+        const rawData = await fetchVaultRawData(candidates, {
+            maxTrades: MAX_TRADES,
+            maxPositions: MAX_POSITIONS,
+        });
+        const universe = VaultFeatureService.computeUniverse(
+            rawData,
+            marketData,
+            Date.now()
+        );
+
+        const featuresByAddress = new Map<string, VaultQuantFeatures>();
+        for (const f of universe.features) {
+            featuresByAddress.set(f.address.toLowerCase(), f);
+        }
+        const scoringByAddress = new Map<string, VaultQuantScore>();
+        for (const s of universe.scoring) {
+            scoringByAddress.set(s.address.toLowerCase(), s);
+        }
+        const rankingByAddress = new Map<string, VaultQuantScore>();
+        for (const s of universe.ranking) {
+            rankingByAddress.set(s.address.toLowerCase(), s);
+        }
+        const rawByAddress = new Map<string, VaultRawData>();
+        for (const r of rawData) {
+            rawByAddress.set(r.candidate.vaultAddress.toLowerCase(), r);
+        }
+        const lookups: UniverseLookups = {
+            regime: universe.regime,
+            featuresByAddress,
+            scoringByAddress,
+            rankingByAddress,
+            rawByAddress,
+        };
+
+        const scoringSorted = [...universe.scoring].sort((a, b) => b.score - a.score);
+        logger.info("Universe features computed", {
+            vaultCount: universe.features.length,
+            regime: universe.regime,
+            scoringTop5: scoringSorted
+                .slice(0, 5)
+                .map((s) => ({ name: s.name, score: s.score })),
+            scoringBottom5: scoringSorted
+                .slice(-5)
+                .map((s) => ({ name: s.name, score: s.score })),
+        });
+
         // Stage 1: Score vaults in batches
         const batches = chunkArray(candidates, BATCH_SIZE);
         logger.info("Starting batched vault scoring", {
@@ -203,7 +313,13 @@ export class ClaudeService {
                 });
                 await new Promise((resolve) => setTimeout(resolve, CLAUDE_API_DELAY_MS));
             }
-            const result = await this.scoreVaultBatch(batches[i], marketData, portfolioContext, i);
+            const result = await this.scoreVaultBatch(
+                batches[i],
+                marketData,
+                portfolioContext,
+                i,
+                lookups
+            );
             batchResults.push(result);
         }
 
@@ -222,31 +338,30 @@ export class ClaudeService {
             topScore: allScored[0]?.score,
             bottomScore: allScored[allScored.length - 1]?.score,
             scoreDistribution: {
-                above80: allScored.filter(s => s.score >= 80).length,
-                above60: allScored.filter(s => s.score >= 60).length,
-                above40: allScored.filter(s => s.score >= 40).length,
-                below40: allScored.filter(s => s.score < 40).length,
+                above80: allScored.filter((s) => s.score >= 80).length,
+                above60: allScored.filter((s) => s.score >= 60).length,
+                above40: allScored.filter((s) => s.score >= 40).length,
+                below40: allScored.filter((s) => s.score < 40).length,
             },
-            allScores: allScored.map(s => ({
-                name: s.candidate.name,
+            allScores: allScored.map((s) => ({
+                name: s.name,
+                quantScore: s.quantScore,
+                adjustment: s.adjustment,
                 score: s.score,
-                address: s.candidate.vaultAddress,
+                address: s.vaultAddress,
             })),
         });
 
         // Stage 2: Final ranking of top candidates
-        // Limit candidates for final ranking to fit within token limits (Haiku: 4096 tokens)
-        const FINAL_RANKING_LIMIT = 12;
-        const topCandidates = allScored.slice(0, Math.min(FINAL_RANKING_LIMIT, Math.max(totalCount * 2, 20)));
-        const topVaultCandidates = topCandidates.map((s) => s.candidate);
+        const topCandidates = allScored.slice(0, FINAL_RANKING_LIMIT);
 
         logger.info("Stage 2 candidates selected", {
             finalRankingLimit: FINAL_RANKING_LIMIT,
             selectedCount: topCandidates.length,
-            selectedVaults: topCandidates.map(s => ({
-                name: s.candidate.name,
+            selectedVaults: topCandidates.map((s) => ({
+                name: s.name,
                 score: s.score,
-                isExposed: alreadyExposed.includes(s.candidate.vaultAddress.toLowerCase()),
+                isExposed: alreadyExposed.includes(s.vaultAddress),
             })),
         });
 
@@ -259,19 +374,20 @@ export class ClaudeService {
         }
 
         const ranking = await this.finalRanking(
-            topVaultCandidates,
+            topCandidates,
             marketData,
             portfolioContext,
             totalCount,
-            highConfidenceCount
+            highConfidenceCount,
+            lookups
         );
         if (ranking) {
             // Ride the full stage-1 score list on the ranking so the rotation
             // hurdle always compares scores from the same run that produced
             // the recommendation set.
             ranking.stage1Scores = allScored.map((s) => ({
-                address: s.candidate.vaultAddress.toLowerCase(),
-                name: s.candidate.name,
+                address: s.vaultAddress.toLowerCase(),
+                name: s.name,
                 score: s.score,
             }));
         }
@@ -282,18 +398,28 @@ export class ClaudeService {
         batch: VaultCandidate[],
         marketData: any,
         portfolioContext: PortfolioContext,
-        batchIndex: number
+        batchIndex: number,
+        lookups: UniverseLookups
     ): Promise<ScoredVault[]> {
         const client = this.getClient();
         const systemPrompt = this.getScoringPromptTemplate();
         const alreadyExposed = portfolioContext.alreadyExposed;
+        const { regime, featuresByAddress, scoringByAddress, rawByAddress } = lookups;
 
-        const vaultsPayload = await buildVaultPayload(batch, {
-            maxTrades: MAX_TRADES,
-            maxPositions: MAX_POSITIONS,
-        });
+        const vaultsPayload = batch
+            .map((candidate) => {
+                const addr = candidate.vaultAddress.toLowerCase();
+                const f = featuresByAddress.get(addr);
+                const raw = rawByAddress.get(addr);
+                const quant = scoringByAddress.get(addr);
+                if (!f || !raw || !quant) return null;
+                return buildPromptVault(f, quant, raw);
+            })
+            .filter((v) => v !== null);
 
         const userPrompt = `market_data = ${JSON.stringify(marketData)}
+
+regime_flags = ${JSON.stringify(regime)}
 
 already_exposed = ${JSON.stringify(alreadyExposed)}
 
@@ -303,7 +429,7 @@ our_vault_history = ${JSON.stringify(portfolioContext.vaultHistory)}
 
 recently_exited_at_loss = ${JSON.stringify(portfolioContext.recentLossExits)}
 
-vaults_json = ${JSON.stringify(vaultsPayload)}`;
+vaults = ${JSON.stringify(vaultsPayload)}`;
 
         try {
             logger.info("Scoring batch", {
@@ -315,12 +441,21 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
                 model: MODEL,
                 max_tokens: SCORING_MAX_TOKENS,
                 temperature: DEFAULT_TEMPERATURE,
-                system: systemPrompt,
+                // Prompt caching (stage 1 only — stage 2 runs once per round). The
+                // system prompt is identical across the 6–10 batches that run 60s
+                // apart (< the 5-min TTL), so batches 2..N read the cache. NOTE:
+                // sonnet-4-6's minimum cacheable prefix is 2048 tokens — if the
+                // system prompt sits under it, reads stay 0 and that is harmless.
+                system: [
+                    {
+                        type: "text" as const,
+                        text: systemPrompt,
+                        cache_control: { type: "ephemeral" as const },
+                    },
+                ],
                 tools: [SCORING_TOOL as any],
                 tool_choice: { type: "tool", name: SCORING_TOOL.name },
-                messages: [
-                    { role: "user", content: userPrompt },
-                ],
+                messages: [{ role: "user", content: userPrompt }],
             });
 
             const toolUse = response.content.find(
@@ -342,48 +477,75 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
             }
 
             const scored: ScoredVault[] = [];
-            const scoredAddresses = new Set<string>();
+            const seen = new Set<string>();
             for (const entry of parsed.scores) {
-                const address = String(entry.address ?? entry.vaultAddress ?? "").toLowerCase();
+                const address = String(entry.address ?? "").toLowerCase();
                 const candidate = batch.find(
                     (c) => c.vaultAddress.toLowerCase() === address
                 );
-                if (!candidate) continue;
+                if (!candidate) {
+                    logger.warn("Scored address not in this batch, skipping", {
+                        address,
+                        batchIndex,
+                    });
+                    continue;
+                }
+                // First entry wins on duplicate addresses.
+                if (seen.has(address)) continue;
 
-                scoredAddresses.add(address);
+                const quant = scoringByAddress.get(address);
+                const quantScore = quant ? quant.score : 0;
+                const adj = clampNum(Number(entry.adjustment) || 0, -15, 15);
+                const finalScore = clampNum(round1(quantScore + adj), 0, 100);
+                seen.add(address);
                 scored.push({
                     vaultAddress: address,
                     name: candidate.name,
-                    score: Number(entry.score) || 0,
-                    reason: entry.reason ?? entry.why,
+                    score: finalScore,
+                    reason: entry.reason,
                     candidate,
+                    quantScore,
+                    adjustment: adj,
                 });
             }
 
-            // Add missing vaults with default score of 25 (below average)
+            // Vault in batch but missing from the response: adjustment 0, final =
+            // quant score (the quant score is always available, so the old
+            // default-25 punishment is gone).
             for (const candidate of batch) {
                 const addr = candidate.vaultAddress.toLowerCase();
-                if (!scoredAddresses.has(addr)) {
-                    logger.warn("Vault missing from batch scores, adding with default", {
-                        name: candidate.name,
-                        batchIndex,
-                    });
-                    scored.push({
-                        vaultAddress: addr,
-                        name: candidate.name,
-                        score: 25,
-                        reason: "Not scored by AI - using default",
-                        candidate,
-                    });
-                }
+                if (seen.has(addr)) continue;
+                const quant = scoringByAddress.get(addr);
+                const quantScore = quant ? quant.score : 0;
+                logger.warn("Vault missing from batch scores, using quant score", {
+                    name: candidate.name,
+                    batchIndex,
+                    quantScore,
+                });
+                seen.add(addr);
+                scored.push({
+                    vaultAddress: addr,
+                    name: candidate.name,
+                    score: clampNum(round1(quantScore), 0, 100),
+                    reason: "no model adjustment",
+                    candidate,
+                    quantScore,
+                    adjustment: 0,
+                });
             }
 
             logger.info("Batch scored", {
                 batchIndex,
                 scoredCount: scored.length,
-                avgScore: scored.length
-                    ? Math.round(scored.reduce((sum, s) => sum + s.score, 0) / scored.length)
-                    : 0,
+                cacheReadTokens: (response.usage as any)?.cache_read_input_tokens,
+                cacheCreationTokens: (response.usage as any)
+                    ?.cache_creation_input_tokens,
+                scores: scored.map((s) => ({
+                    name: s.name,
+                    quantScore: s.quantScore,
+                    adjustment: s.adjustment,
+                    score: s.score,
+                })),
             });
 
             return scored;
@@ -397,21 +559,49 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
     }
 
     private static async finalRanking(
-        candidates: VaultCandidate[],
+        topCandidates: ScoredVault[],
         marketData: any,
         portfolioContext: PortfolioContext,
         totalCount: number,
-        highConfidenceCount: number
+        highConfidenceCount: number,
+        lookups: UniverseLookups
     ): Promise<ClaudeRanking | null> {
         const client = this.getClient();
         const systemPrompt = this.getPromptTemplate();
+        const { regime, featuresByAddress, rankingByAddress, rawByAddress } = lookups;
 
-        const vaultsPayload = await buildVaultPayload(candidates, {
-            maxTrades: MAX_TRADES,
-            maxPositions: MAX_POSITIONS,
-        });
+        const candidateAddresses = new Set(
+            topCandidates.map((s) => s.vaultAddress.toLowerCase())
+        );
+
+        const vaultsPayload = topCandidates
+            .map((s) => {
+                const addr = s.vaultAddress.toLowerCase();
+                const f = featuresByAddress.get(addr);
+                const raw = rawByAddress.get(addr);
+                const quant = rankingByAddress.get(addr);
+                if (!f || !raw || !quant) return null;
+                return buildPromptVault(f, quant, raw);
+            })
+            .filter((v) => v !== null);
+
+        const portfolioShape = {
+            max_active: totalCount,
+            high_slots: highConfidenceCount,
+            low_slots: totalCount - highConfidenceCount,
+        };
+        const stage1Results = topCandidates.map((s) => ({
+            address: s.vaultAddress,
+            name: s.name,
+            quant_score: s.quantScore,
+            adjustment: s.adjustment,
+            final_score: s.score,
+            reason: s.reason ?? null,
+        }));
 
         const userPrompt = `market_data = ${JSON.stringify(marketData)}
+
+regime_flags = ${JSON.stringify(regime)}
 
 already_exposed = ${JSON.stringify(portfolioContext.alreadyExposed)}
 
@@ -421,11 +611,15 @@ our_vault_history = ${JSON.stringify(portfolioContext.vaultHistory)}
 
 recently_exited_at_loss = ${JSON.stringify(portfolioContext.recentLossExits)}
 
-vaults_json = ${JSON.stringify(vaultsPayload)}`;
+vaults = ${JSON.stringify(vaultsPayload)}
+
+portfolio_shape = ${JSON.stringify(portfolioShape)}
+
+stage1_results = ${JSON.stringify(stage1Results)}`;
 
         try {
             logger.info("Stage 2: Final ranking", {
-                candidateCount: candidates.length,
+                candidateCount: topCandidates.length,
                 model: MODEL,
             });
 
@@ -436,9 +630,7 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
                 system: systemPrompt,
                 tools: [RANKING_TOOL as any],
                 tool_choice: { type: "tool", name: RANKING_TOOL.name },
-                messages: [
-                    { role: "user", content: userPrompt },
-                ],
+                messages: [{ role: "user", content: userPrompt }],
             });
 
             const toolUse = response.content.find(
@@ -454,9 +646,11 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
                 });
                 return null;
             }
-            const top10 = normalizeTop10(parsed.top10 ?? parsed.top_10);
-            if (!top10.length) {
-                logger.warn("Claude response missing top10 array");
+            const rankedRaw = normalizeRankedList(
+                parsed.ranked ?? parsed.top10 ?? parsed.top_10
+            );
+            if (!rankedRaw.length) {
+                logger.warn("Claude response missing ranked array");
                 return null;
             }
             const suggestedAllocations = parseSuggestedAllocations(
@@ -470,21 +664,53 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
                     lowPct: suggestedAllocations.lowPct,
                 });
             }
-            const ranked = top10
-                .map((entry) => ({
-                    vaultAddress: entry.address ?? entry.vaultAddress ?? "",
-                    reason: entry.why_now,
-                    score: entry.score_market,
-                    rank: entry.rank,
-                }))
-                .filter((entry) => Boolean(entry.vaultAddress));
+
+            // The model no longer emits per-entry scores; the stage-1 FINAL score
+            // (universe-comparable) is the authoritative value, looked up by address.
+            const stage1ByAddress = new Map<string, number>();
+            for (const s of topCandidates) {
+                stage1ByAddress.set(s.vaultAddress.toLowerCase(), s.score);
+            }
+
+            const dropped: string[] = [];
+            const ranked = rankedRaw
+                .map((entry) => {
+                    const address = String(
+                        entry.address ?? entry.vaultAddress ?? ""
+                    ).toLowerCase();
+                    return {
+                        vaultAddress: address,
+                        reason: entry.why_now,
+                        score: stage1ByAddress.has(address)
+                            ? stage1ByAddress.get(address)
+                            : undefined,
+                        rank: entry.rank,
+                    };
+                })
+                .filter((entry) => {
+                    if (!entry.vaultAddress) return false;
+                    if (!candidateAddresses.has(entry.vaultAddress)) {
+                        dropped.push(entry.vaultAddress);
+                        return false;
+                    }
+                    return true;
+                });
+
+            if (dropped.length) {
+                logger.warn("Dropped ranked addresses not in stage-2 candidate set", {
+                    dropped,
+                });
+            }
+            if (!ranked.length) {
+                logger.warn("Claude ranking had no valid candidate-set addresses");
+                return null;
+            }
 
             const ordered = ranked.some((entry) => Number.isFinite(entry.rank))
                 ? ranked
                       .slice()
                       .sort(
-                          (a, b) =>
-                              (Number(a.rank) || 0) - (Number(b.rank) || 0)
+                          (a, b) => (Number(a.rank) || 0) - (Number(b.rank) || 0)
                       )
                 : ranked;
 
@@ -503,12 +729,12 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
                 model: MODEL,
                 regime: parsed.regime,
                 total: ordered.length,
-                highConfidence: high.map(v => ({
+                highConfidence: high.map((v) => ({
                     address: v.vaultAddress,
                     score: v.score,
                     reason: v.reason,
                 })),
-                lowConfidence: low.map(v => ({
+                lowConfidence: low.map((v) => ({
                     address: v.vaultAddress,
                     score: v.score,
                     reason: v.reason,
@@ -541,22 +767,118 @@ vaults_json = ${JSON.stringify(vaultsPayload)}`;
         return this.client;
     }
 
+    /** Concatenate the shared judgment brief with a stage-specific prompt. If
+     * `_shared.md` is missing (e.g. pre-WP-B merge), fall back to the stage
+     * file alone so the service still boots. */
+    private static loadPrompt(stagePath: string): string {
+        const stage = fs.readFileSync(stagePath, "utf8");
+        try {
+            const shared = fs.readFileSync(SHARED_PROMPT_PATH, "utf8");
+            return `${shared}\n\n---\n\n${stage}`;
+        } catch (error: any) {
+            logger.warn("Shared prompt fragment missing, using stage prompt alone", {
+                path: SHARED_PROMPT_PATH,
+                message: error?.message,
+            });
+            return stage;
+        }
+    }
+
     private static getPromptTemplate(): string {
         if (!this.promptCache) {
-            this.promptCache = fs.readFileSync(PROMPT_PATH, "utf8");
+            this.promptCache = this.loadPrompt(PROMPT_PATH);
         }
         return this.promptCache;
     }
 
     private static getScoringPromptTemplate(): string {
         if (!this.scoringPromptCache) {
-            this.scoringPromptCache = fs.readFileSync(SCORING_PROMPT_PATH, "utf8");
+            this.scoringPromptCache = this.loadPrompt(SCORING_PROMPT_PATH);
         }
         return this.scoringPromptCache;
     }
 }
 
-function normalizeTop10(entries: any): any[] {
+/** Round with null/undefined/non-finite passthrough to null. */
+function roundTo(value: number | null | undefined, dp: number): number | null {
+    if (value === null || value === undefined) return null;
+    const n = Number(value);
+    if (!Number.isFinite(n)) return null;
+    const factor = Math.pow(10, dp);
+    return Math.round(n * factor) / factor;
+}
+
+function round1(x: number): number {
+    return Math.round(x * 10) / 10;
+}
+
+function clampNum(x: number, lo: number, hi: number): number {
+    return Math.min(hi, Math.max(lo, x));
+}
+
+/** Build the Overview §6 Claude-facing per-vault payload (snake_case; `null`
+ * passthrough; `_rt`/ratios 4dp, USD 2dp, score 1dp). `quant` supplies both the
+ * stage-appropriate score and the regime-alignment classification. */
+function buildPromptVault(
+    f: VaultQuantFeatures,
+    quant: VaultQuantScore,
+    raw: VaultRawData
+): any {
+    const positions = Array.isArray(raw?.assetPositions) ? raw.assetPositions : [];
+    const topPositions = positions
+        .map((entry: any) => {
+            const p = entry?.position;
+            if (!p) return null;
+            const value = Number(p.positionValue);
+            const abs = Number.isFinite(value) ? Math.abs(value) : 0;
+            return {
+                coin: String(p.coin ?? ""),
+                side: Number(p.szi) >= 0 ? "long" : "short",
+                value_usd: roundTo(Number.isFinite(value) ? value : 0, 2),
+                unrealized_pnl: roundTo(p.unrealizedPnl, 2),
+                _abs: abs,
+            };
+        })
+        .filter((p: any) => p !== null)
+        .sort((a: any, b: any) => b._abs - a._abs)
+        .slice(0, 5)
+        .map(({ _abs, ...rest }: any) => rest);
+
+    return {
+        address: f.address,
+        name: f.name,
+        tvl: roundTo(f.tvl, 2),
+        quant_score: roundTo(quant.score, 1),
+        aligned: quant.aligned,
+        direction: f.direction,
+        data_quality: f.dataQuality,
+        features: {
+            day_rt: roundTo(f.dayRt, 4),
+            week_rt: roundTo(f.weekRt, 4),
+            pnl7_rt: roundTo(f.pnl7Rt, 4),
+            pnl30_rt: roundTo(f.pnl30Rt, 4),
+            unreal_rt: roundTo(f.unrealRt, 4),
+            net_rt: roundTo(f.netRt, 4),
+            btc_rt: roundTo(f.btcRt, 4),
+            majors_rt: roundTo(f.majorsRt, 4),
+            alts_rt: roundTo(f.altsRt, 4),
+            gross_lev: roundTo(f.grossLev, 4),
+            winrate_7d: roundTo(f.winrate7d, 4),
+            winrate_30d: roundTo(f.winrate30d, 4),
+            trades_7d: f.trades7d,
+            trades_30d: f.trades30d,
+            short_ratio_7d: roundTo(f.shortRatio7d, 4),
+            short_ratio_30d: roundTo(f.shortRatio30d, 4),
+            pnl_sd_7d: roundTo(f.pnlSd7d, 2),
+            pnl_sd_30d: roundTo(f.pnlSd30d, 2),
+            month_max_dd_rt: roundTo(f.monthMaxDdRt, 4),
+            mm_proxy: f.mmProxy,
+        },
+        top_positions: topPositions,
+    };
+}
+
+function normalizeRankedList(entries: any): any[] {
     return Array.isArray(entries) ? entries : [];
 }
 
@@ -570,36 +892,14 @@ function normalizeRankedVaults(entries: any[]): ClaudeRankedVault[] {
         .filter((entry) => Boolean(entry.vaultAddress));
 }
 
-type VaultTrade = {
-    time: number;
-    dir: string;
-    closedPnl: number;
-    fee: number;
-};
-
-type VaultPayload = {
-    vault: {
-        summary: {
-            name: string;
-            vaultAddress: string;
-            tvl: number;
-        };
-        pnls: any;
-    };
-    trades: VaultTrade[];
-    accountSummary: {
-        assetPositions: any[];
-    };
-};
-
-async function buildVaultPayload(
+async function fetchVaultRawData(
     candidates: VaultCandidate[],
     options: { maxTrades: number; maxPositions: number }
-): Promise<VaultPayload[]> {
-    const payload: VaultPayload[] = [];
+): Promise<VaultRawData[]> {
+    const rawData: VaultRawData[] = [];
     for (const candidate of candidates) {
         const vaultAddress = candidate.vaultAddress;
-        const trades = await HyperliquidConnector.getVaultTrades(
+        const trades: VaultTradeRow[] = await HyperliquidConnector.getVaultTrades(
             vaultAddress,
             30,
             options.maxTrades
@@ -616,83 +916,14 @@ async function buildVaultPayload(
         const pnlSeries =
             buildPnlsFromDetails(details) ??
             normalizePnls(candidate.raw?.pnls, Date.now());
-        payload.push({
-            vault: {
-                summary: {
-                    name: candidate.name,
-                    vaultAddress: candidate.vaultAddress,
-                    tvl: candidate.tvl,
-                },
-                pnls: pnlSeries,
-            },
+        rawData.push({
+            candidate,
             trades,
-            accountSummary: {
-                assetPositions: positions,
-            },
+            assetPositions: positions,
+            pnls: pnlSeries as PnlSeries[],
         });
     }
-    return payload;
-}
-
-function parseJsonPayload(content: string): any | null {
-    if (!content) return null;
-
-    // Strip markdown code blocks if present
-    let cleaned = content.trim();
-    if (cleaned.startsWith("```")) {
-        const firstNewline = cleaned.indexOf("\n");
-        if (firstNewline !== -1) {
-            cleaned = cleaned.slice(firstNewline + 1);
-        }
-        if (cleaned.endsWith("```")) {
-            cleaned = cleaned.slice(0, -3);
-        }
-        cleaned = cleaned.trim();
-    }
-
-    // Remove control characters except tab, newline, carriage return
-    cleaned = cleaned.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
-
-    try {
-        return JSON.parse(cleaned);
-    } catch (err1) {
-        const start = cleaned.indexOf("{");
-        const end = cleaned.lastIndexOf("}");
-        if (start === -1 || end === -1 || end <= start) {
-            logger.warn("parseJsonPayload: no valid JSON boundaries", {
-                hasStart: start !== -1,
-                hasEnd: end !== -1,
-                startPos: start,
-                endPos: end,
-            });
-            return null;
-        }
-        try {
-            const extracted = cleaned.slice(start, end + 1);
-            return JSON.parse(extracted);
-        } catch (err2) {
-            // Log the specific error location for debugging
-            const errMsg = (err2 as Error).message;
-            const posMatch = errMsg.match(/position (\d+)/);
-            if (posMatch) {
-                const pos = parseInt(posMatch[1], 10);
-                const extracted = cleaned.slice(start, end + 1);
-                const contextStart = Math.max(0, pos - 30);
-                const contextEnd = Math.min(extracted.length, pos + 30);
-                logger.warn("parseJsonPayload: JSON parse error at position", {
-                    position: pos,
-                    charCode: extracted.charCodeAt(pos),
-                    context: extracted.slice(contextStart, contextEnd),
-                    error: errMsg,
-                });
-            } else {
-                logger.warn("parseJsonPayload: JSON parse error", {
-                    error: errMsg,
-                });
-            }
-            return null;
-        }
-    }
+    return rawData;
 }
 
 type PnlPoint = [number, number];
